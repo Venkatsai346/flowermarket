@@ -1,14 +1,30 @@
 /**
  * AuthStore — persisted zustand session (user + tokens).
  *
- * The storage adapter is injectable so the web app uses localStorage and the
- * mobile app can swap in AsyncStorage without touching this code.
+ * Both the storage adapter AND the persist key are injectable:
+ *  - the web console uses localStorage under the default 'fm-auth';
+ *  - the mobile app swaps in AsyncStorage;
+ *  - the storefront namespaces the key BY HOSTNAME, so two stores open in two
+ *    tabs can never share a session or a cart.
+ *
+ * Accepts either a storage adapter (legacy call style) or `{ name, storage }`.
  */
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
-export const createAuthStore = (storage = createJSONStorage(() => localStorage)) =>
-  create(
+export const createAuthStore = (options) => {
+  const isOptions = options && typeof options === 'object'
+    && ('name' in options || 'storage' in options)
+    && typeof options.getItem !== 'function';
+  const name = isOptions ? (options.name || 'fm-auth') : 'fm-auth';
+  const rawStorage = isOptions ? options.storage : options;
+  const storage = rawStorage
+    ? (typeof rawStorage.getItem === 'function' && typeof rawStorage.setItem === 'function' && !rawStorage.getState
+      ? createJSONStorage(() => rawStorage)
+      : rawStorage)
+    : createJSONStorage(() => localStorage);
+
+  return create(
     persist(
       (set, get) => ({
         user: null,
@@ -40,9 +56,10 @@ export const createAuthStore = (storage = createJSONStorage(() => localStorage))
         role: () => get().user?.role || null,
         tenantId: () => get().user?.tenantId || null,
       }),
-      { name: 'fm-auth', storage }
+      { name, storage }
     )
   );
+};
 
 /** Default instance for the web app. */
 export const useAuthStore = createAuthStore();

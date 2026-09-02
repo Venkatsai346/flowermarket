@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Admin console (web) + mobile app on a shared core — Flower Market marketplace frontend.",
+  "description": "Admin console (web) + mobile app on a shared core \u2014 Flower Market marketplace frontend.",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
     "dev": "npm run dev -w @flower-market/web",
-    "build": "npm run build -w @flower-market/web",
+    "build": "npm run build -w @flower-market/web && npm run build -w @flower-market/storefront",
     "preview": "npm run preview -w @flower-market/web",
-    "mobile": "npm run start -w @flower-market/mobile"
+    "mobile": "npm run start -w @flower-market/mobile",
+    "storefront": "npm run dev -w @flower-market/storefront",
+    "build:storefront": "npm run build -w @flower-market/storefront"
   },
   "engines": {
     "node": ">=18"

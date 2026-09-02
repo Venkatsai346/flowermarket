@@ -264,7 +264,7 @@ auditable invoices, and the platform sees across all tenants.
   uploaded image → auth/ext guards); `vite build` clean.
 - Plan: `uploads/media_upload.md`.
 
-## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · P1 ✅)
+## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · P1 ✅ · P2 ✅)
 
 Vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking.
 Full blueprint: **`uploads/phase6_payouts_gst_subdomains_search.md`**.
@@ -395,6 +395,17 @@ parallel tracks.
   copy-to-clipboard DNS instructions. 43 reserved slugs (they are DNS labels now, so `mail`
   and `status` matter). `scripts/hostname.test.js` **55/55**, `scripts/smoke-domains.test.js`
   7 DB-backed areas.
+- **✅ P2 Storefront app (SHIPPED)** — `frontend/apps/storefront`, the first customer-facing
+  surface and the payoff for P1. Boots from a single parameterless
+  `GET /domains/bootstrap`; **contains no tenant id and sends no `x-tenant-id` header**, so it
+  is structurally incapable of addressing the wrong store. Brand colours arrive as data and
+  become CSS custom properties, with the on-brand text colour chosen by computing WCAG
+  luminance rather than assuming white. Sessions are namespaced per hostname so two stores in
+  two tabs cannot share a cart. Covers catalog + search + facets, a product sheet, the
+  server-side cart with inline steppers and coupons, phone-OTP sign-in, checkout
+  (address → held slot → payment) and order tracking — **all endpoints that had existed since
+  Phase 3 with no client whatsoever**. 253 kB / 79 kB gzip (no charting library, unlike the
+  console). Also extended `createAuthStore` to take an injectable persist key.
 - **6.4 Subdomain routing — original plan text (1 w, parallel)** — `{slug}.flowermarket.in` + verified custom
   domains resolve the tenant from `Host` with an LRU cache; the `x-tenant-id` override is
   **tightened** to super_admin/dev only (today any client can name any tenant and only the

@@ -1,7 +1,7 @@
 # Phase 6 — Money, Identity & Discovery
 
 > **Scope:** vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking
-> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · **P1 domain routing ✅** · next: P2 storefront app or S1 search · **Owner:** platform team
+> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · **P1 ✅ · P2 storefront ✅** · next: S1 search ranking · **Owner:** platform team
 > **Builds on:** Phase 5 marketplace (`uploads/multi_tenant_marketplace.md`), Phase 3.5 pricing
 > policies (`uploads/tenant_charges_rider_endpoints_slot_forecasting_refund_fees.md`),
 > Phase 4b ops tooling (`uploads/ops_tooling_notifications_exports.md`)
@@ -55,7 +55,7 @@ independent tracks that can run in parallel from day one.
 | **M5 disbursement** | ✅ shipped | 4 provider adapters · **three-outcome contract** · HMAC webhook on the raw-body rail · reconcileInFlight · ingestPspSettlements · mirror-journal unwind · statements as ExportJob artifacts · 52 pure + 11 DB-backed areas |
 | **M6 payout console** | ✅ shipped | platform approval queue + batch drawer + ledger explorer with trial-balance/drift; vendor payouts, statement download, bank + KYC readiness checklist; read-only `/ledger` API |
 | **P1 domain routing** | ✅ shipped | Host→tenant with fail-closed unknown subdomains · pure hostname parser (fuzz found a real bug) · DNS-TXT verified custom domains gating TLS · negative-caching LRU · host-aware CORS · bootstrap endpoint · Domains console page |
-| P2 storefront app | ⬜ next | `apps/storefront` on the bootstrap endpoint — the first customer-facing surface |
+| **P2 storefront app** | ✅ shipped | `apps/storefront` · zero tenant ids in the client · runtime theming with computed contrast · per-host sessions · catalog/cart/OTP/checkout/tracking · 253 kB |
 | S1–S3 (search) | ⬜ | unchanged — independent of the money track |
 
 **P1 decisions worth recording**
@@ -71,6 +71,23 @@ independent tracks that can run in parallel from day one.
    nonexistent subdomain in a loop — becomes an unbounded database load.
 4. **Dev CORS is now enumerated, not universal.** `NODE_ENV` defaults to `development`, so
    "allow everything in dev" meant a deploy with an unset `NODE_ENV` shipped an open policy.
+
+**P2 decisions worth recording**
+
+1. **The absence is the architecture.** There is no tenant id anywhere in the storefront —
+   not in a config, not in a header, not in a URL. A client that cannot name a tenant
+   cannot name the wrong one. That is only possible because P1 made the Host authoritative.
+2. **Contrast is computed, not assumed.** `readableInk()` derives WCAG luminance from the
+   store's brand colour to choose black or white text on it. Letting a tenant pick a colour
+   and then hardcoding white text is how you ship an unreadable button to a real customer.
+3. **The cart lives on the server, always.** Price, stock and coupon validity are not things
+   a browser may assert; the checkout saga re-validates all three anyway. The client keeps a
+   snapshot purely so the badge and drawer render instantly.
+4. **The customer sees 5 states, not 16.** `lib/status.js` translates the operational state
+   machine into the handful of milestones a person tracks — `picking` and `packed` both read
+   as "being prepared", because that distinction is ours to care about, not theirs.
+5. **Sessions are namespaced per hostname.** Two stores open in two tabs sharing a cart would
+   be both a bug and a privacy leak; the persist key is now `fm-shop:{host}`.
 
 **M5 decisions worth recording**
 

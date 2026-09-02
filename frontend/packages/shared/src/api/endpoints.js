@@ -183,6 +183,59 @@ export function createEndpoints(client) {
       adminAll: () => c.get('/domains/admin/all'),
     },
 
+    /**
+     * Phase 6.4/P2 — the CUSTOMER surface. Everything the storefront needs,
+     * 1:1 with the public + customer routes that have existed since Phase 3
+     * and until now had no client at all.
+     */
+    shop: {
+      // discovery (public)
+      bootstrap: () => c.get('/domains/bootstrap'),
+      products: (q = {}) => c.get('/catalog', { query: q }),
+      product: (id) => c.get(`/catalog/products/${id}`),
+      stock: (id) => c.get(`/catalog/products/${id}/stock`),
+      categories: () => c.get('/catalog/categories'),
+      brands: () => c.get('/catalog/brands'),
+
+      // sign-in by phone OTP (the customer flow)
+      requestOtp: (body) => c.post('/auth/otp/request', body),
+      verifyOtp: (body) => c.post('/auth/otp/verify', body),
+
+      // cart
+      cart: () => c.get('/cart'),
+      addItem: (body) => c.post('/cart/items', body),
+      updateItem: (id, body) => c.patch(`/cart/items/${id}`, body),
+      removeItem: (id) => c.del(`/cart/items/${id}`),
+      clearCart: () => c.del('/cart'),
+      revalidate: () => c.post('/cart/revalidate'),
+      applyCoupon: (code) => c.post('/cart/coupon', { code }),
+      removeCoupon: () => c.del('/cart/coupon'),
+
+      // delivery slots
+      slots: (q = {}) => c.get('/cart/slots', { query: q }),
+      reserveSlot: (id, body = {}) => c.post(`/cart/slots/${id}/reserve`, body),
+
+      // checkout & orders
+      checkout: (body) => c.post('/cart/checkout', body),
+      orders: (q = {}) => c.get('/orders', { query: q }),
+      order: (id) => c.get(`/orders/${id}`),
+      orderTimeline: (id) => c.get(`/orders/${id}/timeline`),
+      cancelOrder: (id, body) => c.post(`/orders/${id}/cancel`, body),
+
+      // addresses
+      addresses: () => c.get('/users/me/addresses'),
+      addAddress: (body) => c.post('/users/me/addresses', body),
+      updateAddress: (id, body) => c.patch(`/users/me/addresses/${id}`, body),
+      removeAddress: (id) => c.del(`/users/me/addresses/${id}`),
+      setDefaultAddress: (id) => c.patch(`/users/me/addresses/${id}/default`),
+
+      // after-sales
+      returns: (q = {}) => c.get('/returns', { query: q }),
+      createReturn: (body) => c.post('/returns', body),
+      wallet: () => c.get('/wallet'),
+      walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
+    },
+
     media: {
       presign: (body) => c.post('/media/presign', body),
       confirm: (id) => c.post(`/media/${id}/confirm`),
