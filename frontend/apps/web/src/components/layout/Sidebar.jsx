@@ -1,6 +1,9 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
+  Banknote,
+  BookOpenCheck,
   ClipboardCheck,
+  Landmark,
   Flower2,
   FolderTree,
   Gem,
@@ -28,6 +31,8 @@ const GROUPS = {
       { to: '/platform/vendor-applications', label: 'Vendor applications', icon: ClipboardCheck },
       { to: '/platform/vendors', label: 'Vendors', icon: Truck },
       { to: '/platform/billing', label: 'Billing', icon: Receipt },
+      { to: '/platform/payouts', label: 'Payouts', icon: Banknote },
+      { to: '/platform/ledger', label: 'Ledger', icon: BookOpenCheck },
       { to: '/platform/plans', label: 'Plans', icon: Gem },
     ],
   },
@@ -55,6 +60,8 @@ const GROUPS = {
     items: [
       { to: '/vendor', label: 'Profile', icon: User, end: true },
       { to: '/vendor/products', label: 'Products', icon: Package },
+      { to: '/vendor/payouts', label: 'Payouts', icon: Banknote },
+      { to: '/vendor/payout-account', label: 'Payout account', icon: Landmark },
     ],
   },
 };

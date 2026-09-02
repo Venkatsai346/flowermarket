@@ -1,7 +1,7 @@
 # Phase 6 — Money, Identity & Discovery
 
 > **Scope:** vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking
-> **Status:** IN PROGRESS — **6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 disbursement ✅** · M6 console next · **Owner:** platform team
+> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 console ✅** · next: P1 subdomains or S1 search · **Owner:** platform team
 > **Builds on:** Phase 5 marketplace (`uploads/multi_tenant_marketplace.md`), Phase 3.5 pricing
 > policies (`uploads/tenant_charges_rider_endpoints_slot_forecasting_refund_fees.md`),
 > Phase 4b ops tooling (`uploads/ops_tooling_notifications_exports.md`)
@@ -53,7 +53,7 @@ independent tracks that can run in parallel from day one.
 | **M3 GST exports** | ✅ shipped | 7 renderers on the existing `ExportJob` machinery (12 export types total). **PDF still deferred** — it needs a new dependency and is presentation, not correctness |
 | **M4 payout accrual & cycles** | ✅ shipped | 6 models · pure `computeLineFinancials` (₹5279.10 asserted) · state machine · 2 eligibility gates · refund reversal · carry-forward · 22 routes · 47 tests |
 | **M5 disbursement** | ✅ shipped | 4 provider adapters · **three-outcome contract** · HMAC webhook on the raw-body rail · reconcileInFlight · ingestPspSettlements · mirror-journal unwind · statements as ExportJob artifacts · 52 pure + 11 DB-backed areas |
-| M6 payout console (UI) | ⬜ next | vendor payouts + KYC wizard; platform approval queue, ledger explorer, reconciliation dashboard |
+| **M6 payout console** | ✅ shipped | platform approval queue + batch drawer + ledger explorer with trial-balance/drift; vendor payouts, statement download, bank + KYC readiness checklist; read-only `/ledger` API |
 | P1–P2 (subdomains + storefront), S1–S3 (search) | ⬜ | unchanged — both still independent of the money track |
 
 **M5 decisions worth recording**
@@ -72,6 +72,21 @@ independent tracks that can run in parallel from day one.
 4. **The mock provider is the test harness.** Outcomes keyed off the last two paise
    (…13 rejected, …17 reversed, …99 ambiguous) mean every unhappy path is reachable in CI
    with no credentials and no network.
+
+**M6 decisions worth recording**
+
+1. **The UI enforces the same rule as the state machine.** An in-flight batch shows
+   *Reconcile* and nothing else — there is no retry control anywhere on the payout screen.
+   A safety property that only exists in the API is one an operator will eventually route
+   around; putting it in both places means the dangerous action is not even expressible.
+2. **The vendor screen answers the support ticket before it is filed.** "Eligible / still
+   in the return window / on hold" as three headline numbers, and a deduction waterfall
+   that starts from gross sales, is the entire content of the most common vendor dispute.
+3. **The ledger API is read-only by construction.** No endpoint posts a journal. Money
+   moves only through the services that own the business event; an API that could write an
+   arbitrary journal would defeat the point of having a ledger.
+4. **The UI never does money arithmetic.** Every figure rendered is server-computed, so the
+   console can disagree with the ledger only by being stale, never by being wrong.
 
 **M4 decisions worth recording**
 

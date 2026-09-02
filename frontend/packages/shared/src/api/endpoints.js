@@ -109,6 +109,69 @@ export function createEndpoints(client) {
       setMasterAttributes: (id, body) => c.put(`/catalog/admin/masters/${id}/attributes`, body),
     },
 
+    /**
+     * Phase 6.3 — vendor payouts. Two audiences, mirroring the API:
+     * `me.*` is the vendor's own money, `admin.*` is the platform's
+     * money-moving surface (super_admin only).
+     */
+    payouts: {
+      me: {
+        list: (q = {}) => c.get('/payouts/me', { query: q }),
+        upcoming: () => c.get('/payouts/me/upcoming'),
+        statement: (id) => c.get(`/payouts/me/${id}/statement`),
+        account: () => c.get('/payouts/me/account'),
+        saveAccount: (body) => c.put('/payouts/me/account', body),
+        verifyAccount: () => c.post('/payouts/me/account/verify'),
+        submitKyc: (body) => c.post('/payouts/me/kyc', body),
+      },
+      admin: {
+        list: (q = {}) => c.get('/payouts/admin', { query: q }),
+        get: (id) => c.get(`/payouts/admin/${id}`),
+        policy: (q = {}) => c.get('/payouts/admin/policy', { query: q }),
+        savePolicy: (body) => c.put('/payouts/admin/policy', body),
+        sweepEligibility: () => c.post('/payouts/admin/eligibility/sweep'),
+        computeCycle: (body) => c.post('/payouts/admin/cycle/compute', body),
+        holdLines: (body) => c.post('/payouts/admin/lines/hold', body),
+        releaseLines: (body) => c.post('/payouts/admin/lines/release', body),
+        addAdjustment: (body) => c.post('/payouts/admin/adjustments', body),
+        reviewKyc: (vendorId, body) => c.post(`/payouts/admin/kyc/${vendorId}/review`, body),
+        submitForApproval: (id) => c.post(`/payouts/admin/${id}/submit`),
+        approve: (id, body = {}) => c.post(`/payouts/admin/${id}/approve`, body),
+        reject: (id, body) => c.post(`/payouts/admin/${id}/reject`, body),
+        cancel: (id, body) => c.post(`/payouts/admin/${id}/cancel`, body),
+        submitToProvider: (id) => c.post(`/payouts/admin/${id}/submit-to-provider`),
+        reconcile: (body = {}) => c.post('/payouts/admin/reconcile', body),
+        ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
+      },
+    },
+
+    /** Phase 6.1 — read-only general ledger (super_admin). */
+    ledger: {
+      accounts: () => c.get('/ledger/accounts'),
+      statement: (q = {}) => c.get('/ledger/statement', { query: q }),
+      trialBalance: () => c.get('/ledger/trial-balance'),
+      journals: (q = {}) => c.get('/ledger/journals', { query: q }),
+      verify: (body = {}) => c.post('/ledger/verify', body),
+    },
+
+    /** Phase 6.2 — GST registration, documents and rate policy. */
+    tax: {
+      registration: () => c.get('/tax/registration'),
+      saveRegistration: (body) => c.put('/tax/registration', body),
+      documents: (q = {}) => c.get('/tax/documents', { query: q }),
+      document: (id) => c.get(`/tax/documents/${id}`),
+      issueInvoice: (body) => c.post('/tax/documents/invoice', body),
+      issueCreditNote: (body) => c.post('/tax/documents/credit-note', body),
+      cancelDocument: (id, body) => c.post(`/tax/documents/${id}/cancel`, body),
+      retryEinvoice: (id) => c.post(`/tax/documents/${id}/einvoice/retry`),
+      auditSeries: (q = {}) => c.get('/tax/series/audit', { query: q }),
+      policies: (q = {}) => c.get('/tax/policies', { query: q }),
+      savePolicy: (body) => c.post('/tax/policies', body),
+      statutoryRates: (q = {}) => c.get('/tax/statutory-rates', { query: q }),
+      saveStatutoryRate: (body) => c.post('/tax/statutory-rates', body),
+      orderInvoice: (orderId) => c.get(`/tax/orders/${orderId}/invoice`),
+    },
+
     media: {
       presign: (body) => c.post('/media/presign', body),
       confirm: (id) => c.post(`/media/${id}/confirm`),

@@ -17,6 +17,7 @@ import marketplaceRoutes from './marketplace.routes.js';
 import mediaRoutes from './media.routes.js';
 import taxRoutes from './tax.routes.js';
 import payoutRoutes from './payout.routes.js';
+import ledgerRoutes from './ledger.routes.js';
 
 /**
  * API v1 router.
@@ -57,5 +58,6 @@ apiRouter.use('/marketplace', marketplaceRoutes);
 apiRouter.use('/media', mediaRoutes);
 apiRouter.use('/tax', taxRoutes);
 apiRouter.use('/payouts', payoutRoutes);
+apiRouter.use('/ledger', ledgerRoutes);
 
 export default apiRouter;

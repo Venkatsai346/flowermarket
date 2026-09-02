@@ -22,6 +22,10 @@ import PlatformVendorsPage from './features/platform/PlatformVendorsPage.jsx';
 import PlatformBillingPage from './features/platform/PlatformBillingPage.jsx';
 import PlansAdminPage from './features/platform/PlansAdminPage.jsx';
 import VendorProfilePage from './features/vendor/VendorProfilePage.jsx';
+import PlatformPayoutsPage from './features/payouts/PlatformPayoutsPage.jsx';
+import LedgerPage from './features/platform/LedgerPage.jsx';
+import VendorPayoutsPage from './features/payouts/VendorPayoutsPage.jsx';
+import VendorPayoutAccountPage from './features/payouts/VendorPayoutAccountPage.jsx';
 import VendorProductsPage from './features/vendor/VendorProductsPage.jsx';
 import NoAccessPage from './features/auth/NoAccessPage.jsx';
 
@@ -89,8 +93,12 @@ export default function App() {
           <Route path="platform/vendors" element={platformOnly(<PlatformVendorsPage />)} />
           <Route path="platform/billing" element={platformOnly(<PlatformBillingPage />)} />
           <Route path="platform/plans" element={platformOnly(<PlansAdminPage />)} />
+          <Route path="platform/payouts" element={platformOnly(<PlatformPayoutsPage />)} />
+          <Route path="platform/ledger" element={platformOnly(<LedgerPage />)} />
           <Route path="vendor" element={vendorOnly(<VendorProfilePage />)} />
           <Route path="vendor/products" element={vendorOnly(<VendorProductsPage />)} />
+          <Route path="vendor/payouts" element={vendorOnly(<VendorPayoutsPage />)} />
+          <Route path="vendor/payout-account" element={vendorOnly(<VendorPayoutAccountPage />)} />
           <Route path="no-access" element={<NoAccessPage />} />
           <Route path="*" element={<HomeRedirect />} />
         </Route>

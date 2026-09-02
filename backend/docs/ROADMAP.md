@@ -264,7 +264,7 @@ auditable invoices, and the platform sees across all tenants.
   uploaded image → auth/ext guards); `vite build` clean.
 - Plan: `uploads/media_upload.md`.
 
-## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅)
+## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅)
 
 Vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking.
 Full blueprint: **`uploads/phase6_payouts_gst_subdomains_search.md`**.
@@ -362,6 +362,17 @@ parallel tracks.
   nightly pass. `scripts/payout-provider.test.js` **52/52** and
   `scripts/smoke-payouts.test.js` (11 DB-backed areas incl. the full ambiguous→reconcile
   path asserting no second journal is posted).
+- **✅ M6 Payout console (SHIPPED)** — the money system now has a human interface.
+  **Platform:** an approval queue that surfaces what needs a decision, a batch drawer with the
+  full deduction waterfall and per-order lines, and — the important part — an in-flight batch
+  offers **Reconcile and nothing else**, with no retry button anywhere on the screen. A ledger
+  explorer with a live trial-balance banner, drift check and repair, and per-account
+  statements. **Vendor:** their own payouts with an "eligible / still in the return window /
+  on hold" summary that answers *why haven't I been paid* before they ask, a downloadable
+  line-item statement, and a bank + KYC page with a three-item readiness checklist and an
+  explicit explanation of the 24-hour hold after a bank change. Read-only `/ledger` API added
+  (5 routes; deliberately no journal-posting endpoint — that would make the ledger
+  unauditable). 276 routes, 124 shared-client calls, contract-drift check green.
 - **6.3 Vendor payouts — original plan text: disbursement providers (razorpayx/cashfree),
   webhooks, the three reconciliation sweeps, payout statements as artifacts.** Original plan
   text: **(2.5 w)** — money moves only when **both** gates open: the return window
