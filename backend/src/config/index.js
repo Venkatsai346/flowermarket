@@ -139,6 +139,16 @@ const config = {
     },
   },
 
+  // ---- Phase 6.5: search ranking ----
+  search: {
+    provider: process.env.SEARCH_PROVIDER || 'mongo', // mongo | atlas | opensearch
+    defaultProfile: process.env.SEARCH_DEFAULT_PROFILE || 'default',
+    /** % of queries written to the query log (sampling keeps writes cheap). */
+    logSamplePct: Number(process.env.SEARCH_LOG_SAMPLE_PCT ?? 100),
+    /** Serve /catalog from the ranked index. Off = the legacy regex path. */
+    rankedCatalog: process.env.SEARCH_RANKED_CATALOG !== 'false',
+  },
+
   // ---- Phase 6.4: subdomain & custom-domain routing ----
   domains: {
     /** Master switch. Off = pure header-based resolution (pre-6.4 behaviour). */

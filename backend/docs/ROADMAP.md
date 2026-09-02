@@ -264,7 +264,7 @@ auditable invoices, and the platform sees across all tenants.
   uploaded image → auth/ext guards); `vite build` clean.
 - Plan: `uploads/media_upload.md`.
 
-## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · P1 ✅ · P2 ✅)
+## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · P1 ✅ · P2 ✅ · S1–S3 ✅)
 
 Vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking.
 Full blueprint: **`uploads/phase6_payouts_gst_subdomains_search.md`**.
@@ -411,7 +411,21 @@ parallel tracks.
   **tightened** to super_admin/dev only (today any client can name any tenant and only the
   token stops them); unknown host fails closed rather than falling back to the default tenant.
   Unlocks `apps/storefront`, the first customer-facing surface.
-- **6.5 Search ranking (2 w, parallel)** — today's `$regex` `$or` scan (whose `relevance` sort
+- **✅ S1–S3 Search ranking (SHIPPED)** — replaced a `$regex` collection scan whose
+  `relevance` sort was alphabetical. Two-stage retrieval (bounded candidates from an indexed
+  `searchdocuments` collection, then a pure in-process scorer at 2.4 ms per 1 000 candidates),
+  a `searchProvider` seam (mongo now; atlas/opensearch declared and failing loudly rather than
+  degrading), and an indexer riding the **existing CatalogEvent outbox** — no new event
+  plumbing, and upsert-on-stable-key makes at-least-once delivery harmless. Ranking blends
+  eight normalised signals with log-damped popularity and Bayesian-smoothed CTR; out-of-stock
+  is **demoted, never filtered**, and that floor survives 300 randomised weight configurations.
+  Ranking profiles and synonyms are editable DATA with deterministic A/B bucketing; query
+  understanding handles price intent, `gulab`/`mogra` synonyms and typo correction against the
+  store's own vocabulary. Zero-result queries relax rather than showing an empty page. A
+  PII-free sampled query log feeds `GET /search/analytics`. **`scripts/search-eval.mjs` is a CI
+  gate: mean NDCG@10 went 0.569 → 0.996** and a change that drops below 0.85 fails the build.
+  Storefront gained debounced autocomplete. 79 pure tests.
+- **6.5 Search ranking — original plan text (2 w, parallel)** — today's `$regex` `$or` scan (whose `relevance` sort
   is alphabetical) becomes a `searchProvider` abstraction (mongo → atlas/opensearch) fed by the
   **CatalogEvent outbox that already exists**, with a real scoring function, ranking profiles as
   editable data + A/B, synonyms (gulab/rose), typo tolerance, facets, autocomplete, a sampled

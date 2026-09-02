@@ -19,6 +19,7 @@ import taxRoutes from './tax.routes.js';
 import payoutRoutes from './payout.routes.js';
 import ledgerRoutes from './ledger.routes.js';
 import domainRoutes from './domain.routes.js';
+import searchRoutes from './search.routes.js';
 
 /**
  * API v1 router.
@@ -61,5 +62,6 @@ apiRouter.use('/tax', taxRoutes);
 apiRouter.use('/payouts', payoutRoutes);
 apiRouter.use('/ledger', ledgerRoutes);
 apiRouter.use('/domains', domainRoutes);
+apiRouter.use('/search', searchRoutes);
 
 export default apiRouter;

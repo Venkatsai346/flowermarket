@@ -98,3 +98,9 @@ export { default as PayoutAdjustment } from './payoutAdjustment.model.js';
 
 // ---- Phase 6.4: domain routing ----
 export { default as TenantDomain } from './tenantDomain.model.js';
+
+// ---- Phase 6.5: search ----
+export { default as SearchDocument } from './searchDocument.model.js';
+export { default as RankingProfile } from './rankingProfile.model.js';
+export { default as SearchSynonym } from './searchSynonym.model.js';
+export { default as SearchQueryLog } from './searchQueryLog.model.js';

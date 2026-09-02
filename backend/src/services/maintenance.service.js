@@ -16,6 +16,7 @@ import ledgerService from './ledger.service.js';
 import ledgerPostingService from './ledgerPosting.service.js';
 import taxDocumentService from './taxDocument.service.js';
 import payoutService from './payout.service.js';
+import searchIndexer from './searchIndexer.service.js';
 import auditService from './audit.service.js';
 import config from '../config/index.js';
 import { EXPORT_JOB_TYPE } from '../constants/enums.js';
@@ -110,6 +111,15 @@ class MaintenanceService {
       });
     } catch (err) {
       out.einvoiceRetries = { error: err?.message || String(err) };
+    }
+
+    // 9. Phase 6.5 — search index freshness. The outbox is at-least-once, but
+    //    a handler that threw during a drain leaves a stale document; this
+    //    finds and repairs them rather than waiting for a customer to notice.
+    try {
+      out.searchIndex = await searchIndexer.freshnessCheck({ repair: true, limit: 200 });
+    } catch (err) {
+      out.searchIndex = { error: err?.message || String(err) };
     }
 
     await auditService.record({

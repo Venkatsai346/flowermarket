@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Flower2, Package, Search, ShoppingBag, User, X } from 'lucide-react';
 import { useShop } from '../store.js';
-import { useShopAuth } from '../api.js';
+import { api, useShopAuth } from '../api.js';
 import { cn } from '../lib/utils.js';
 
 export default function Header({ query, onQuery }) {
@@ -12,13 +12,39 @@ export default function Header({ query, onQuery }) {
   const openAuth = useShop((s) => s.openAuth);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
   const [local, setLocal] = useState(query || '');
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggest, setShowSuggest] = useState(false);
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  const debounce = useRef(null);
+
+  /**
+   * Debounced autocomplete. 160 ms is short enough to feel instant and long
+   * enough that a fast typist does not fire a request per keystroke.
+   */
+  useEffect(() => {
+    if (local.trim().length < 2) { setSuggestions([]); return undefined; }
+    clearTimeout(debounce.current);
+    debounce.current = setTimeout(() => {
+      api.shop.suggest(local.trim())
+        .then((r) => setSuggestions(r.data || []))
+        .catch(() => setSuggestions([]));
+    }, 160);
+    return () => clearTimeout(debounce.current);
+  }, [local]);
 
   const submit = (e) => {
-    e.preventDefault();
+    e?.preventDefault();
+    setShowSuggest(false);
     if (pathname !== '/') navigate('/');
     onQuery?.(local.trim());
+  };
+
+  const pick = (text) => {
+    setLocal(text);
+    setShowSuggest(false);
+    if (pathname !== '/') navigate('/');
+    onQuery?.(text);
   };
 
   return (
@@ -41,11 +67,31 @@ export default function Header({ query, onQuery }) {
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
           <input
             value={local}
-            onChange={(e) => setLocal(e.target.value)}
+            onChange={(e) => { setLocal(e.target.value); setShowSuggest(true); }}
+            onFocus={() => setShowSuggest(true)}
+            onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
             placeholder="Search flowers, plants, gifts…"
             aria-label="Search products"
+            autoComplete="off"
             className="input rounded-full !py-2.5 pl-10 pr-9"
           />
+          {showSuggest && suggestions.length > 0 && (
+            <ul className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1 shadow-lift">
+              {suggestions.map((s) => (
+                <li key={s.text}>
+                  <button
+                    type="button"
+                    onMouseDown={() => pick(s.text)}
+                    className="flex w-full items-center gap-2.5 px-4 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    <Search className="h-3.5 w-3.5 shrink-0 text-slate-300" />
+                    <span className="truncate">{s.text}</span>
+                    {s.title !== s.text && <span className="ml-auto truncate text-xs text-slate-400">{s.title}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           {local && (
             <button
               type="button"

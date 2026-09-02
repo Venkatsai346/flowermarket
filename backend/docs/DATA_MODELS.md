@@ -786,6 +786,79 @@ enumerated set: localhost and the sandbox preview host.
 
 ---
 
+## 15. Phase 6.5 — search ranking (blueprint: `phase6_payouts_gst_subdomains_search.md`)
+
+| Collection | Purpose | Key invariants |
+| --- | --- | --- |
+| `searchdocuments` | one denormalized, rankable row per (tenant, listing) | `key = {tenantId}:{listingId}` unique, so re-indexing is an upsert; weighted text index; fed by the outbox |
+| `rankingprofiles` | weights as DATA, per tenant | `trafficPct > 0` makes a profile an A/B arm; unique per (tenant, code) |
+| `searchsynonyms` | vocabulary as DATA | `equivalent` expands both ways, `oneway` only from `from` |
+| `searchquerylogs` | what people searched and did next | PII-free (hashed session), sampled, 90-day TTL |
+
+**What was there before.** `/catalog` built a `$regex` `$or` inside an
+aggregation — a collection scan per query — and its `sort=relevance` was
+literally `{ 'master.searchText': -1 }`, i.e. **alphabetical**. Measured mean
+NDCG@10 of that baseline: **0.569**.
+
+**Two-stage retrieval.** Stage 1 pulls a bounded candidate set from the index
+(cheap, indexed, capped at 400). Stage 2 ranks in-process with a pure scorer —
+1 000 candidates in **2.4 ms**. The expensive part stays in the database where
+the indexes are; the interesting part stays in JavaScript where it can be
+unit-tested, explained and retuned from data. Pushing the blend into an
+aggregation would make it fast and completely untestable.
+
+**The blend** (each signal normalised to 0..1 *before* weighting, so weights
+are directly comparable and the tuning UI is honest):
+
+```text
+text · popularity(log-damped) · ctr(Bayesian-smoothed) · availability
+     · freshness(exponential decay) · discount · vendor rating · margin
+     + promoted boost − return penalty
+```
+
+Three choices worth naming:
+* **Popularity is log-damped** — 10 000 sales is not 100× better than 100.
+* **CTR is Bayesian-smoothed** — otherwise 1 click on 1 impression outranks
+  480 on 1 000. Asserted as a test.
+* **Out-of-stock is DEMOTED, never filtered.** A sold-out item is compressed
+  below every in-stock one but still shown, because a customer searching for
+  something you briefly lack should still learn you sell it. The floor holds
+  under **300 randomised weight configurations** — a merchandiser cannot
+  accidentally break it from the tuner.
+
+**Inferred intent biases; explicit filters constrain.** `white flowers`
+initially returned red roses: the colour had been stripped from the text and
+hard-filtered against an attribute almost nothing carried. A colour parsed out
+of the query is now kept as a search *term* (colour words are reliably in
+titles) and only *reported* as inferred; only a colour the client passes
+explicitly narrows the set. Found by the evaluation harness, not by a user.
+
+**Query understanding is deterministic, not a model** — search must be fast,
+reproducible and debuggable. Price intent (`under 500`, `500-1000`), colour,
+synonyms (`gulab`⇄`rose`, `mogra`⇄`jasmine`, seeded and operator-extendable
+from the zero-result log), and Damerau-Levenshtein typo correction **against
+the store's own vocabulary** rather than a dictionary — so a suggestion is
+always something the store actually sells. Short tokens may only be corrected
+by an insertion or deletion, never a substitution: `rse`→`rose` yes,
+`pot`→`hot` never.
+
+**Zero results are never shown.** A relaxation ladder progressively drops
+colour, then price, then the last token, then falls back to popular items, and
+the response says which step it took.
+
+**Indexing rides the existing outbox.** `CatalogEvent` already emits
+product/price/stock events with at-least-once delivery and retry; the indexer
+registers on the same drain as the notification consumer. No new event
+plumbing, and because re-indexing is an upsert on a stable key, at-least-once
+delivery — which would corrupt a counter — is harmless here. A nightly
+freshness sweep repairs anything a failed drain missed.
+
+**The gate.** `scripts/search-eval.mjs` scores a 12-query judgment set and
+fails the build below NDCG@10 of 0.85. Current: **0.996** (baseline 0.569).
+`--baseline` re-scores the legacy ordering so the comparison stays honest.
+
+---
+
 ## 4. Auth & session model (how it fits together)
 
 ```text
@@ -833,4 +906,7 @@ allowlist, no secrets in responses (`toJSON` plugin strips `passwordHash`).
 | vendorpayoutaccounts | vendorId+isDefault partial-unique, fingerprint |
 | payoutpolicies | (scope,vendorId) partial-unique |
 | tenantdomains | hostname unique, tenantId+isPrimary partial-unique, verification.status |
+| searchdocuments | key unique, tenant+status+inStock+price, weighted text index, tenant+suggest, indexedAt |
+| rankingprofiles | (tenantId,code) unique, isActive |
+| searchquerylogs | queryId, tenant+normalizedQuery+at, zeroResult, at TTL 90d |
 | taxpolicies | categoryId+effectiveFrom, categoryId+isActive partial-unique |

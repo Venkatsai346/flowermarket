@@ -27,6 +27,15 @@ async function bootstrap() {
     console.error('[tax] statutory rate bootstrap failed:', err.message);
   }
 
+  // Phase 6.5: seed the vocabulary this market actually types (idempotent).
+  try {
+    const { default: searchService } = await import('./services/search.service.js');
+    const seeded = await searchService.seedSynonyms();
+    if (!seeded.skipped) console.log(`[search] seeded ${seeded.seeded} synonym groups (gulab/rose, mogra/jasmine, …)`);
+  } catch (err) {
+    console.error('[search] synonym bootstrap failed:', err.message);
+  }
+
   const app = createApp();
   const server = app.listen(config.port, () => {
     // eslint-disable-next-line no-console

@@ -633,6 +633,10 @@ export const AUDIT_ACTION = Object.freeze({
   DOMAIN_REMOVE: 'domain_remove',
   DOMAIN_PRIMARY: 'domain_primary',
 
+  // ---- Phase 6.5: search ----
+  RANKING_CHANGE: 'ranking_change',
+  SEARCH_REINDEX: 'search_reindex',
+
   OTHER: 'other',
 });
 
@@ -1001,4 +1005,33 @@ export const TENANT_RESOLUTION_SOURCE = Object.freeze({
   TOKEN: 'token',
   DEFAULT: 'default',
   FALLBACK: 'fallback',
+});
+
+
+// ============================================================
+// PHASE 6.5 — SEARCH
+// ============================================================
+
+export const SEARCH_PROVIDER = Object.freeze({
+  MONGO: 'mongo',
+  ATLAS: 'atlas',
+  OPENSEARCH: 'opensearch',
+});
+
+/** The blended signals. Kept as an enum so the tuner UI cannot invent one. */
+export const RANKING_SIGNAL = Object.freeze({
+  TEXT: 'text',
+  POPULARITY: 'popularity',
+  CTR: 'ctr',
+  AVAILABILITY: 'availability',
+  FRESHNESS: 'freshness',
+  DISCOUNT: 'discount',
+  VENDOR: 'vendor',
+  MARGIN: 'margin',
+});
+
+export const SEARCH_EVENT_TYPE = Object.freeze({
+  CLICK: 'click',
+  ADD_TO_CART: 'add_to_cart',
+  ORDER: 'order',
 });

@@ -191,6 +191,9 @@ export function createEndpoints(client) {
     shop: {
       // discovery (public)
       bootstrap: () => c.get('/domains/bootstrap'),
+      suggest: (q) => c.get('/search/suggest', { query: { q } }),
+      /** Fire-and-forget relevance beacon — the only way ranking gets measured. */
+      searchEvent: (body) => c.post('/search/events', body),
       products: (q = {}) => c.get('/catalog', { query: q }),
       product: (id) => c.get(`/catalog/products/${id}`),
       stock: (id) => c.get(`/catalog/products/${id}/stock`),
@@ -234,6 +237,17 @@ export function createEndpoints(client) {
       createReturn: (body) => c.post('/returns', body),
       wallet: () => c.get('/wallet'),
       walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
+    },
+
+    /** Phase 6.5 — search tuning (store admin). */
+    search: {
+      profiles: () => c.get('/search/profiles'),
+      saveProfile: (body) => c.post('/search/profiles', body),
+      synonyms: () => c.get('/search/synonyms'),
+      addSynonym: (body) => c.post('/search/synonyms', body),
+      reindex: (body = {}) => c.post('/search/reindex', body),
+      health: () => c.get('/search/health'),
+      analytics: (q = {}) => c.get('/search/analytics', { query: q }),
     },
 
     media: {

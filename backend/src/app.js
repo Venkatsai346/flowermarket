@@ -8,6 +8,7 @@ import config from './config/index.js';
 import apiRouter from './routes/index.js';
 import PaymentController from './controllers/payment.controller.js';
 import PayoutController from './controllers/payout.controller.js';
+import searchIndexer from './services/searchIndexer.service.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
@@ -40,6 +41,9 @@ export function createApp() {
   // Phase 4b: register the event→notification consumer on the catalog outbox
   // (Set-based + idempotent — safe even if createApp is called repeatedly).
   notificationService.initConsumer();
+  // Phase 6.5: the search indexer rides the SAME catalog outbox — no new
+  // event plumbing, and index freshness inherits its at-least-once delivery.
+  searchIndexer.initConsumer();
 
   const app = express();
 

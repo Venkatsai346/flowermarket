@@ -1,7 +1,7 @@
 # Phase 6 — Money, Identity & Discovery
 
 > **Scope:** vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking
-> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · **P1 ✅ · P2 storefront ✅** · next: S1 search ranking · **Owner:** platform team
+> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · **P1 ✅ · P2 ✅ · S1–S3 search ✅** — PHASE 6 COMPLETE · **Owner:** platform team
 > **Builds on:** Phase 5 marketplace (`uploads/multi_tenant_marketplace.md`), Phase 3.5 pricing
 > policies (`uploads/tenant_charges_rider_endpoints_slot_forecasting_refund_fees.md`),
 > Phase 4b ops tooling (`uploads/ops_tooling_notifications_exports.md`)
@@ -56,7 +56,28 @@ independent tracks that can run in parallel from day one.
 | **M6 payout console** | ✅ shipped | platform approval queue + batch drawer + ledger explorer with trial-balance/drift; vendor payouts, statement download, bank + KYC readiness checklist; read-only `/ledger` API |
 | **P1 domain routing** | ✅ shipped | Host→tenant with fail-closed unknown subdomains · pure hostname parser (fuzz found a real bug) · DNS-TXT verified custom domains gating TLS · negative-caching LRU · host-aware CORS · bootstrap endpoint · Domains console page |
 | **P2 storefront app** | ✅ shipped | `apps/storefront` · zero tenant ids in the client · runtime theming with computed contrast · per-host sessions · catalog/cart/OTP/checkout/tracking · 253 kB |
-| S1–S3 (search) | ⬜ | unchanged — independent of the money track |
+| **S1–S3 search ranking** | ✅ shipped | two-stage retrieval · pure scorer · outbox-fed indexer · profiles + synonyms as data · A/B bucketing · typo/intent parsing · **NDCG gate 0.569 → 0.996** · storefront autocomplete |
+
+**S1–S3 decisions worth recording**
+
+1. **The scorer is pure, the retrieval is indexed.** Ranking 1 000 candidates costs 2.4 ms,
+   so the blend lives in JavaScript where it can be tested, explained and retuned from
+   data. A ranking function inside a Mongo aggregation is fast and unfalsifiable.
+2. **Out-of-stock is demoted, never filtered — and the floor is unbreakable.** 300
+   randomised weight configurations cannot get a sold-out item above an in-stock one. A
+   safety property that depends on operators choosing sensible weights is not a safety
+   property.
+3. **Inferred intent biases; explicit filters constrain.** `white flowers` returned red
+   roses because the colour had been stripped from the text and hard-filtered against a
+   sparsely-populated attribute. Parsed colour is now a search term and a *reported*
+   inference; only a client-supplied colour narrows. The evaluation harness found this, not
+   a customer.
+4. **Typos are corrected against the catalogue, not a dictionary** — a suggestion is always
+   something the store sells. And short tokens may only be fixed by insertion/deletion, so
+   `rse`→`rose` works while `pot`→`hot` can never happen.
+5. **The gate is the deliverable.** Anyone can make search feel better; the judgment set and
+   NDCG@10 are what make it provable, and what stop the next tuning change from quietly
+   undoing this one.
 
 **P1 decisions worth recording**
 

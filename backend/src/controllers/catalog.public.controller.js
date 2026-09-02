@@ -1,4 +1,6 @@
 import catalogSearchService from '../services/catalogSearch.service.js';
+import searchService from '../services/search.service.js';
+import config from '../config/index.js';
 import productMasterService from '../services/productMaster.service.js';
 import inventoryService from '../services/inventory.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -10,8 +12,34 @@ import { notFound } from '../utils/ApiError.js';
  * Only ACTIVE tenant listings of ACTIVE masters surface (merged view).
  */
 class CatalogPublicController {
-  /** GET /catalog — search/browse for the customer app. */
+  /**
+   * GET /catalog — search/browse for the customer app.
+   *
+   * Phase 6.5: served from the RANKED index when enabled. The response shape is
+   * unchanged (items + meta), with `query`, `facets` and `profile` added — so
+   * the storefront and mobile clients keep working untouched while gaining
+   * relevance, facets, typo tolerance and synonyms.
+   *
+   * If the ranked path throws for any reason we fall back to the legacy scan
+   * rather than failing the request: a degraded catalogue beats no catalogue.
+   */
   search = asyncHandler(async (req, res) => {
+    if (config.search.rankedCatalog) {
+      try {
+        const ranked = await searchService.search({
+          tenantId: req.tenantId,
+          query: req.query,
+          sessionKey: req.get('x-session-id') || req.ip || null,
+        });
+        return res.status(200).json(success(ranked.items, {
+          meta: { ...ranked.meta, query: ranked.query, facets: ranked.facets, profile: ranked.profile },
+          message: 'Catalog fetched',
+        }));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('[search] ranked path failed, falling back to the legacy scan:', err.message);
+      }
+    }
     const result = await catalogSearchService.search({ tenantId: req.tenantId, query: req.query });
     res.status(200).json(success(result.items, { message: 'Catalog fetched', meta: result.meta }));
   });

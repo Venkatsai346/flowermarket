@@ -67,12 +67,20 @@ async function main() {
     (await import('../src/models/payoutBatch.model.js')).default.init(),
     (await import('../src/models/payoutStatusHistory.model.js')).default.init(),
     (await import('../src/models/payoutAdjustment.model.js')).default.init(),
+    // ---- Phase 6.4/6.5: domains + search ----
+    (await import('../src/models/tenantDomain.model.js')).default.init(),
+    (await import('../src/models/searchDocument.model.js')).default.init(),
+    (await import('../src/models/rankingProfile.model.js')).default.init(),
+    (await import('../src/models/searchSynonym.model.js')).default.init(),
   ]);
 
   // ---- Phase 6.1: chart of accounts ----
   await (await import('../src/services/ledger.service.js')).default.ensureChartOfAccounts();
   // ---- Phase 6.2: statutory rate timeline ----
   await (await import('../src/services/tax.service.js')).default.seedStatutoryRates();
+  // ---- Phase 6.5: synonyms + a full search index build ----
+  await (await import('../src/services/search.service.js')).default.seedSynonyms();
+  await (await import('../src/services/searchIndexer.service.js')).default.reindexAll({});
 
   // ---- seed (full demo tenant: catalog, slots, Phase 3.5 policies, rider) ----
   const { runSeed } = await import('./seed-default-tenant.js');
