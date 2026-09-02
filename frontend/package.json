@@ -1,0 +1,20 @@
+{
+  "name": "flower-market-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Admin console (web) + mobile app on a shared core — Flower Market marketplace frontend.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @flower-market/web",
+    "build": "npm run build -w @flower-market/web",
+    "preview": "npm run preview -w @flower-market/web",
+    "mobile": "npm run start -w @flower-market/mobile"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
