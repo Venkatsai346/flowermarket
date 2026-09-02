@@ -627,6 +627,12 @@ export const AUDIT_ACTION = Object.freeze({
   KYC_REVIEW: 'kyc_review',
   BANK_VERIFY: 'bank_verify',
 
+  // ---- Phase 6.4: domains ----
+  DOMAIN_ADD: 'domain_add',
+  DOMAIN_VERIFY: 'domain_verify',
+  DOMAIN_REMOVE: 'domain_remove',
+  DOMAIN_PRIMARY: 'domain_primary',
+
   OTHER: 'other',
 });
 
@@ -963,4 +969,36 @@ export const PAYOUT_ADJUSTMENT_REASON = Object.freeze({
   CORRECTION: 'correction',
   CHARGEBACK: 'chargeback',
   OTHER: 'other',
+});
+
+// ============================================================
+// PHASE 6.4 — DOMAIN ROUTING
+// ============================================================
+
+export const DOMAIN_KIND = Object.freeze({
+  SUBDOMAIN: 'subdomain', // {slug}.{root} — covered by the wildcard cert
+  CUSTOM: 'custom',       // the store's own domain — needs DNS proof + TLS
+});
+
+export const DOMAIN_VERIFICATION_STATUS = Object.freeze({
+  PENDING: 'pending',
+  VERIFIED: 'verified',
+  FAILED: 'failed',
+});
+
+export const TLS_STATUS = Object.freeze({
+  NONE: 'none',
+  PROVISIONING: 'provisioning',
+  ACTIVE: 'active',
+  FAILED: 'failed',
+});
+
+/** How the tenant for a request was decided — recorded for auditing. */
+export const TENANT_RESOLUTION_SOURCE = Object.freeze({
+  HOST_SUBDOMAIN: 'host_subdomain',
+  HOST_CUSTOM: 'host_custom',
+  HEADER: 'header',
+  TOKEN: 'token',
+  DEFAULT: 'default',
+  FALLBACK: 'fallback',
 });

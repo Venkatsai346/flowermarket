@@ -1,7 +1,7 @@
 # Phase 6 — Money, Identity & Discovery
 
 > **Scope:** vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking
-> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 console ✅** · next: P1 subdomains or S1 search · **Owner:** platform team
+> **Status:** IN PROGRESS — **the whole money track is done: 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · **P1 domain routing ✅** · next: P2 storefront app or S1 search · **Owner:** platform team
 > **Builds on:** Phase 5 marketplace (`uploads/multi_tenant_marketplace.md`), Phase 3.5 pricing
 > policies (`uploads/tenant_charges_rider_endpoints_slot_forecasting_refund_fees.md`),
 > Phase 4b ops tooling (`uploads/ops_tooling_notifications_exports.md`)
@@ -54,7 +54,23 @@ independent tracks that can run in parallel from day one.
 | **M4 payout accrual & cycles** | ✅ shipped | 6 models · pure `computeLineFinancials` (₹5279.10 asserted) · state machine · 2 eligibility gates · refund reversal · carry-forward · 22 routes · 47 tests |
 | **M5 disbursement** | ✅ shipped | 4 provider adapters · **three-outcome contract** · HMAC webhook on the raw-body rail · reconcileInFlight · ingestPspSettlements · mirror-journal unwind · statements as ExportJob artifacts · 52 pure + 11 DB-backed areas |
 | **M6 payout console** | ✅ shipped | platform approval queue + batch drawer + ledger explorer with trial-balance/drift; vendor payouts, statement download, bank + KYC readiness checklist; read-only `/ledger` API |
-| P1–P2 (subdomains + storefront), S1–S3 (search) | ⬜ | unchanged — both still independent of the money track |
+| **P1 domain routing** | ✅ shipped | Host→tenant with fail-closed unknown subdomains · pure hostname parser (fuzz found a real bug) · DNS-TXT verified custom domains gating TLS · negative-caching LRU · host-aware CORS · bootstrap endpoint · Domains console page |
+| P2 storefront app | ⬜ next | `apps/storefront` on the bootstrap endpoint — the first customer-facing surface |
+| S1–S3 (search) | ⬜ | unchanged — independent of the money track |
+
+**P1 decisions worth recording**
+
+1. **The fallback was the vulnerability.** Resolving an unknown `*.root` subdomain to the
+   default tenant is the kind of bug that never throws an error and quietly serves one
+   store's catalogue on another's hostname. It now 404s.
+2. **The fuzz test earned its keep on day one.** `store.flowermarket.in:80@evil.com` was
+   resolving to `store`, because `lastIndexOf(':')` treated `:80@evil.com` as a port.
+   Userinfo is now rejected outright and a port must be digits. Host is attacker input; it
+   deserves adversarial tests, not examples.
+3. **Negative results are cached.** Otherwise the cheapest possible attack — request a
+   nonexistent subdomain in a loop — becomes an unbounded database load.
+4. **Dev CORS is now enumerated, not universal.** `NODE_ENV` defaults to `development`, so
+   "allow everything in dev" meant a deploy with an unset `NODE_ENV` shipped an open policy.
 
 **M5 decisions worth recording**
 

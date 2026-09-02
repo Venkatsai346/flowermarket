@@ -15,6 +15,27 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
  * App factory — keeps server.js free of middleware wiring and lets tests
  * build an app without binding a port.
  */
+/**
+ * Verified custom domains, kept in memory for the CORS check. Refreshed
+ * lazily (a CORS decision must be synchronous, so it cannot await a query).
+ * A newly verified domain becomes an allowed origin within one refresh window.
+ */
+const liveCustomHosts = new Set();
+let lastHostRefresh = 0;
+
+async function refreshLiveHosts() {
+  if (Date.now() - lastHostRefresh < 60000) return;
+  lastHostRefresh = Date.now();
+  try {
+    const { default: tenantDomainService } = await import('./services/tenantDomain.service.js');
+    const hosts = await tenantDomainService.liveHostnames();
+    liveCustomHosts.clear();
+    for (const h of hosts) liveCustomHosts.add(h);
+  } catch {
+    // a DB hiccup must not break CORS for the configured allowlist
+  }
+}
+
 export function createApp() {
   // Phase 4b: register the event→notification consumer on the catalog outbox
   // (Set-based + idempotent — safe even if createApp is called repeatedly).
@@ -30,9 +51,39 @@ export function createApp() {
   // ---- CORS (React Native app / admin web) ----
   app.use(
     cors({
+      /**
+       * Phase 6.4: origin policy is now host-aware.
+       *
+       * Allowed:
+       *   - no Origin (server-to-server, curl, webhooks)
+       *   - the configured CORS_ORIGINS allowlist
+       *   - any storefront on the platform root domain: https://{slug}.{root}
+       *   - a verified custom domain (checked against the live set, cached)
+       *   - in development only: localhost and the sandbox preview host
+       *
+       * The pre-6.4 rule allowed EVERY origin whenever `isDev` was true — and
+       * NODE_ENV defaults to 'development', so a deploy with an unset NODE_ENV
+       * shipped an open CORS policy. Development now allows a specific,
+       * enumerated set instead of everything.
+       */
       origin(origin, cb) {
-        if (!origin || config.corsOrigins.includes(origin) || config.isDev) return cb(null, true);
-        cb(new Error('Not allowed by CORS'));
+        if (!origin) return cb(null, true);
+        if (config.corsOrigins.includes(origin)) return cb(null, true);
+
+        let host = null;
+        try { host = new URL(origin).hostname.toLowerCase(); } catch { return cb(new Error('Not allowed by CORS')); }
+
+        const root = config.domains.rootDomain?.toLowerCase();
+        if (root && (host === root || host.endsWith(`.${root}`))) return cb(null, true);
+
+        if (config.isDev) {
+          // localhost, 127.0.0.1, *.localhost and the e2b sandbox preview host
+          if (host === 'localhost' || host.endsWith('.localhost') || host === '127.0.0.1') return cb(null, true);
+          if (/\.e2b\.app$/.test(host)) return cb(null, true);
+        }
+
+        if (liveCustomHosts.has(host)) return cb(null, true);
+        return cb(new Error('Not allowed by CORS'));
       },
       credentials: true,
     })
@@ -49,6 +100,9 @@ export function createApp() {
   // the HMAC is over the exact bytes, so this MUST be mounted before
   // express.json() consumes the stream.
   app.post('/api/v1/payouts/webhook', express.raw({ type: '*/*' }), PayoutController.webhook);
+
+  // keep the verified-custom-domain set warm (throttled internally)
+  app.use((req, _res, nextMw) => { refreshLiveHosts(); nextMw(); });
 
   app.use(express.json({ limit: config.limits.jsonBody }));
   app.use(express.urlencoded({ extended: true, limit: config.limits.jsonBody }));

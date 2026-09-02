@@ -172,6 +172,17 @@ export function createEndpoints(client) {
       orderInvoice: (orderId) => c.get(`/tax/orders/${orderId}/invoice`),
     },
 
+    /** Phase 6.4 — hostnames that resolve to this store. */
+    domains: {
+      list: () => c.get('/domains'),
+      add: (hostname) => c.post('/domains', { hostname }),
+      verify: (id) => c.post(`/domains/${id}/verify`),
+      setPrimary: (id) => c.post(`/domains/${id}/primary`),
+      remove: (id) => c.del(`/domains/${id}`),
+      bootstrap: () => c.get('/domains/bootstrap'),
+      adminAll: () => c.get('/domains/admin/all'),
+    },
+
     media: {
       presign: (body) => c.post('/media/presign', body),
       confirm: (id) => c.post(`/media/${id}/confirm`),

@@ -95,3 +95,6 @@ export { default as PayoutLineItem } from './payoutLineItem.model.js';
 export { default as PayoutBatch } from './payoutBatch.model.js';
 export { default as PayoutStatusHistory } from './payoutStatusHistory.model.js';
 export { default as PayoutAdjustment } from './payoutAdjustment.model.js';
+
+// ---- Phase 6.4: domain routing ----
+export { default as TenantDomain } from './tenantDomain.model.js';

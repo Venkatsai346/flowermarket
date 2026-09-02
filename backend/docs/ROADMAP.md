@@ -264,7 +264,7 @@ auditable invoices, and the platform sees across all tenants.
   uploaded image → auth/ext guards); `vite build` clean.
 - Plan: `uploads/media_upload.md`.
 
-## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅)
+## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅ · M6 ✅ · P1 ✅)
 
 Vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking.
 Full blueprint: **`uploads/phase6_payouts_gst_subdomains_search.md`**.
@@ -381,7 +381,21 @@ parallel tracks.
   24 h freeze on bank-detail change, `payoutProvider` abstraction (console/mock/razorpayx/
   cashfree) with **doubled idempotency** and never-blind-retry, plus three reconciliation
   sweeps and a line-item payout statement per batch.
-- **6.4 Subdomain routing (1 w, parallel)** — `{slug}.flowermarket.in` + verified custom
+- **✅ P1 Subdomain & custom-domain routing (SHIPPED)** — `Host` now resolves the tenant:
+  `{slug}.{PLATFORM_ROOT_DOMAIN}` and verified custom domains, with the `x-tenant-id`
+  override no longer able to beat a resolved Host in production. An unknown store subdomain
+  **404s instead of falling back to the default tenant** — that fallback was the actual leak.
+  `utils/hostname.js` is pure and treats Host as attacker input; its fuzz case found a real
+  vulnerability during development (`store.root:80@evil.com` resolved to `store`, because the
+  userinfo was stripped as a port). `TenantDomain` with DNS-TXT verification gating both
+  resolution and TLS issuance, a TTL+LRU cache that also caches negatives (1.06 µs per
+  classification), host-aware CORS replacing the allow-everything-in-dev rule, a public
+  `GET /domains/bootstrap` that returns branding + theme + canonical host from the Host alone,
+  a `tls-check` hook for on-demand certificates, and a store-facing Domains page with
+  copy-to-clipboard DNS instructions. 43 reserved slugs (they are DNS labels now, so `mail`
+  and `status` matter). `scripts/hostname.test.js` **55/55**, `scripts/smoke-domains.test.js`
+  7 DB-backed areas.
+- **6.4 Subdomain routing — original plan text (1 w, parallel)** — `{slug}.flowermarket.in` + verified custom
   domains resolve the tenant from `Host` with an LRU cache; the `x-tenant-id` override is
   **tightened** to super_admin/dev only (today any client can name any tenant and only the
   token stops them); unknown host fails closed rather than falling back to the default tenant.

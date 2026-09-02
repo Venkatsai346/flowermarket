@@ -82,7 +82,11 @@ const config = {
     defaultCommissionBps: Number(process.env.MARKETPLACE_DEFAULT_COMMISSION_BPS) || 100, // 1%
     defaultTrialDays: Number(process.env.MARKETPLACE_TRIAL_DAYS) || 14,
     invoiceGraceDays: Number(process.env.MARKETPLACE_INVOICE_GRACE_DAYS) || 7,
-    reservedSlugs: (process.env.MARKETPLACE_RESERVED_SLUGS || 'admin,api,www,app,platform,marketplace,flower-market,market')
+    // Phase 6.4: these are now DNS labels too, so the list must also cover
+    // infrastructure hostnames — a store called "mail" would hijack MX-adjacent
+    // traffic and a store called "status" would shadow the status page.
+    reservedSlugs: (process.env.MARKETPLACE_RESERVED_SLUGS
+      || 'admin,api,www,app,platform,marketplace,flower-market,market,mail,smtp,imap,ftp,cdn,static,assets,media,img,images,status,help,support,docs,blog,pay,payments,checkout,billing,account,accounts,auth,login,dashboard,console,internal,staging,dev,test,demo,ns1,ns2,mx,vpn,git')
       .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
     nightlyDays: Number(process.env.MARKETPLACE_NIGHTLY_DAYS) || 30,
   },
@@ -133,6 +137,30 @@ const config = {
       apiKey: process.env.EINVOICE_GSP_API_KEY || null,
       apiSecret: process.env.EINVOICE_GSP_API_SECRET || null,
     },
+  },
+
+  // ---- Phase 6.4: subdomain & custom-domain routing ----
+  domains: {
+    /** Master switch. Off = pure header-based resolution (pre-6.4 behaviour). */
+    enabled: process.env.DOMAIN_ROUTING_ENABLED !== 'false',
+    rootDomain: process.env.PLATFORM_ROOT_DOMAIN || 'flowermarket.in',
+    /**
+     * Trust `x-forwarded-host`. Only enable behind a proxy you control — an
+     * untrusted forwarded host is a tenant-spoofing vector.
+     */
+    trustForwardedHost: process.env.TRUST_FORWARDED_HOST === 'true',
+    /**
+     * Allow `x-tenant-id` to override a Host that already resolved. This is a
+     * DEVELOPMENT affordance (one localhost acting as any tenant); in
+     * production the hostname must win.
+     */
+    allowHeaderOverride: process.env.ALLOW_TENANT_HEADER_OVERRIDE
+      ? process.env.ALLOW_TENANT_HEADER_OVERRIDE === 'true'
+      : env !== 'production',
+    cacheTtlMs: Number(process.env.DOMAIN_RESOLUTION_CACHE_TTL_MS) || 300000,
+    /** IPs allowed to call the TLS `ask` hook (comma-separated; empty = any). */
+    tlsHookAllowlist: (process.env.TLS_HOOK_IP_ALLOWLIST || '')
+      .split(',').map((s) => s.trim()).filter(Boolean),
   },
 
   // ---- Phase 6.3: vendor payout disbursement ----

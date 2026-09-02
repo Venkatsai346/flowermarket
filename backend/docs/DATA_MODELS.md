@@ -726,6 +726,66 @@ than paying out.
 
 ---
 
+## 14. Phase 6.4 — domain routing (blueprint: `phase6_payouts_gst_subdomains_search.md`)
+
+`{slug}.flowermarket.in` and verified custom domains resolve a tenant from the
+`Host` header, with no `x-tenant-id`.
+
+| Collection | Purpose | Key invariants |
+| --- | --- | --- |
+| `tenantdomains` | a hostname that points at a tenant | `hostname` globally unique (one tenant per host); one `isPrimary` per tenant; **only `verified` + `active` rows ever resolve** |
+
+**Resolution order** (`middleware/tenantContext.js`):
+`Host` → `x-tenant-id` header → `DEFAULT_TENANT_ID` → first active tenant.
+
+**Why Host wins, and why that is the security fix.** Before 6.4 any client
+could name any tenant with a header, and the only thing between that and a
+cross-tenant read was `authenticate` rejecting a token/tenant mismatch — which
+does nothing on the many public endpoints. Public traffic is now bound to the
+hostname it arrived on, and the header cannot override a Host that already
+resolved (unless `ALLOW_TENANT_HEADER_OVERRIDE`, a development affordance that
+defaults to off in production).
+
+**Why an unknown store subdomain 404s.** `resolveByHost()` throws
+`STORE_NOT_FOUND` for a well-formed subdomain with no matching store rather
+than falling through to the default tenant. Silently serving the default
+store's catalogue at someone else's hostname is a leak that looks like a
+feature. Inactive tenants fail the same way.
+
+**Why every existing client keeps working.** `localhost`, IP literals and the
+sandbox preview host classify as *infrastructure* or *custom* and never resolve
+implicitly, so the header path is untouched for the admin console, the mobile
+app and every smoke test.
+
+**Host parsing is treated as attacker input** (`utils/hostname.js`, pure, 55
+assertions). It normalises case, ports, trailing dots, IPv6 brackets and
+proxy-joined values, and rejects anything else outright. The fuzz case in
+`scripts/hostname.test.js` found a real vulnerability during development:
+`store.flowermarket.in:80@evil.com` had its `:80@evil.com` stripped as a
+"port", leaving a valid store hostname — userinfo is now rejected and a port
+must actually be digits.
+
+**Verification is the boundary for custom domains.** A row exists as soon as an
+owner claims a domain, but it resolves to nothing, and is refused a TLS
+certificate, until a `_fm-verify.{host}` TXT record proves ownership. That
+matters twice: an unverified domain could point someone else's traffic at your
+store, and with on-demand TLS it could burn the platform's ACME quota. The
+`GET /domains/tls-check` hook is what a terminator (Caddy `ask`, or an ALB
+automation) consults before issuing.
+
+**Caching.** Resolution runs on every request, so it is backed by a TTL+LRU
+cache — including **negative** results, so an unknown host cannot hammer the
+database. Measured: 1.06 µs per host classification, 50 000 in 53 ms.
+
+**CORS is now host-aware.** The old rule allowed *every* origin whenever
+`isDev` was true, and `NODE_ENV` defaults to `'development'` — so an unset
+`NODE_ENV` in production shipped an open policy. It now allows the configured
+allowlist, any `*.{root}` storefront, verified custom domains (refreshed
+lazily, since a CORS decision must be synchronous), and in development an
+enumerated set: localhost and the sandbox preview host.
+
+---
+
 ## 4. Auth & session model (how it fits together)
 
 ```text
@@ -772,4 +832,5 @@ allowlist, no secrets in responses (`toJSON` plugin strips `passwordHash`).
 | payoutbatches | batchNumber unique, idempotencyKey unique, (vendorId,cycle) unique, state+submittedAt, needsReconciliation |
 | vendorpayoutaccounts | vendorId+isDefault partial-unique, fingerprint |
 | payoutpolicies | (scope,vendorId) partial-unique |
+| tenantdomains | hostname unique, tenantId+isPrimary partial-unique, verification.status |
 | taxpolicies | categoryId+effectiveFrom, categoryId+isActive partial-unique |

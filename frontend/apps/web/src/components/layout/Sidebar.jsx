@@ -3,6 +3,7 @@ import {
   Banknote,
   BookOpenCheck,
   ClipboardCheck,
+  Globe,
   Landmark,
   Flower2,
   FolderTree,
@@ -45,6 +46,7 @@ const GROUPS = {
       { to: '/vendors', label: 'Vendors', icon: Truck },
       { to: '/billing', label: 'Billing', icon: Receipt },
       { to: '/storefront', label: 'Storefront', icon: Palette },
+      { to: '/domains', label: 'Domains', icon: Globe },
     ],
   },
   catalog: {

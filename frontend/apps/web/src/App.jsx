@@ -15,6 +15,7 @@ import OrdersPage from './features/orders/OrdersPage.jsx';
 import StoreVendorsPage from './features/vendors/StoreVendorsPage.jsx';
 import StoreBillingPage from './features/billing/StoreBillingPage.jsx';
 import BrandingPage from './features/storefront/BrandingPage.jsx';
+import DomainsPage from './features/storefront/DomainsPage.jsx';
 import PlatformOverview from './features/platform/PlatformOverview.jsx';
 import PlatformStoresPage from './features/platform/PlatformStoresPage.jsx';
 import VendorApplicationsPage from './features/platform/VendorApplicationsPage.jsx';
@@ -93,6 +94,7 @@ export default function App() {
           <Route path="platform/vendors" element={platformOnly(<PlatformVendorsPage />)} />
           <Route path="platform/billing" element={platformOnly(<PlatformBillingPage />)} />
           <Route path="platform/plans" element={platformOnly(<PlansAdminPage />)} />
+          <Route path="domains" element={storeOnly(<DomainsPage />)} />
           <Route path="platform/payouts" element={platformOnly(<PlatformPayoutsPage />)} />
           <Route path="platform/ledger" element={platformOnly(<LedgerPage />)} />
           <Route path="vendor" element={vendorOnly(<VendorProfilePage />)} />
