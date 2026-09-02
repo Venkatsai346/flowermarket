@@ -135,6 +135,25 @@ const config = {
     },
   },
 
+  // ---- Phase 6.3: vendor payout disbursement ----
+  payouts: {
+    provider: process.env.PAYOUT_PROVIDER || 'console', // console | mock | razorpayx | cashfree
+    webhookSecret: process.env.PAYOUT_WEBHOOK_SECRET || null,
+    /** Minutes a batch may sit in PROCESSING before the reconciler chases it. */
+    reconcileAfterMinutes: Number(process.env.PAYOUT_RECONCILE_AFTER_MINUTES) || 15,
+    razorpayx: {
+      keyId: process.env.RAZORPAYX_KEY_ID || null,
+      keySecret: process.env.RAZORPAYX_KEY_SECRET || null,
+      accountNumber: process.env.RAZORPAYX_ACCOUNT_NUMBER || null,
+      baseUrl: process.env.RAZORPAYX_BASE_URL || 'https://api.razorpay.com/v1',
+    },
+    cashfree: {
+      clientId: process.env.CASHFREE_CLIENT_ID || null,
+      clientSecret: process.env.CASHFREE_CLIENT_SECRET || null,
+      baseUrl: process.env.CASHFREE_BASE_URL || 'https://payout-api.cashfree.com',
+    },
+  },
+
   // ---- Phase 6.1: financial ledger ----
   ledger: {
     /**

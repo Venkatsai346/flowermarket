@@ -7,7 +7,7 @@ import { USER_ROLES } from '../constants/enums.js';
 import {
   payoutListQuerySchema, payoutIdParamSchema, computeCycleSchema, approveSchema,
   reasonSchema, holdSchema, releaseSchema, adjustmentSchema, payoutAccountSchema,
-  kycSchema, kycReviewSchema, payoutPolicySchema,
+  kycSchema, kycReviewSchema, payoutPolicySchema, settlementIngestSchema,
 } from '../utils/validators/payout.validators.js';
 
 const router = Router();
@@ -51,6 +51,9 @@ router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'),
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);
 router.post('/admin/:id/reject', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(reasonSchema), PayoutController.reject);
+router.post('/admin/:id/submit-to-provider', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submit);
+router.post('/admin/reconcile', platformAdmin, PayoutController.reconcile);
+router.post('/admin/settlements/ingest', platformAdmin, validate(settlementIngestSchema), PayoutController.ingestSettlements);
 router.post('/admin/:id/cancel', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(reasonSchema), PayoutController.cancel);
 
 export default router;

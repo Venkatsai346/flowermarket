@@ -264,7 +264,7 @@ auditable invoices, and the platform sees across all tenants.
   uploaded image → auth/ext guards); `vite build` clean.
 - Plan: `uploads/media_upload.md`.
 
-## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅)
+## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 ✅)
 
 Vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking.
 Full blueprint: **`uploads/phase6_payouts_gst_subdomains_search.md`**.
@@ -350,7 +350,19 @@ parallel tracks.
   change, and the `payout_initiated` journal that drains exactly what `sale_captured`
   credited. 22 routes under `/payouts`, vendor and platform surfaces hard-separated.
   `scripts/payout-calc.test.js` **47/47**.
-- **6.3 Vendor payouts — remaining (M5): disbursement providers (razorpayx/cashfree),
+- **✅ M5 Disbursement, webhooks & reconciliation (SHIPPED)** — `payoutProvider` with four
+  adapters (console/mock/razorpayx/cashfree) whose contract has **three** outcomes: success,
+  clean failure, and **ambiguous**. Transport errors never throw and never fail the batch —
+  they leave it PROCESSING for `reconcileInFlight()`, which asks the provider by our own
+  idempotency key. Rail selection (UPI/IMPS/NEFT/RTGS by amount), HMAC-verified webhook on the
+  raw-body pattern the Razorpay payment hook already uses (mounted before `express.json`),
+  ledger posted at submission with a mirror `payout_reversed` journal on rejection or bank
+  reversal, `ingestPspSettlements()` closing eligibility gate 2, payout statements as
+  downloadable `ExportJob` artifacts (13 export types now), and reconciliation wired into the
+  nightly pass. `scripts/payout-provider.test.js` **52/52** and
+  `scripts/smoke-payouts.test.js` (11 DB-backed areas incl. the full ambiguous→reconcile
+  path asserting no second journal is posted).
+- **6.3 Vendor payouts — original plan text: disbursement providers (razorpayx/cashfree),
   webhooks, the three reconciliation sweeps, payout statements as artifacts.** Original plan
   text: **(2.5 w)** — money moves only when **both** gates open: the return window
   has closed *and* the PSP has actually settled. `PayoutLineItem` eligibility ledger →

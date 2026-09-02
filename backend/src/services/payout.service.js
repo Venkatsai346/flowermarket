@@ -13,6 +13,7 @@ import Counter from '../models/counter.model.js';
 import LedgerJournal from '../models/ledgerJournal.model.js';
 import taxService from './tax.service.js';
 import ledgerService, { ledgerAccounts } from './ledger.service.js';
+import payoutProvider from './payoutProvider.service.js';
 import auditService from './audit.service.js';
 import config from '../config/index.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/ApiError.js';
@@ -741,6 +742,318 @@ class PayoutService {
       vendorId: batch.vendorId,
       meta: { batchNumber: batch.batchNumber },
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // disbursement (M5) — where money actually leaves
+  // -------------------------------------------------------------------------
+
+  /**
+   * Hand an APPROVED batch to the payment provider.
+   *
+   * The ordering here is deliberate and is the whole safety design:
+   *   1. re-check every rail (`assertPayable`) — approval may be hours old
+   *   2. move to QUEUED → PROCESSING BEFORE calling the provider, so a crash
+   *      mid-call leaves a batch that reconciliation will chase, not one that
+   *      looks un-submitted and invites a second submission
+   *   3. post the ledger journal (vendor_payable → bank) at submission, since
+   *      the liability is discharged the moment the instruction is accepted
+   *   4. on an AMBIGUOUS result, stop. Do not retry, do not fail it. Flag
+   *      `needsReconciliation` and let the sweep ask the provider.
+   */
+  async submit({ batchId, actorId = null, req = null }) {
+    const batch = await this.getBatch(batchId);
+    if (batch.state !== PAYOUT_STATE.APPROVED && batch.state !== PAYOUT_STATE.FAILED) {
+      throw conflict(`Batch is ${batch.state} — only an approved or failed batch can be submitted`, 'PAYOUT_NOT_SUBMITTABLE');
+    }
+
+    const account = await this.assertPayable(batch);
+
+    if (batch.state === PAYOUT_STATE.FAILED) {
+      // a clean provider rejection is the ONLY retryable failure
+      await this.transition(batch, PAYOUT_STATE.QUEUED, { actorId, note: 'retry after provider rejection' });
+    } else {
+      await this.transition(batch, PAYOUT_STATE.QUEUED, { actorId, note: 'queued for disbursement' });
+    }
+    await this.transition(batch, PAYOUT_STATE.PROCESSING, { actorId, note: 'submitting to provider' });
+    batch.submittedAt = new Date();
+    await batch.save();
+
+    // discharge the liability at submission time
+    const journal = await this.postPayoutJournal(batch);
+    if (journal?.journal) {
+      batch.ledgerJournalIds = [...(batch.ledgerJournalIds || []), journal.journal._id];
+      await batch.save();
+    }
+
+    const result = await payoutProvider.payout({
+      idempotencyKey: batch.idempotencyKey,
+      amountPaise: batch.netPaise,
+      batchNumber: batch.batchNumber,
+      account: {
+        method: batch.payoutAccount?.method,
+        maskedAccount: batch.payoutAccount?.maskedAccount,
+        vpa: batch.payoutAccount?.vpa,
+        ifsc: batch.payoutAccount?.ifsc,
+        holderName: batch.payoutAccount?.holderName,
+        accountNumber: account.accountNumberEnc
+          ? Buffer.from(account.accountNumberEnc, 'base64').toString('utf8')
+          : null,
+        providerFundAccountId: account.providerRefs?.fundAccountId || null,
+        providerBeneficiaryId: account.providerRefs?.beneficiaryId || null,
+      },
+    });
+
+    batch.provider = result.provider;
+    batch.transferMode = result.mode || null;
+    batch.providerRef = result.providerRef || null;
+    batch.providerStatus = result.status || null;
+
+    if (result.ambiguous) {
+      // ── THE CRITICAL BRANCH ──
+      // We do not know whether money moved. Stay PROCESSING, flag for
+      // reconciliation, and never retry. A retry here is how a marketplace
+      // pays the same vendor twice.
+      batch.needsReconciliation = true;
+      batch.failureReason = result.error || 'ambiguous provider response';
+      await batch.save();
+      await this.recordTransition(batch, PAYOUT_STATE.PROCESSING, PAYOUT_STATE.PROCESSING, {
+        actorId, note: `AMBIGUOUS: ${batch.failureReason} — awaiting reconciliation`,
+      });
+      await auditService.record({
+        action: AUDIT_ACTION.PAYOUT_SUBMIT, entityType: 'payout_batch', entityId: batch._id,
+        actorId, actorType: 'admin',
+        after: { batchNumber: batch.batchNumber, outcome: 'ambiguous', error: batch.failureReason }, req,
+      }).catch(() => {});
+      return { batch, ambiguous: true };
+    }
+
+    if (!result.ok) {
+      await this.markFailed({ batch, reason: result.error || 'provider rejected the payout', actorId });
+      return { batch, failed: true, error: result.error };
+    }
+
+    batch.utr = result.utr || null;
+    await batch.save();
+
+    await auditService.record({
+      action: AUDIT_ACTION.PAYOUT_SUBMIT, entityType: 'payout_batch', entityId: batch._id,
+      actorId, actorType: 'admin',
+      after: { batchNumber: batch.batchNumber, net: fromPaise(batch.netPaise), providerRef: batch.providerRef, mode: batch.transferMode }, req,
+    }).catch(() => {});
+
+    // console/mock settle synchronously; real providers confirm by webhook
+    if (result.status === 'processed') {
+      await this.markPaid({ batch, utr: result.utr, actorId });
+    }
+
+    return { batch, submitted: true, willReverse: Boolean(result.willReverse) };
+  }
+
+  /** Provider confirmed the transfer. Idempotent. */
+  async markPaid({ batch, utr = null, actorId = null, req = null }) {
+    if (batch.state === PAYOUT_STATE.PAID) return batch;
+    await this.transition(batch, PAYOUT_STATE.PAID, { actorId, note: `settled${utr ? ` UTR ${utr}` : ''}` });
+    batch.settledAt = new Date();
+    batch.utr = utr || batch.utr;
+    batch.needsReconciliation = false;
+    batch.providerStatus = 'processed';
+    await batch.save();
+
+    await PayoutLineItem.updateMany(
+      { payoutBatchId: batch._id, state: PAYOUT_LINE_STATE.BATCHED },
+      { $set: { state: PAYOUT_LINE_STATE.PAID, paidAt: new Date() } }
+    );
+
+    await auditService.record({
+      action: AUDIT_ACTION.PAYOUT_SETTLE, entityType: 'payout_batch', entityId: batch._id,
+      actorId, actorType: actorId ? 'admin' : 'system',
+      after: { batchNumber: batch.batchNumber, net: fromPaise(batch.netPaise), utr: batch.utr }, req,
+    }).catch(() => {});
+    return batch;
+  }
+
+  /**
+   * The provider rejected the instruction BEFORE moving money.
+   * The ledger journal posted at submission must therefore be undone, and the
+   * lines released so a later cycle picks them up again.
+   */
+  async markFailed({ batch, reason, actorId = null, req = null }) {
+    if (batch.state === PAYOUT_STATE.FAILED) return batch;
+    await this.transition(batch, PAYOUT_STATE.FAILED, { actorId, note: reason });
+    batch.failureReason = String(reason || '').slice(0, 400);
+    batch.needsReconciliation = false;
+    batch.providerStatus = 'failed';
+    await batch.save();
+    await this.unwindPayoutJournal(batch, 'payout rejected by provider');
+    return batch;
+  }
+
+  /**
+   * The bank returned the money AFTER a successful transfer (closed account,
+   * wrong IFSC). The vendor's liability comes back and the lines return to the
+   * eligible pool so the next cycle tries again.
+   */
+  async markReversed({ batch, reason, actorId = null, req = null }) {
+    if (batch.state === PAYOUT_STATE.REVERSED) return batch;
+    await this.transition(batch, PAYOUT_STATE.REVERSED, { actorId, note: reason || 'bank reversal' });
+    batch.failureReason = String(reason || 'bank reversal').slice(0, 400);
+    batch.needsReconciliation = false;
+    batch.providerStatus = 'reversed';
+    await batch.save();
+
+    await this.unwindPayoutJournal(batch, 'bank reversed the payout');
+    await PayoutLineItem.updateMany(
+      { payoutBatchId: batch._id, state: { $in: [PAYOUT_LINE_STATE.BATCHED, PAYOUT_LINE_STATE.PAID] } },
+      { $set: { state: PAYOUT_LINE_STATE.ELIGIBLE, payoutBatchId: null, paidAt: null } }
+    );
+
+    await auditService.record({
+      action: AUDIT_ACTION.PAYOUT_REVERSE, entityType: 'payout_batch', entityId: batch._id,
+      actorId, actorType: actorId ? 'admin' : 'system',
+      after: { batchNumber: batch.batchNumber, reason: batch.failureReason }, req,
+    }).catch(() => {});
+    return batch;
+  }
+
+  /** Post the mirror image of the payout journal (money never left / came back). */
+  async unwindPayoutJournal(batch, memo) {
+    const key = `${LEDGER_JOURNAL_KIND.PAYOUT_INITIATED}:payout_batch:${batch._id}`;
+    const original = await LedgerJournal.findOne({ idempotencyKey: key });
+    if (!original) return null;
+
+    const lines = original.lines.map((l) => ({
+      accountCode: l.accountCode,
+      debitPaise: l.creditPaise,   // mirror
+      creditPaise: l.debitPaise,
+      refType: l.refType,
+      refId: l.refId,
+      memo,
+    }));
+
+    const result = await ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.PAYOUT_REVERSED,
+      idempotencyKey: `${LEDGER_JOURNAL_KIND.PAYOUT_REVERSED}:payout_batch:${batch._id}`,
+      lines,
+      refType: 'payout_batch',
+      refId: batch._id,
+      tenantId: batch.tenantId,
+      vendorId: batch.vendorId,
+      meta: { batchNumber: batch.batchNumber, reversalOf: String(original._id), memo },
+    });
+    if (result.created) {
+      batch.ledgerJournalIds = [...(batch.ledgerJournalIds || []), result.journal._id];
+      await batch.save();
+    }
+    return result;
+  }
+
+  /**
+   * Apply a provider webhook. Idempotent by construction: each `mark*` is a
+   * no-op when already in the target state, and an unknown reference is
+   * reported rather than guessed at.
+   */
+  async applyProviderEvent({ idempotencyKey = null, providerRef = null, outcome, utr = null, failureReason = null, actorId = null }) {
+    const q = idempotencyKey ? { idempotencyKey } : { providerRef };
+    const batch = await PayoutBatch.findOne(q);
+    if (!batch) return { matched: false, reason: 'no batch for this reference' };
+
+    if (outcome === 'paid') await this.markPaid({ batch, utr, actorId });
+    else if (outcome === 'failed') await this.markFailed({ batch, reason: failureReason || 'provider reported failure', actorId });
+    else if (outcome === 'reversed') {
+      // a reversal can arrive before we recorded the success
+      if (batch.state === PAYOUT_STATE.PROCESSING) await this.markPaid({ batch, utr, actorId });
+      await this.markReversed({ batch, reason: failureReason || 'bank reversal', actorId });
+    } else return { matched: true, applied: false, reason: `unmapped outcome: ${outcome}` };
+
+    return { matched: true, applied: true, batchNumber: batch.batchNumber, state: batch.state };
+  }
+
+  // -------------------------------------------------------------------------
+  // reconciliation (M5) — the part everyone skips
+  // -------------------------------------------------------------------------
+
+  /**
+   * Chase every batch stuck in PROCESSING: ask the provider what actually
+   * happened, using our idempotency key as the lookup. This is the ONLY exit
+   * from an ambiguous submission — hence no retry path anywhere in this method.
+   */
+  async reconcileInFlight({ olderThanMinutes = null, limit = 100 } = {}) {
+    const cutoff = new Date(Date.now() - (olderThanMinutes ?? config.payouts.reconcileAfterMinutes) * 60000);
+    const batches = await PayoutBatch.find({
+      state: PAYOUT_STATE.PROCESSING,
+      $or: [{ submittedAt: { $lte: cutoff } }, { needsReconciliation: true }],
+    }).limit(limit);
+
+    const out = { scanned: batches.length, resolvedPaid: 0, resolvedFailed: 0, resolvedReversed: 0, stillUnknown: 0 };
+
+    for (const batch of batches) {
+      // eslint-disable-next-line no-await-in-loop
+      const found = await payoutProvider.fetchByIdempotencyKey({
+        idempotencyKey: batch.idempotencyKey,
+        amountPaise: batch.netPaise,
+      });
+
+      if (!found.found) { out.stillUnknown += 1; continue; }
+
+      if (found.status === 'processed') {
+        // eslint-disable-next-line no-await-in-loop
+        await this.markPaid({ batch, utr: found.utr });
+        out.resolvedPaid += 1;
+      } else if (found.status === 'failed') {
+        // eslint-disable-next-line no-await-in-loop
+        await this.markFailed({ batch, reason: found.error || 'provider reported failure' });
+        out.resolvedFailed += 1;
+      } else if (found.status === 'reversed') {
+        // eslint-disable-next-line no-await-in-loop
+        await this.markPaid({ batch, utr: found.utr });
+        // eslint-disable-next-line no-await-in-loop
+        await this.markReversed({ batch, reason: 'provider reported reversal' });
+        out.resolvedReversed += 1;
+      } else {
+        out.stillUnknown += 1;
+      }
+    }
+
+    return out;
+  }
+
+  /**
+   * Ingest a PSP settlement report and post `psp_settled` journals, moving
+   * money from `gateway_clearing` into `bank`. This is what closes eligibility
+   * gate 2 — until an order's cash is genuinely in our account, paying the
+   * vendor for it is lending them our own money.
+   *
+   * @param {Array} rows [{ orderId | orderNumber, amount|amountPaise, settledAt, utr }]
+   */
+  async ingestPspSettlements({ rows = [], reference = null }) {
+    const out = { rows: rows.length, posted: 0, skipped: 0, unmatched: [] };
+
+    for (const row of rows) {
+      const q = row.orderId ? { _id: toId(row.orderId) } : { orderNumber: row.orderNumber };
+      // eslint-disable-next-line no-await-in-loop
+      const order = await Order.findOne(q).select('_id orderNumber tenantId totalAmount').lean();
+      if (!order) { out.unmatched.push(row.orderNumber || String(row.orderId)); continue; }
+
+      const amountPaise = row.amountPaise ?? toPaise(row.amount ?? order.totalAmount);
+      // eslint-disable-next-line no-await-in-loop
+      const res = await ledgerService.post({
+        kind: LEDGER_JOURNAL_KIND.PSP_SETTLED,
+        idempotencyKey: `${LEDGER_JOURNAL_KIND.PSP_SETTLED}:order:${order._id}`,
+        lines: [
+          { accountCode: ledgerAccounts.bank(), debitPaise: amountPaise },
+          { accountCode: ledgerAccounts.gatewayClearing(), creditPaise: amountPaise },
+        ],
+        refType: 'order',
+        refId: order._id,
+        tenantId: order.tenantId,
+        occurredAt: row.settledAt ? new Date(row.settledAt) : new Date(),
+        meta: { orderNumber: order.orderNumber, utr: row.utr || null, reference },
+      });
+      if (res.created) out.posted += 1; else out.skipped += 1;
+    }
+
+    return out;
   }
 
   // -------------------------------------------------------------------------

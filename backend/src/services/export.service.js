@@ -18,6 +18,7 @@ import adminOrdersService from './adminOrders.service.js';
 import adminUsersService from './adminUsers.service.js';
 import analyticsService from './analytics.service.js';
 import gstrExportService from './gstrExport.service.js';
+import payoutService from './payout.service.js';
 import config from '../config/index.js';
 import { EXPORT_JOB_TYPE, EXPORT_JOB_STATUS } from '../constants/enums.js';
 
@@ -92,6 +93,18 @@ const TYPE_DEFS = {
     headers: [['deducteeName', 'Deductee Name'], ['deducteeGstin', 'Deductee GSTIN'], ['deducteePan', 'Deductee PAN'], ['invoiceCount', 'Invoices'], ['grossAmountPaid', 'Gross Amount'], ['tdsRatePct', 'TDS Rate %'], ['tdsAmount', 'TDS Amount'], ['section', 'Section'], ['rateNotification', 'Rate Source']],
     render: ({ tenantId, params }) => gstrExportService.tds194o({ tenantId, from: params.from, to: params.to }),
   },
+  // ---- Phase 6.3/M5: the vendor's line-item payout statement ----
+  // Vendors dispute payouts constantly; a per-line statement is the difference
+  // between a support ticket and a self-serve answer.
+  [EXPORT_JOB_TYPE.PAYOUT_STATEMENT]: {
+    label: 'payout-statement',
+    filename: 'payout-statement.csv',
+    headers: [['orderNumber', 'Order'], ['gross', 'Gross'], ['taxableValue', 'Taxable Value'], ['sellerGst', 'Your GST'], ['commissionRatePct', 'Commission %'], ['commission', 'Commission'], ['gstOnCommission', 'GST on Commission'], ['tcs', 'TCS'], ['tds', 'TDS'], ['netPayable', 'Net Payable'], ['isReversal', 'Reversal']],
+    render: async ({ params }) => {
+      const stmt = await payoutService.statement({ batchId: params.batchId });
+      return stmt.lines;
+    },
+  },
   [EXPORT_JOB_TYPE.SALES_REGISTER]: {
     label: 'sales-register',
     filename: 'sales-register.csv',
@@ -105,6 +118,7 @@ export function buildJobKey({ type, params = {} }) {
   const parts = [type];
   if (params.from || params.to) parts.push(params.from || 'all', params.to || 'all');
   if (params.hubId) parts.push(params.hubId);
+  if (params.batchId) parts.push(String(params.batchId)); // payout statements
   return parts.join(':');
 }
 

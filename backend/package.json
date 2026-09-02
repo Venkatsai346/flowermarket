@@ -16,12 +16,14 @@
     "smoke:order": "node scripts/smoke-order.test.js",
     "test:money": "node scripts/money.test.js",
     "test:invariants": "node scripts/invariants.test.js",
-    "test:unit": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/payout-calc.test.js && node scripts/invariants.test.js",
+    "test:unit": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/payout-calc.test.js && node scripts/payout-provider.test.js && node scripts/invariants.test.js",
     "smoke:ledger": "node scripts/smoke-ledger.test.js",
-    "smoke:all": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/payout-calc.test.js && node scripts/invariants.test.js && node scripts/smoke.test.js && node scripts/smoke-catalog.test.js && node scripts/smoke-order.test.js && node scripts/smoke-phase35.test.js && node scripts/smoke-admin.test.js && node scripts/smoke-ops.test.js && node scripts/smoke-marketplace.test.js && node scripts/smoke-media.test.js && node scripts/smoke-ledger.test.js && node scripts/smoke-gst.test.js",
+    "smoke:all": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/payout-calc.test.js && node scripts/payout-provider.test.js && node scripts/invariants.test.js && node scripts/smoke.test.js && node scripts/smoke-catalog.test.js && node scripts/smoke-order.test.js && node scripts/smoke-phase35.test.js && node scripts/smoke-admin.test.js && node scripts/smoke-ops.test.js && node scripts/smoke-marketplace.test.js && node scripts/smoke-media.test.js && node scripts/smoke-ledger.test.js && node scripts/smoke-gst.test.js && node scripts/smoke-payouts.test.js",
     "test:tax": "node scripts/tax-calc.test.js",
     "smoke:gst": "node scripts/smoke-gst.test.js",
-    "test:payout": "node scripts/payout-calc.test.js"
+    "test:payout": "node scripts/payout-calc.test.js",
+    "test:payout-provider": "node scripts/payout-provider.test.js",
+    "smoke:payouts": "node scripts/smoke-payouts.test.js"
   },
   "keywords": [
     "ecommerce",

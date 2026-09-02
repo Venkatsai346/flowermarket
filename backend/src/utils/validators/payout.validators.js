@@ -80,3 +80,15 @@ export const payoutPolicySchema = Joi.object({
   dualApprovalPaise: Joi.number().integer().min(0),
   maxBatchPaise: Joi.number().integer().min(0),
 });
+
+export const settlementIngestSchema = Joi.object({
+  reference: Joi.string().max(120).allow(null, ''),
+  rows: Joi.array().items(Joi.object({
+    orderId: objectId,
+    orderNumber: Joi.string().max(40),
+    amount: Joi.number().min(0),
+    amountPaise: Joi.number().integer().min(0),
+    settledAt: Joi.date().iso(),
+    utr: Joi.string().max(40).allow(null, ''),
+  }).or('orderId', 'orderNumber')).min(1).required(),
+});

@@ -7,6 +7,7 @@ import morgan from 'morgan';
 import config from './config/index.js';
 import apiRouter from './routes/index.js';
 import PaymentController from './controllers/payment.controller.js';
+import PayoutController from './controllers/payout.controller.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
@@ -43,6 +44,11 @@ export function createApp() {
   // so the body is never re-parsed.
   app.post('/api/v1/payments/webhook/razorpay', express.raw({ type: '*/*' }), PaymentController.webhookRazorpay);
   app.post('/api/v1/payments/webhook/mock', express.raw({ type: '*/*' }), PaymentController.webhookMock);
+
+  // Phase 6.3: payout provider webhook. Same rule as the payment webhooks —
+  // the HMAC is over the exact bytes, so this MUST be mounted before
+  // express.json() consumes the stream.
+  app.post('/api/v1/payouts/webhook', express.raw({ type: '*/*' }), PayoutController.webhook);
 
   app.use(express.json({ limit: config.limits.jsonBody }));
   app.use(express.urlencoded({ extended: true, limit: config.limits.jsonBody }));

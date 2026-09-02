@@ -695,6 +695,23 @@ DR gst_output_payable:{v}          the seller's own GST      900.00
 The seller's GST flows *to* the seller because the seller is the person who
 must deposit it; only TCS is withheld and deposited by the platform.
 
+**Disbursement (M5).** `payoutProvider` (console | mock | razorpayx | cashfree)
+returns **three** outcomes, not two: success, clean failure, and **ambiguous**
+(timeout / 5xx / socket reset). Every real double-payment incident starts with
+treating the third as the second, so `payout()` never throws on a transport
+error — it returns `{ ambiguous: true }`, the batch stays PROCESSING with
+`needsReconciliation`, and only `reconcileInFlight()` (asking the provider what
+actually happened, keyed on our own idempotency key) may resolve it.
+
+The ledger journal is posted **at submission**, because the liability is
+discharged the moment the instruction is accepted. A clean rejection or a bank
+reversal posts the exact mirror journal (`payout_reversed`) and releases the
+lines back to the eligible pool.
+
+`ingestPspSettlements()` posts `psp_settled` (gateway_clearing → bank), which is
+what closes eligibility gate 2. It is idempotent per order, so re-uploading the
+same settlement report is a no-op.
+
 **The state machine has one deliberate hole in it.** There is no
 `PROCESSING → QUEUED` edge. A batch handed to the provider may or may not have
 moved money, so it can only ever leave that state via reconciliation — never a

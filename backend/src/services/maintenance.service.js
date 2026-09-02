@@ -196,6 +196,14 @@ class MaintenanceService {
       out.payoutCycle = { error: err?.message || String(err) };
     }
 
+    // 5d. Phase 6.3/M5 — chase every batch stuck with the provider. This is
+    //     the ONLY exit from an ambiguous submission; nothing here retries.
+    try {
+      out.payoutReconciliation = await payoutService.reconcileInFlight({});
+    } catch (err) {
+      out.payoutReconciliation = { error: err?.message || String(err) };
+    }
+
     // 6. Phase 6.1 — LEDGER INTEGRITY. Two independent checks:
     //    a) trial balance: Σ debits === Σ credits across every entry. A failure
     //       means data was written outside ledgerService (post() makes an

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import payoutService from '../services/payout.service.js';
+import payoutProvider from '../services/payoutProvider.service.js';
 import VendorPayoutAccount from '../models/vendorPayoutAccount.model.js';
 import Vendor from '../models/vendor.model.js';
 import auditService from '../services/audit.service.js';
@@ -223,6 +224,59 @@ class PayoutController {
     const { scope, vendorId, ...payload } = req.body;
     const doc = await payoutService.upsertPolicy({ scope, vendorId, payload, actorId: req.auth.userId, req });
     res.status(200).json(success(doc, { message: 'Policy saved' }));
+  });
+
+  submit = asyncHandler(async (req, res) => {
+    const result = await payoutService.submit({ batchId: req.params.id, actorId: req.auth.userId, req });
+    const message = result.ambiguous
+      ? 'Submission outcome is UNKNOWN — the batch is left in processing for reconciliation and will NOT be retried'
+      : (result.failed ? `Provider rejected the payout: ${result.error}` : 'Payout submitted');
+    res.status(result.failed ? 409 : 202).json(success(result.batch, { message }));
+  });
+
+  reconcile = asyncHandler(async (req, res) => {
+    const result = await payoutService.reconcileInFlight({ olderThanMinutes: Number(req.body?.olderThanMinutes) || null });
+    res.status(200).json(success(result, { message: 'Reconciliation sweep complete' }));
+  });
+
+  ingestSettlements = asyncHandler(async (req, res) => {
+    const result = await payoutService.ingestPspSettlements({
+      rows: req.body.rows || [], reference: req.body.reference || null,
+    });
+    res.status(200).json(success(result, { message: 'Settlement report ingested' }));
+  });
+
+  /**
+   * Provider webhook. Mounted with express.raw BEFORE any JSON parsing, because
+   * the HMAC is computed over the exact bytes. An unverified payout webhook
+   * would let anyone mark a batch as paid, so a bad signature is a hard 401.
+   */
+  webhook = asyncHandler(async (req, res) => {
+    const signature = req.get('x-razorpay-signature') || req.get('x-webhook-signature') || req.get('x-cf-signature');
+    const rawBody = req.body; // Buffer
+
+    const verified = payoutProvider.verifyWebhook({ rawBody, signature });
+    if (!verified.ok) {
+      return res.status(401).json({ success: false, message: 'Invalid webhook signature', code: 'BAD_WEBHOOK_SIGNATURE', details: verified.error || null });
+    }
+
+    let body = {};
+    try { body = JSON.parse(Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody || '{}')); } catch { body = {}; }
+
+    const parsed = payoutProvider.parseWebhook(body);
+    if (!parsed.outcome) {
+      // acknowledge unknown events so the provider stops retrying them
+      return res.status(200).json(success({ ignored: true, event: parsed.event }, { message: 'Event ignored' }));
+    }
+
+    const result = await payoutService.applyProviderEvent({
+      idempotencyKey: parsed.idempotencyKey,
+      providerRef: parsed.providerRef,
+      outcome: parsed.outcome,
+      utr: parsed.utr,
+      failureReason: parsed.failureReason,
+    });
+    return res.status(200).json(success(result, { message: 'Webhook processed' }));
   });
 
   reviewKyc = asyncHandler(async (req, res) => {

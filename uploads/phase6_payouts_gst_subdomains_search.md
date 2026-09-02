@@ -1,7 +1,7 @@
 # Phase 6 — Money, Identity & Discovery
 
 > **Scope:** vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking
-> **Status:** IN PROGRESS — **6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 exports ✅ · M4 payout accrual ✅** · M5 disbursement next · **Owner:** platform team
+> **Status:** IN PROGRESS — **6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅ · M5 disbursement ✅** · M6 console next · **Owner:** platform team
 > **Builds on:** Phase 5 marketplace (`uploads/multi_tenant_marketplace.md`), Phase 3.5 pricing
 > policies (`uploads/tenant_charges_rider_endpoints_slot_forecasting_refund_fees.md`),
 > Phase 4b ops tooling (`uploads/ops_tooling_notifications_exports.md`)
@@ -52,8 +52,26 @@ independent tracks that can run in parallel from day one.
 | **M2 GST engine** | ✅ shipped | `utils/gst.js` (pure, 78 tests) · 4 new models + extended `TaxPolicy` · `tax.service` · `taxDocument.service` · `einvoiceProvider` · 15 routes · 10 smoke areas |
 | **M3 GST exports** | ✅ shipped | 7 renderers on the existing `ExportJob` machinery (12 export types total). **PDF still deferred** — it needs a new dependency and is presentation, not correctness |
 | **M4 payout accrual & cycles** | ✅ shipped | 6 models · pure `computeLineFinancials` (₹5279.10 asserted) · state machine · 2 eligibility gates · refund reversal · carry-forward · 22 routes · 47 tests |
-| M5 disbursement | ⬜ next | payoutProvider (razorpayx/cashfree) · webhooks · 3 reconciliation sweeps · statements as artifacts |
-| M6, P1–P2, S1–S3 | ⬜ | unchanged |
+| **M5 disbursement** | ✅ shipped | 4 provider adapters · **three-outcome contract** · HMAC webhook on the raw-body rail · reconcileInFlight · ingestPspSettlements · mirror-journal unwind · statements as ExportJob artifacts · 52 pure + 11 DB-backed areas |
+| M6 payout console (UI) | ⬜ next | vendor payouts + KYC wizard; platform approval queue, ledger explorer, reconciliation dashboard |
+| P1–P2 (subdomains + storefront), S1–S3 (search) | ⬜ | unchanged — both still independent of the money track |
+
+**M5 decisions worth recording**
+
+1. **A payout call has three outcomes, not two.** success / clean-failure /
+   **ambiguous**. The provider layer never throws on a transport error, because a thrown
+   error in a `try/catch` is indistinguishable from a rejection and invites a retry.
+   `{ ambiguous: true }` forces the caller to do the only safe thing: nothing.
+2. **The ledger posts at submission, not at settlement.** The liability is discharged when
+   the instruction is accepted; a rejection or reversal posts the exact mirror journal.
+   This keeps `vendor_payable` honest at every instant rather than only at rest.
+3. **`markReversed` returns the lines to the eligible pool, `markFailed` releases them
+   too — but only a failure is retryable.** A reversal means the destination is bad, so the
+   next cycle will re-attempt only after the vendor fixes their account (and the
+   fingerprint change re-arms the 24h freeze).
+4. **The mock provider is the test harness.** Outcomes keyed off the last two paise
+   (…13 rejected, …17 reversed, …99 ambiguous) mean every unhappy path is reachable in CI
+   with no credentials and no network.
 
 **M4 decisions worth recording**
 

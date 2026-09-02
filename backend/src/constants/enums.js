@@ -414,6 +414,7 @@ export const EXPORT_JOB_TYPE = Object.freeze({
   GSTR8_TCS: 'gstr8_tcs',
   TDS_194O: 'tds_194o',
   SALES_REGISTER: 'sales_register',
+  PAYOUT_STATEMENT: 'payout_statement',
 });
 
 export const EXPORT_JOB_STATUS = Object.freeze({
