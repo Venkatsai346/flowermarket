@@ -15,6 +15,8 @@ import policiesRoutes from './policies.routes.js';
 import adminRoutes from './admin.routes.js';
 import marketplaceRoutes from './marketplace.routes.js';
 import mediaRoutes from './media.routes.js';
+import taxRoutes from './tax.routes.js';
+import payoutRoutes from './payout.routes.js';
 
 /**
  * API v1 router.
@@ -53,5 +55,7 @@ apiRouter.use('/marketplace', marketplaceRoutes);
 
 // ---- Media uploads (images & videos) ----
 apiRouter.use('/media', mediaRoutes);
+apiRouter.use('/tax', taxRoutes);
+apiRouter.use('/payouts', payoutRoutes);
 
 export default apiRouter;

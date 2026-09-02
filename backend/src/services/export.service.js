@@ -17,6 +17,7 @@ import adminInventoryService from './adminInventory.service.js';
 import adminOrdersService from './adminOrders.service.js';
 import adminUsersService from './adminUsers.service.js';
 import analyticsService from './analytics.service.js';
+import gstrExportService from './gstrExport.service.js';
 import config from '../config/index.js';
 import { EXPORT_JOB_TYPE, EXPORT_JOB_STATUS } from '../constants/enums.js';
 
@@ -50,6 +51,52 @@ const TYPE_DEFS = {
     filename: 'users.csv',
     headers: [['id', 'ID'], ['role', 'Role'], ['status', 'Status'], ['name', 'Name'], ['phone', 'Phone'], ['email', 'Email'], ['createdAt', 'Created']],
     render: ({ tenantId, params }) => adminUsersService.csv({ tenantId, query: params.query || {} }),
+  },
+
+  // ---- Phase 6.2/M3: GST filing working papers -------------------------
+  // Each renderer returns plain rows; the machinery above (idempotent jobKey,
+  // worker, artifact store, download route) is reused unchanged.
+  [EXPORT_JOB_TYPE.GSTR1_B2B]: {
+    label: 'gstr1-b2b',
+    filename: 'gstr1-b2b.csv',
+    headers: [['recipientGstin', 'GSTIN/UIN of Recipient'], ['recipientName', 'Receiver Name'], ['invoiceNumber', 'Invoice Number'], ['invoiceDate', 'Invoice date'], ['invoiceValue', 'Invoice Value'], ['placeOfSupply', 'Place Of Supply'], ['reverseCharge', 'Reverse Charge'], ['invoiceType', 'Invoice Type'], ['ecommerceGstin', 'E-Commerce GSTIN'], ['rate', 'Rate'], ['taxableValue', 'Taxable Value'], ['cessAmount', 'Cess Amount'], ['irn', 'IRN']],
+    render: ({ tenantId, params }) => gstrExportService.gstr1B2b({ tenantId, from: params.from, to: params.to }),
+  },
+  [EXPORT_JOB_TYPE.GSTR1_B2CS]: {
+    label: 'gstr1-b2cs',
+    filename: 'gstr1-b2cs.csv',
+    headers: [['type', 'Type'], ['placeOfSupply', 'Place Of Supply'], ['rate', 'Rate'], ['taxableValue', 'Taxable Value'], ['cessAmount', 'Cess Amount'], ['cgst', 'Central Tax'], ['sgst', 'State/UT Tax'], ['igst', 'Integrated Tax'], ['invoices', 'Invoice Count']],
+    render: ({ tenantId, params }) => gstrExportService.gstr1B2cs({ tenantId, from: params.from, to: params.to }),
+  },
+  [EXPORT_JOB_TYPE.GSTR1_HSN]: {
+    label: 'gstr1-hsn',
+    filename: 'gstr1-hsn.csv',
+    headers: [['hsn', 'HSN'], ['description', 'Description'], ['uqc', 'UQC'], ['rate', 'Rate'], ['natureOfSupply', 'Nature of Supply'], ['totalQuantity', 'Total Quantity'], ['totalValue', 'Total Value'], ['taxableValue', 'Taxable Value'], ['integratedTax', 'Integrated Tax Amount'], ['centralTax', 'Central Tax Amount'], ['stateTax', 'State/UT Tax Amount'], ['cess', 'Cess Amount']],
+    render: ({ tenantId, params }) => gstrExportService.gstr1Hsn({ tenantId, from: params.from, to: params.to }),
+  },
+  [EXPORT_JOB_TYPE.GSTR1_CDNR]: {
+    label: 'gstr1-cdnr',
+    filename: 'gstr1-cdnr.csv',
+    headers: [['recipientGstin', 'GSTIN/UIN of Recipient'], ['recipientName', 'Receiver Name'], ['noteNumber', 'Note Number'], ['noteDate', 'Note Date'], ['noteType', 'Note Type'], ['originalInvoiceNumber', 'Invoice/Advance Receipt Number'], ['placeOfSupply', 'Place Of Supply'], ['reverseCharge', 'Reverse Charge'], ['noteValue', 'Note Value'], ['rate', 'Rate'], ['taxableValue', 'Taxable Value'], ['cessAmount', 'Cess Amount'], ['reason', 'Reason']],
+    render: ({ tenantId, params }) => gstrExportService.gstr1Cdnr({ tenantId, from: params.from, to: params.to }),
+  },
+  [EXPORT_JOB_TYPE.GSTR8_TCS]: {
+    label: 'gstr8-tcs',
+    filename: 'gstr8-tcs.csv',
+    headers: [['supplierGstin', 'GSTIN of Supplier'], ['supplierName', 'Supplier Name'], ['grossValueOfSupplies', 'Gross Value of Supplies'], ['valueOfSuppliesReturned', 'Value of Supplies Returned'], ['netAmountLiableToTcs', 'Net Amount Liable to TCS'], ['tcsRatePct', 'TCS Rate %'], ['integratedTaxTcs', 'Integrated Tax'], ['centralTaxTcs', 'Central Tax'], ['stateTaxTcs', 'State/UT Tax'], ['totalTcs', 'Total TCS'], ['rateNotification', 'Rate Source']],
+    render: ({ tenantId, params }) => gstrExportService.gstr8Tcs({ tenantId, from: params.from, to: params.to }),
+  },
+  [EXPORT_JOB_TYPE.TDS_194O]: {
+    label: 'tds-194o',
+    filename: 'tds-194o.csv',
+    headers: [['deducteeName', 'Deductee Name'], ['deducteeGstin', 'Deductee GSTIN'], ['deducteePan', 'Deductee PAN'], ['invoiceCount', 'Invoices'], ['grossAmountPaid', 'Gross Amount'], ['tdsRatePct', 'TDS Rate %'], ['tdsAmount', 'TDS Amount'], ['section', 'Section'], ['rateNotification', 'Rate Source']],
+    render: ({ tenantId, params }) => gstrExportService.tds194o({ tenantId, from: params.from, to: params.to }),
+  },
+  [EXPORT_JOB_TYPE.SALES_REGISTER]: {
+    label: 'sales-register',
+    filename: 'sales-register.csv',
+    headers: [['docType', 'Document Type'], ['number', 'Number'], ['date', 'Date'], ['orderNumber', 'Order'], ['originalNumber', 'Original Document'], ['supplierName', 'Supplier'], ['supplierGstin', 'Supplier GSTIN'], ['recipientName', 'Recipient'], ['recipientGstin', 'Recipient GSTIN'], ['placeOfSupply', 'Place Of Supply'], ['taxableValue', 'Taxable Value'], ['cgst', 'CGST'], ['sgst', 'SGST'], ['igst', 'IGST'], ['cess', 'Cess'], ['roundOff', 'Round Off'], ['total', 'Total'], ['irn', 'IRN'], ['status', 'Status']],
+    render: ({ tenantId, params }) => gstrExportService.salesRegister({ tenantId, from: params.from, to: params.to }),
   },
 };
 

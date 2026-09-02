@@ -103,9 +103,53 @@ const config = {
     limits: {
       maxImageBytes: Number(process.env.MEDIA_MAX_IMAGE_BYTES) || 10 * 1024 * 1024, // 10 MB
       maxVideoBytes: Number(process.env.MEDIA_MAX_VIDEO_BYTES) || 250 * 1024 * 1024, // 250 MB
+      // Phase 6.0: per-tenant storage ceiling (0 = unlimited). Checked at
+      // presign time against the sum of READY+PENDING assets for the tenant.
+      tenantQuotaBytes: Number(process.env.MEDIA_TENANT_QUOTA_BYTES) || 5 * 1024 * 1024 * 1024, // 5 GB
       imageTypes: ['jpeg', 'jpg', 'png', 'webp', 'gif', 'avif'],
       videoTypes: ['mp4', 'webm', 'mov', 'quicktime'],
     },
+  },
+
+  // ---- Phase 6.2: GST / tax invoicing ----
+  tax: {
+    /**
+     * Are catalogue prices tax-INCLUSIVE (Indian MRP convention)?
+     * The engine supports both; this flag is what a future checkout migration
+     * will switch on. The INVOICE layer reconstructs from persisted order
+     * values either way, so flipping this does not rewrite history.
+     */
+    pricesInclusive: process.env.TAX_PRICES_INCLUSIVE !== 'false',
+    /** Fallback supplier state code when no TaxRegistration exists (37 = AP). */
+    defaultStateCode: process.env.TAX_DEFAULT_STATE_CODE || '37',
+    invoicePrefix: process.env.TAX_INVOICE_PREFIX || 'FM',
+    creditNotePrefix: process.env.TAX_CREDIT_NOTE_PREFIX || 'CN',
+    numberWidth: Number(process.env.TAX_NUMBER_WIDTH) || 6,
+    /** Financial year start month (India = April). */
+    fyStartMonth: Number(process.env.TAX_FY_START_MONTH) || 4,
+    einvoice: {
+      provider: process.env.EINVOICE_PROVIDER || 'console', // console | mock | gsp
+      baseUrl: process.env.EINVOICE_GSP_BASE_URL || null,
+      apiKey: process.env.EINVOICE_GSP_API_KEY || null,
+      apiSecret: process.env.EINVOICE_GSP_API_SECRET || null,
+    },
+  },
+
+  // ---- Phase 6.1: financial ledger ----
+  ledger: {
+    /**
+     * strict=true  → a failed ledger post fails the calling operation.
+     * strict=false → the failure is logged and left to the backfill sweep
+     *                (journals are idempotent, so re-posting is always safe).
+     * Default: strict in production, lenient elsewhere so a dev DB without a
+     * replica set never blocks checkout.
+     */
+    strict: process.env.LEDGER_STRICT
+      ? process.env.LEDGER_STRICT === 'true'
+      : env === 'production',
+    /** Force-disable transactions (useful against a standalone mongod). */
+    disableTransactions: process.env.LEDGER_DISABLE_TRANSACTIONS === 'true',
+    baseCurrency: process.env.LEDGER_BASE_CURRENCY || 'INR',
   },
 };
 

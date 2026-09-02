@@ -50,7 +50,29 @@ async function main() {
     (await import('../src/models/counter.model.js')).default.init(),
     // ---- Media uploads (images & videos) ----
     (await import('../src/models/mediaAsset.model.js')).default.init(),
+    // ---- Phase 6.1: financial ledger ----
+    (await import('../src/models/ledgerAccount.model.js')).default.init(),
+    (await import('../src/models/ledgerJournal.model.js')).default.init(),
+    (await import('../src/models/ledgerEntry.model.js')).default.init(),
+    (await import('../src/models/accountBalance.model.js')).default.init(),
+    // ---- Phase 6.2: GST / tax invoicing ----
+    (await import('../src/models/taxRegistration.model.js')).default.init(),
+    (await import('../src/models/statutoryRate.model.js')).default.init(),
+    (await import('../src/models/taxDocumentSeries.model.js')).default.init(),
+    (await import('../src/models/taxDocument.model.js')).default.init(),
+    // ---- Phase 6.3: vendor payouts ----
+    (await import('../src/models/payoutPolicy.model.js')).default.init(),
+    (await import('../src/models/vendorPayoutAccount.model.js')).default.init(),
+    (await import('../src/models/payoutLineItem.model.js')).default.init(),
+    (await import('../src/models/payoutBatch.model.js')).default.init(),
+    (await import('../src/models/payoutStatusHistory.model.js')).default.init(),
+    (await import('../src/models/payoutAdjustment.model.js')).default.init(),
   ]);
+
+  // ---- Phase 6.1: chart of accounts ----
+  await (await import('../src/services/ledger.service.js')).default.ensureChartOfAccounts();
+  // ---- Phase 6.2: statutory rate timeline ----
+  await (await import('../src/services/tax.service.js')).default.seedStatutoryRates();
 
   // ---- seed (full demo tenant: catalog, slots, Phase 3.5 policies, rider) ----
   const { runSeed } = await import('./seed-default-tenant.js');

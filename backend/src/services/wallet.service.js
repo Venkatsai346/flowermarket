@@ -2,6 +2,7 @@ import Wallet from '../models/wallet.model.js';
 import WalletTransaction from '../models/walletTransaction.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
+import { serializeList } from '../utils/serialize.js';
 import { WALLET_TXN_TYPE, WALLET_TXN_REASON } from '../constants/enums.js';
 
 /**

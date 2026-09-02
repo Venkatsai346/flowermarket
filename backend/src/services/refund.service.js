@@ -3,6 +3,8 @@ import Payment from '../models/payment.model.js';
 import Order from '../models/order.model.js';
 import walletService from './wallet.service.js';
 import paymentProvider from './paymentProvider.service.js';
+import ledgerPostingService from './ledgerPosting.service.js';
+import payoutService from './payout.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { roundMoney, moneySum } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
@@ -92,6 +94,25 @@ class RefundService {
 
       await txn.save();
       await this.syncPaymentRefundState({ tenantId, orderId, paymentId });
+
+      // ---- Phase 6.1: reverse a proportional slice of the sale journal ----
+      //      We reverse what the sale actually credited (vendor payable,
+      //      commission, GST) rather than recomputing it, so a refund can never
+      //      touch an account the order didn't, nor exceed what was captured.
+      //      Orders predating the ledger have no sale journal — that is not an
+      //      error, the backfill sweep posts them and the reversal follows.
+      await ledgerPostingService.safePost('refund_issued', () =>
+        ledgerPostingService.postRefund({ refundTransaction: txn })
+      );
+
+      // ---- Phase 6.3: the vendor no longer earned this ----
+      //      Unpaid lines are simply cancelled; already-paid ones produce a
+      //      NEGATIVE line that offsets the vendor's next cycle (and may push
+      //      it negative, which the carry-forward rule then handles).
+      await ledgerPostingService.safePost('payout_reversal', () =>
+        payoutService.reverseForRefund({ refundTransaction: txn })
+      );
+
       return txn;
     } catch (err) {
       txn.status = REFUND_TRANSACTION_STATUS.FAILED;

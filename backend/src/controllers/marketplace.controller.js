@@ -180,6 +180,16 @@ class MarketplaceController {
     res.status(200).json(success(result, { message: 'Billing cycle complete (idempotent per period)' }));
   });
 
+  /**
+   * GET /marketplace/admin/billing/invoices/:id — platform-scoped invoice
+   * detail (no tenant filter; super_admin sees every tenant's invoice).
+   * The shared client already called this; the route was missing.
+   */
+  adminInvoiceDetail = asyncHandler(async (req, res) => {
+    const invoice = await billingService.invoiceDetail({ invoiceId: req.params.id });
+    res.status(200).json(success(invoice, { message: 'Invoice fetched' }));
+  });
+
   payInvoice = asyncHandler(async (req, res) => {
     const result = await billingService.payInvoice({ invoiceId: req.params.id, actorId: req.auth.userId, req });
     res.status(200).json(success(result, { message: result.alreadyPaid ? 'Invoice already paid' : 'Invoice paid' }));

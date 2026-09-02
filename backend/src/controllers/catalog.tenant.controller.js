@@ -5,6 +5,7 @@ import inventoryService from '../services/inventory.service.js';
 import bulkImportService from '../services/bulkImport.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
+import { badRequest } from '../utils/ApiError.js';
 
 /**
  * CatalogTenantController — tenant-portal endpoints.
@@ -131,12 +132,10 @@ class CatalogTenantController {
   bulkUpload = asyncHandler(async (req, res) => {
     const kind = req.params.kind; // 'price' | 'stock'
     if (!['price', 'stock'].includes(kind)) {
-      const { badRequest } = await import('../utils/ApiError.js');
       throw badRequest('kind must be price or stock', 'INVALID_KIND');
     }
     const rows = (await import('../utils/catalog/csv.js')).parseCSV(req.body?.csv || req.body?.file || '');
     if (rows.length === 0) {
-      const { badRequest } = await import('../utils/ApiError.js');
       throw badRequest('CSV is empty or malformed', 'EMPTY_CSV');
     }
     const job = bulkImportService.createJob({ kind, rows, tenantId: req.tenantId, actorId: req.auth.userId });

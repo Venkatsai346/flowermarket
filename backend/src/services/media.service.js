@@ -72,10 +72,34 @@ function buildKey({ tenantId, purpose, ext }) {
 }
 
 class MediaService {
+  /**
+   * Per-tenant storage quota (Phase 6.0). Counts PENDING + READY bytes so a
+   * flood of presigns that are never confirmed still consumes quota until they
+   * are swept. 0 = unlimited.
+   */
+  async assertQuota({ tenantId, incomingBytes }) {
+    const quota = config.storage.limits.tenantQuotaBytes;
+    if (!quota) return { used: 0, quota: 0 };
+    const [agg] = await MediaAsset.aggregate([
+      { $match: { tenantId, status: { $in: [MEDIA_STATUS.PENDING, MEDIA_STATUS.READY] } } },
+      { $group: { _id: null, bytes: { $sum: '$sizeBytes' } } },
+    ]);
+    const used = agg?.bytes || 0;
+    if (used + incomingBytes > quota) {
+      throw badRequest(
+        `Storage quota exceeded (${(quota / (1024 * 1024 * 1024)).toFixed(1)} GB). Delete unused media or contact support.`,
+        'MEDIA_QUOTA_EXCEEDED',
+        { usedBytes: used, quotaBytes: quota, incomingBytes }
+      );
+    }
+    return { used, quota };
+  }
+
   /** Sign an upload + register the pending asset. */
   async presign({ userId, tenantId, filename, contentType, size, purpose }) {
     if (!purposeAllowed(purpose)) throw badRequest(`Unsupported purpose: ${purpose}`, 'BAD_MEDIA_PURPOSE');
     const { type, ext } = validateUpload({ filename, contentType, size, purpose });
+    await this.assertQuota({ tenantId, incomingBytes: size });
     const key = buildKey({ tenantId, purpose, ext });
     const expiresIn = config.storage.presignExpirySeconds;
 

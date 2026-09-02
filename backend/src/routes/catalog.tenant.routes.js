@@ -1,7 +1,9 @@
 import { Router } from 'express';
 import CatalogTenantController from '../controllers/catalog.tenant.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
+import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
+import { USER_ROLES } from '../constants/enums.js';
 import {
   masterProposeSchema,
   listingCreateSchema,
@@ -16,10 +18,14 @@ import {
 const router = Router();
 
 /**
- * /catalog/tenant — tenant-portal catalog management (any authenticated user
- * of the tenant; role gating for "manager" is a future RBAC refinement).
+ * /catalog/tenant — tenant-portal catalog management.
+ *
+ * RBAC (Phase 6.0): these routes write PRICE, STOCK and LISTING STATUS, so they
+ * are restricted to the roles that may run a store's catalog. Previously the
+ * router only ran `authenticate`, which meant any authenticated user of the
+ * tenant — including a plain `customer` — could change prices.
  */
-router.use(authenticate);
+router.use(authenticate, authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN, USER_ROLES.VENDOR));
 
 // ---- propose a new global SKU (goes to admin review) ----
 router.post('/masters/propose', validate(masterProposeSchema), CatalogTenantController.proposeMaster);

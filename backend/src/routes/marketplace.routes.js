@@ -110,6 +110,7 @@ router.patch('/admin/plans/:id', validate(planUpdateSchema), MarketplaceControll
 // billing
 router.get('/admin/billing/invoices', validate(invoiceListQuerySchema, 'query'), MarketplaceController.adminInvoices);
 router.post('/admin/billing/cycle', validate(billingCycleSchema), MarketplaceController.runBillingCycle);
+router.get('/admin/billing/invoices/:id', MarketplaceController.adminInvoiceDetail);
 router.post('/admin/billing/invoices/:id/pay', MarketplaceController.payInvoice);
 router.post('/admin/billing/invoices/:id/void', MarketplaceController.voidInvoice);
 router.post('/admin/billing/overdue-sweep', MarketplaceController.overdueSweep);

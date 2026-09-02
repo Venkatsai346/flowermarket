@@ -264,9 +264,117 @@ auditable invoices, and the platform sees across all tenants.
   uploaded image → auth/ext guards); `vite build` clean.
 - Plan: `uploads/media_upload.md`.
 
-## 🟡 Phase 6 — ideas (not planned yet)
+## 🟠 Phase 6 — Money, Identity & Discovery (IN PROGRESS — 6.0 ✅ · 6.1 ✅ · 6.2 ✅ · M3 ✅ · M4 ✅)
 
-- Vendor payouts (real disbursement), GST invoicing, subdomain routing, search ranking
+Vendor payouts (real disbursement) · GST invoicing · subdomain routing · search ranking.
+Full blueprint: **`uploads/phase6_payouts_gst_subdomains_search.md`**.
+
+Ordering is forced by the money: payouts are computed from tax-correct invoice lines, and both
+are computed from values that must never drift — so the phase runs
+**pre-flight → money core → GST → payouts**, with subdomains and search as two independent
+parallel tracks.
+
+- **✅ 6.0 Pre-flight (SHIPPED)** — fixed the latent 500 in `wallet.service.ledger()`
+  (`serializeList` used but never imported), closed the `/catalog/tenant/*` RBAC hole (20
+  price/stock routes were `authenticate`-only, so a `customer` token could change prices —
+  now `authorize(ADMIN, SUPER_ADMIN, VENDOR)`), gated `/media` writes to the same roles and
+  added a per-tenant storage quota (`MEDIA_TENANT_QUOTA_BYTES`, default 5 GB, enforced at
+  presign). Two corrections to the plan's assumptions, both found while executing:
+  `catalog.tenant.controller` was a **false positive** (it uses a dynamic
+  `await import('../utils/ApiError.js')`; tidied to a static import anyway), and a **new,
+  worse defect** surfaced — 14 audit action strings (`invoice_generated`, `invoice_paid`,
+  `invoice_void`, `plan_change`, `subscribe`, `nightly`, all five rider actions…) were
+  missing from the `AUDIT_ACTION` enum, so Mongoose rejected the write and every call site's
+  `.catch(() => {})` swallowed it: **the entire billing audit trail was silently discarded.**
+  Enum extended to 39 values and the whole class of bug is now a CI gate.
+  Mongo-as-replica-set remains an infra task (`LEDGER_DISABLE_TRANSACTIONS` documents the
+  fallback; the service probes the server at boot and logs which mode it is in).
+- **✅ 6.1 Money core (SHIPPED)** — integer-**paise** arithmetic (`toPaise`, `fromPaise`,
+  `sumPaise`, `applyBps`), `allocatePaise()` largest-remainder splitting (replaces the biased
+  "last line absorbs the rounding") and `splitTaxPaise()` making `CGST + SGST === tax`
+  structurally impossible to violate. Full **double-entry ledger**: `ledgeraccounts`,
+  `ledgerjournals` (balanced-or-nothing, unique `idempotencyKey`, immutable, `reversedPaise`
+  cap), `ledgerentries` (append-only source of truth), `accountbalances` (materialized view
+  via atomic `$inc`, recomputable). `ledgerPosting.service` translates business events:
+  `sale_captured` on order CONFIRMED and `refund_issued` as a **proportional reversal of the
+  original sale journal** — a refund can never touch an account the order didn't, nor exceed
+  what was captured. Transactions are used when the deployment is a replica set (probed once);
+  otherwise journal-first + `verifyBalances({repair:true})` closes the crash window. Wired
+  into the nightly pipeline: per-tenant `backfillSales()` (idempotent, so a non-strict post
+  failure self-heals) and platform-wide `trialBalance()` + drift alarm.
+  Verified: `scripts/money.test.js` **56/56** (incl. a 10 000-case allocation fuzz and an
+  exhaustive CGST/SGST proof) and `scripts/invariants.test.js` **6/6**, both DB-free and
+  green; `scripts/smoke-ledger.test.js` covers 10 DB-backed scenarios (idempotent replay,
+  8-way concurrent race, over-reversal guard, injected-drift detection + repair, backfill)
+  and runs against `MONGODB_URI` — it skips loudly rather than failing when no Mongo is
+  reachable.
+- **✅ 6.2 GST invoicing (SHIPPED)** — pure engine in `utils/gst.js` (inclusive/exclusive
+  modes, CGST/SGST/IGST by place of supply, nil-rated vs exempt, HSN summary, s.170 round-off,
+  GSTIN **checksum** validation, 36 state codes with alias resolution, FY labelling) proven by
+  `scripts/tax-calc.test.js` **78/78** including two 20 000-case fuzz runs. Persistence:
+  `TaxRegistration`, effective-dated `TaxPolicy` (`rateBps`, `natureOfSupply`, `cessBps`),
+  `StatutoryRate` (TCS/TDS as dated data with notification refs), `TaxDocumentSeries` and an
+  immutable `TaxDocument` carrying both invoices and credit notes. `taxDocument.service`
+  issues **one invoice per selling entity** (multi-vendor orders produce several), reconstructs
+  tax from what was actually charged rather than today's rate table, credits refunds
+  proportionally against the original document, keeps numbering gapless per FY, and registers
+  IRNs through an `einvoiceProvider` abstraction (console/mock/gsp) with a nightly retry queue.
+  15 new routes under `/tax`, split so that **rate policy is super_admin-only** — a store must
+  never pick its own GST slab. `scripts/smoke-gst.test.js` covers 10 DB-backed areas (25-way
+  concurrent numbering, FY rollover, idempotency, immutability, cancellation, unresolvable
+  place of supply, IRN lifecycle).
+  Original plan text: **6.2 GST invoicing (2.5 w)** — the current engine adds tax *on top* of the price and never
+  splits it; India prices are MRP-**inclusive** and require CGST/SGST vs IGST by place of
+  supply. Adds effective-dated rate data (`rateBps`, `natureOfSupply`, HSN), `TaxRegistration`
+  (GSTIN per tenant/vendor), immutable `TaxInvoice` + `CreditNote` with gapless per-FY
+  numbering, PDF through the existing media pipeline, e-invoice/IRN behind a provider
+  abstraction, TCS u/s 52 + TDS u/s 194-O as data rows, and GSTR-1/GSTR-8/26Q exports reusing
+  the Phase-4b `ExportJob` machinery. Fresh flowers are nil-rated and pots/tools are not, so
+  multi-rate invoices with an HSN summary are the norm, not the exception.
+- **✅ M3 GST filing exports (SHIPPED)** — seven new renderers plugged into the existing
+  Phase-4b `ExportJob` machinery (no new export infrastructure): `gstr1_b2b` (invoice-wise,
+  split by rate), `gstr1_b2cs` (consolidated by place of supply × rate), `gstr1_hsn`,
+  `gstr1_cdnr` (credit notes against originals), `gstr8_tcs` (per-supplier TCS with the rate
+  resolved from `statutoryrates` for the period, intra/inter split), `tds_194o` and a full
+  `sales_register`. Computed from ISSUED documents only, never drafts or cancelled ones.
+  These are working papers for an accountant, not a filing integration — stated plainly in
+  the service header.
+- **✅ M4 Payout accrual & cycles (SHIPPED)** — `computeLineFinancials()` is pure, so the
+  blueprint's worked example (₹5900 → **₹5279.10**) is asserted to the paisa with no
+  database, alongside a 20 000-case fuzz proving `net + commission + gstOnCommission + tcs +
+  tds === gross` always. Six models (policy, payout account, line item, batch, status
+  history, adjustment), an explicit batch state machine whose **missing** `processing →
+  queued` edge is the whole safety design, two eligibility gates (return window + PSP cash),
+  refund reversal that cancels unpaid lines and claws back paid ones, negative-balance
+  carry-forward, distinct-approver dual approval, a 24h payout freeze on any bank-detail
+  change, and the `payout_initiated` journal that drains exactly what `sale_captured`
+  credited. 22 routes under `/payouts`, vendor and platform surfaces hard-separated.
+  `scripts/payout-calc.test.js` **47/47**.
+- **6.3 Vendor payouts — remaining (M5): disbursement providers (razorpayx/cashfree),
+  webhooks, the three reconciliation sweeps, payout statements as artifacts.** Original plan
+  text: **(2.5 w)** — money moves only when **both** gates open: the return window
+  has closed *and* the PSP has actually settled. `PayoutLineItem` eligibility ledger →
+  `PayoutBatch` with an explicit state machine, maker-checker approval, KYC + penny-drop gate,
+  24 h freeze on bank-detail change, `payoutProvider` abstraction (console/mock/razorpayx/
+  cashfree) with **doubled idempotency** and never-blind-retry, plus three reconciliation
+  sweeps and a line-item payout statement per batch.
+- **6.4 Subdomain routing (1 w, parallel)** — `{slug}.flowermarket.in` + verified custom
+  domains resolve the tenant from `Host` with an LRU cache; the `x-tenant-id` override is
+  **tightened** to super_admin/dev only (today any client can name any tenant and only the
+  token stops them); unknown host fails closed rather than falling back to the default tenant.
+  Unlocks `apps/storefront`, the first customer-facing surface.
+- **6.5 Search ranking (2 w, parallel)** — today's `$regex` `$or` scan (whose `relevance` sort
+  is alphabetical) becomes a `searchProvider` abstraction (mongo → atlas/opensearch) fed by the
+  **CatalogEvent outbox that already exists**, with a real scoring function, ranking profiles as
+  editable data + A/B, synonyms (gulab/rose), typo tolerance, facets, autocomplete, a sampled
+  query log, and an **NDCG@10 gate** so a ranking change can't ship a regression.
+
+Critical path ≈ 7 weeks; ≈ 8 weeks with the parallel tracks staffed.
+
+## 🟡 Phase 7 — ideas (not planned yet)
+
+- Multi-currency / international, e-way bills, vendor credit lines, learning-to-rank
+  (the Phase-6 query log is its training data), buyer-side ITC portal, real-time settlement
 
 ## How the React Native app consumes this (suggested mapping)
 

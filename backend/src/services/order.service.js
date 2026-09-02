@@ -14,6 +14,8 @@ import pricingPolicyService from './pricingPolicy.service.js';
 import slotForecastingService from './slotForecasting.service.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
+import ledgerPostingService from './ledgerPosting.service.js';
+import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
 import { roundMoney, moneySum } from '../utils/money.js';
@@ -163,6 +165,25 @@ class OrderService {
     if (order.cartId) {
       await cartService.markCheckedOut({ cartId: order.cartId, orderId: order._id });
     }
+
+    // ---- Phase 6.1: recognise the money in the double-entry ledger ----
+    //      DR gateway_clearing / CR vendor+store payable, commission, GST.
+    //      Idempotent on the order id, so a webhook replay posts nothing new.
+    //      Never blocks confirmation in non-strict mode: the order is already
+    //      paid and stocked, and `ledgerPosting.backfillSales()` re-posts
+    //      exactly (see services/ledgerPosting.service.js header).
+    await ledgerPostingService.safePost('sale_captured', () =>
+      ledgerPostingService.postSaleCaptured({ order, postedBy: userId || order.userId })
+    );
+
+    // ---- Phase 6.3: accrue the vendors' entitlement ----
+    //      Creates one PayoutLineItem per VENDOR item with every deduction
+    //      frozen at today's rates. Nothing becomes payable until the return
+    //      window closes — accrual only records what was earned. Idempotent on
+    //      orderItemId, and non-blocking for the same reason the ledger post is.
+    await ledgerPostingService.safePost('payout_accrual', () =>
+      payoutService.accrueForOrder({ orderId: order._id, actorId: userId || order.userId })
+    );
 
     await auditService.record({
       action: 'create', entityType: 'order', entityId: order._id,

@@ -13,7 +13,15 @@
     "seed": "node scripts/seed-default-tenant.js",
     "smoke": "node scripts/smoke.test.js",
     "smoke:catalog": "node scripts/smoke-catalog.test.js",
-    "smoke:order": "node scripts/smoke-order.test.js"
+    "smoke:order": "node scripts/smoke-order.test.js",
+    "test:money": "node scripts/money.test.js",
+    "test:invariants": "node scripts/invariants.test.js",
+    "test:unit": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/payout-calc.test.js && node scripts/invariants.test.js",
+    "smoke:ledger": "node scripts/smoke-ledger.test.js",
+    "smoke:all": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/payout-calc.test.js && node scripts/invariants.test.js && node scripts/smoke.test.js && node scripts/smoke-catalog.test.js && node scripts/smoke-order.test.js && node scripts/smoke-phase35.test.js && node scripts/smoke-admin.test.js && node scripts/smoke-ops.test.js && node scripts/smoke-marketplace.test.js && node scripts/smoke-media.test.js && node scripts/smoke-ledger.test.js && node scripts/smoke-gst.test.js",
+    "test:tax": "node scripts/tax-calc.test.js",
+    "smoke:gst": "node scripts/smoke-gst.test.js",
+    "test:payout": "node scripts/payout-calc.test.js"
   },
   "keywords": [
     "ecommerce",

@@ -75,3 +75,23 @@ export { default as VendorApplication } from './vendorApplication.model.js';
 export { default as PlatformDaily } from './platformDaily.model.js';
 export { default as Counter } from './counter.model.js';
 export { default as MediaAsset } from './mediaAsset.model.js';
+
+// ---- Phase 6.1: financial ledger (double-entry) ----
+export { default as LedgerAccount } from './ledgerAccount.model.js';
+export { default as LedgerJournal } from './ledgerJournal.model.js';
+export { default as LedgerEntry } from './ledgerEntry.model.js';
+export { default as AccountBalance } from './accountBalance.model.js';
+
+// ---- Phase 6.2: GST / tax invoicing ----
+export { default as TaxRegistration } from './taxRegistration.model.js';
+export { default as StatutoryRate } from './statutoryRate.model.js';
+export { default as TaxDocumentSeries } from './taxDocumentSeries.model.js';
+export { default as TaxDocument } from './taxDocument.model.js';
+
+// ---- Phase 6.3: vendor payouts ----
+export { default as PayoutPolicy } from './payoutPolicy.model.js';
+export { default as VendorPayoutAccount } from './vendorPayoutAccount.model.js';
+export { default as PayoutLineItem } from './payoutLineItem.model.js';
+export { default as PayoutBatch } from './payoutBatch.model.js';
+export { default as PayoutStatusHistory } from './payoutStatusHistory.model.js';
+export { default as PayoutAdjustment } from './payoutAdjustment.model.js';

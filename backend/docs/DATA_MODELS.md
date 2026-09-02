@@ -519,6 +519,196 @@ nightly marketplace pass; dashboard reads it when present, else live-computes.
 `orderitems.vendorId` snapshotted at checkout from the listing's master → vendor
 GMV/orders computable with no joins; `productmasters.searchText`/indexes unchanged.
 
+## 11. Phase 6.1 — financial ledger (blueprint: `phase6_payouts_gst_subdomains_search.md`)
+
+Double-entry general ledger. Introduced because vendor payouts and GST invoicing
+both need a provable answer to "who is owed what", and summing order rows on
+demand is how marketplaces pay twice.
+
+| Collection | Purpose | Key invariants |
+| --- | --- | --- |
+| `ledgeraccounts` | chart of accounts | `code` unique; `type` fixes the natural balance side; scoped accounts (`vendor_payable:{id}`) created lazily on first post |
+| `ledgerjournals` | one balanced financial event | `Σ debitPaise === Σ creditPaise` or nothing is written; `idempotencyKey` unique; **never updated or deleted** — corrections are reversing journals; `reversedPaise` caps partial reversals |
+| `ledgerentries` | flattened journal lines | append-only; the **source of truth** for balances; indexed `accountCode + occurredAt` for statements |
+| `accountbalances` | materialized running totals | a **derived view**, updated with atomic `$inc`; recomputable at any time by `ledgerService.verifyBalances()` |
+
+**Money representation.** All ledger amounts are integer **paise** (`…Paise`
+fields). Legacy rupee floats remain on orders/invoices and are converted at the
+boundary with `toPaise()`. Splits use `allocatePaise()` (largest-remainder), so
+a distribution always sums exactly to its total — the arithmetic gate lives in
+`scripts/money.test.js`.
+
+**Chart of accounts**
+
+| Code | Type | Meaning |
+| --- | --- | --- |
+| `gateway_clearing` | asset | captured by the PSP, not yet settled to us |
+| `bank` | asset | our settlement account |
+| `vendor_payable:{vendorId}` | liability | owed to a vendor |
+| `tenant_payable:{tenantId}` | liability | owed to a store (own inventory + delivery fees) |
+| `gst_output_payable:{sellerId}` | liability | tax collected on a seller's supply |
+| `platform_commission_income` | income | the platform's cut on vendor sales |
+| `tcs_payable` / `tds_payable` | liability | statutory collections (Phase 6.3) |
+| `customer_wallet_liability` | liability | mirrors `wallets` |
+| `refund_clawback:{vendorId}` | asset | negative vendor balance carried forward |
+| `rounding_difference` | expense | bounded legacy-float artefacts, kept visible |
+
+**The sale journal** (posted by `ledgerPosting.postSaleCaptured()` when an order
+reaches CONFIRMED, idempotent on the order id):
+
+```text
+DR  gateway_clearing                    order.totalAmount
+    CR  vendor_payable:{vendorId}       line net − commission     (vendor lines)
+    CR  platform_commission_income      commission                (vendor lines)
+    CR  tenant_payable:{tenantId}       line net                  (store's own lines)
+    CR  gst_output_payable:{sellerId}   line tax
+    CR  tenant_payable:{tenantId}       delivery fee
+```
+
+`line net = lineTotal − discountAllocated`, read from the values the Phase 3.5
+pricing engine **persisted** on `orderitems` — nothing is recomputed from
+today's policy, so a journal is reproducible forever.
+
+Store-owned lines deliberately accrue **no** commission here: those stores are
+billed monthly by the Phase 5 billing cycle, and accruing per order as well
+would double-count.
+
+**Refunds reverse, they do not recompute.** `reverseProportional()` reads the
+original sale journal and hands back a proportional slice of exactly what it
+credited, so a refund can never touch an account the order didn't, and can
+never exceed what was captured (`LEDGER_OVER_REVERSAL`).
+
+**Consistency.** Journal + entries + balance commit in one transaction when the
+deployment is a replica set (probed once at boot). On a standalone mongod the
+journal is written first and the nightly
+`verifyBalances({repair:true})` recomputes the view from the entries — drift is
+always detectable and always fixable. `trialBalance()` asserts
+`Σ debits === Σ credits` across the whole ledger every night.
+
+---
+
+## 12. Phase 6.2 — GST invoicing (blueprint: `phase6_payouts_gst_subdomains_search.md`)
+
+The Phase 3.5 pricing engine computes *charges*; this layer produces the *legal
+document*. It adds the four things a valid Indian tax invoice needs and the
+pricing engine never had: a CGST/SGST vs IGST split, a place of supply, a
+registered supplier identity, and gapless per-financial-year numbering.
+
+| Collection | Purpose | Key invariants |
+| --- | --- | --- |
+| `taxregistrations` | who the supplier legally IS (platform / tenant / vendor) | unique per (ownerType, ownerId); GSTIN unique and **checksum-validated** on write; snapshotted onto every document |
+| `taxpolicies` *(extended)* | GST classification per category | now carries `rateBps` (integer), `natureOfSupply`, `cessBps`; resolved **by supply date**, not by `isActive` |
+| `statutoryrates` | TCS (s.52) and TDS (s.194-O) as data | effective-dated timeline with `notificationRef`; a rate change is a NEW row, never an edit |
+| `taxdocumentseries` | the numbering authority | unique per (owner, docType, FY, series); advanced atomically with `$inc` |
+| `taxdocuments` | invoices **and** credit notes | immutable once `issued`; `number` unique; one invoice per (order, vendor); cancelled documents keep their number |
+
+**One model, two document types.** The blueprint specified separate
+`TaxInvoice` and `CreditNote` collections; they share ~60 fields, the same
+numbering machinery and the same GSTR queries, and a credit note is legally a
+correction *to* an invoice. One collection discriminated by `docType` — with
+series still keyed on `docType`, so numbering stays legally separate — removes
+the duplication without weakening a single constraint.
+
+**The central arithmetic** lives in `src/utils/gst.js`, which is pure and has no
+database access, so `scripts/tax-calc.test.js` proves it exhaustively (78
+assertions, including two 20 000-case fuzz runs) in milliseconds:
+
+```text
+inclusive:  taxable = round(net × 10000 / (10000 + rateBps))
+            tax     = net − taxable        ← derived by SUBTRACTION, so the
+                                             parts can never fail to reconcile
+intra-state: cgst = floor(tax/2), sgst = tax − cgst    (sum is exact, always)
+inter-state: igst = tax
+```
+
+**Reconstruction, not recomputation.** An invoice is built from the values the
+pricing engine *persisted* on `orderitems`, with the charged tax passed as
+`knownTaxPaise`. The engine then only *splits* it into heads. A slab change next
+year therefore cannot re-price a two-year-old invoice — and that is also why
+every `lines[].rateBps` is a stored value rather than a reference to
+`taxpolicies`.
+
+**Nil-rated is not "0% taxable".** A flower catalogue is full of exempt supplies
+(fresh cut flowers, live plants) sold alongside taxable ones (planters, tools,
+gift wrap). `natureOfSupply` is first-class so those values land in the right
+GSTR-1 column, and a category with no policy at all defaults to `nil_rated`
+rather than silently taxing at 0% under a "taxable" label.
+
+**One document per selling entity.** A multi-vendor order is several supplies by
+several suppliers, so `issueForOrder()` returns an array: one invoice per vendor
+plus one for the store's own lines (which also carries the delivery fee).
+Σ(invoice totals) === `order.totalAmount`, asserted in the smoke suite.
+
+**No ledger journal on issue.** `sale_captured` already recognised this money
+when the order was confirmed, and `refund_issued` already reversed it. A tax
+document is legal evidence of a movement the ledger holds — posting again would
+double-count. This is the one place the two subsystems deliberately do *not*
+touch.
+
+---
+
+## 13. Phase 6.3 — vendor payouts (blueprint: `phase6_payouts_gst_subdomains_search.md`)
+
+Turning "the vendor is owed money" into "the money left our bank, once".
+
+| Collection | Purpose | Key invariants |
+| --- | --- | --- |
+| `payoutpolicies` | when and how much, as DATA | platform row + optional per-vendor override; return windows, floor, ceiling, dual-approval threshold |
+| `vendorpayoutaccounts` | where the money goes | account number encrypted + `select:false`; API returns only `maskedAccount`; `fingerprint` detects a change and arms a 24h freeze |
+| `payoutlineitems` | the eligibility ledger, one row per sold item | every deduction stored separately; unique per `orderItemId`; reversals carry NEGATIVE values |
+| `payoutbatches` | one disbursement to one vendor for one cycle | unique on (vendor, cycle) AND on `idempotencyKey` — the same key given to the provider |
+| `payoutstatushistories` | append-only state trail | one row per transition, with actor |
+| `payoutadjustments` | penalties / goodwill / corrections | signed paise, reason-coded, pinned to the batch that consumed them |
+
+**Two gates, both must be open.** A line becomes payable only after (1) the
+customer's return window has closed, and (2) — when
+`policy.requirePspSettlement` is on — the PSP has actually settled the cash
+(a `psp_settled` journal for that order exists). Gate 1 stops us buying back
+our own goods; gate 2 stops us lending vendors our own working capital.
+
+**The arithmetic** is a pure function (`computeLineFinancials`), so the worked
+example is asserted to the paisa in `scripts/payout-calc.test.js` with no
+infrastructure:
+
+```text
+gross (customer paid)                    5900.00
+  − commission 10% of taxable value       −500.00
+  − GST on that commission @18%            −90.00
+  − TCS u/s 52 @0.5% of taxable            −25.00
+  − TDS u/s 194-O @0.1% of gross            −5.90
+  = net payable to vendor                 5279.10
+identity: net + commission + gstOnComm + tcs + tds === gross
+```
+
+**The payout journal** drains what `sale_captured` credited and books the
+statutory liabilities:
+
+```text
+DR vendor_payable:{v}              taxable − commission     4500.00
+DR gst_output_payable:{v}          the seller's own GST      900.00
+    CR bank                        net payable              5279.10
+    CR gst_output_payable:platform GST on our commission       90.00
+    CR tcs_payable                                             25.00
+    CR tds_payable                                              5.90
+```
+
+The seller's GST flows *to* the seller because the seller is the person who
+must deposit it; only TCS is withheld and deposited by the platform.
+
+**The state machine has one deliberate hole in it.** There is no
+`PROCESSING → QUEUED` edge. A batch handed to the provider may or may not have
+moved money, so it can only ever leave that state via reconciliation — never a
+retry. Every other rail (KYC approved, bank verified, no active freeze,
+destination fingerprint unchanged since approval, per-batch ceiling, distinct
+dual approvers) is enforced in `assertPayable()` before a transition is allowed.
+
+**Refunds.** Unpaid lines flip to `reversed` and never enter a batch. Already-paid
+lines produce a NEGATIVE line that offsets the vendor's next cycle — and if that
+drives the cycle negative, `negativeBalanceCarryForward` rolls it forward rather
+than paying out.
+
+---
+
 ## 4. Auth & session model (how it fits together)
 
 ```text
@@ -553,3 +743,16 @@ allowlist, no secrets in responses (`toJSON` plugin strips `passwordHash`).
 | analyticsdailies | tenant+hubId+date unique, tenant+date |
 | products | tenant+slug partial-unique, tenant+category+listing+availability, text |
 | vendors | tenant+slug partial-unique |
+| ledgerjournals | idempotencyKey unique, kind+occurredAt, refType+refId, tenant+occurredAt |
+| ledgerentries | accountCode+occurredAt, accountCode+journalId, refId |
+| accountbalances | accountCode unique, tenantId, vendorId |
+| ledgeraccounts | code unique, tenantId, vendorId |
+| taxregistrations | (ownerType,ownerId) unique, gstin partial-unique |
+| taxdocumentseries | (ownerType,ownerId,docType,fyLabel,seriesCode) unique |
+| taxdocuments | number unique, (supplier,docType,fy,series,sequence) unique, (orderId,docType,vendorId) partial-unique, einvoice.status |
+| statutoryrates | kind+effectiveFrom |
+| payoutlineitems | orderItemId partial-unique, vendorId+state+eligibleAt, state+eligibleAt |
+| payoutbatches | batchNumber unique, idempotencyKey unique, (vendorId,cycle) unique, state+submittedAt, needsReconciliation |
+| vendorpayoutaccounts | vendorId+isDefault partial-unique, fingerprint |
+| payoutpolicies | (scope,vendorId) partial-unique |
+| taxpolicies | categoryId+effectiveFrom, categoryId+isActive partial-unique |

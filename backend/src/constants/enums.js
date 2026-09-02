@@ -405,6 +405,15 @@ export const EXPORT_JOB_TYPE = Object.freeze({
   INVENTORY: 'inventory',
   PRODUCTS: 'products',
   USERS: 'users',
+
+  // ---- Phase 6.2/M3: GST filing working papers ----
+  GSTR1_B2B: 'gstr1_b2b',
+  GSTR1_B2CS: 'gstr1_b2cs',
+  GSTR1_HSN: 'gstr1_hsn',
+  GSTR1_CDNR: 'gstr1_cdnr',
+  GSTR8_TCS: 'gstr8_tcs',
+  TDS_194O: 'tds_194o',
+  SALES_REGISTER: 'sales_register',
 });
 
 export const EXPORT_JOB_STATUS = Object.freeze({
@@ -573,6 +582,50 @@ export const AUDIT_ACTION = Object.freeze({
   REOPEN: 'reopen',
   CLOSE: 'close',
   ROLE_CHANGE: 'role_change',
+
+  // ---- Phase 3.5: rider delivery state machine ----
+  ACCEPT: 'accept',
+  DEPART: 'depart',
+  ARRIVE: 'arrive',
+  COMPLETE: 'complete',
+  FAIL: 'fail',
+
+  // ---- Phase 5: billing & marketplace ops ----
+  SUBSCRIBE: 'subscribe',
+  PLAN_CHANGE: 'plan_change',
+  INVOICE_GENERATED: 'invoice_generated',
+  INVOICE_PAID: 'invoice_paid',
+  INVOICE_VOID: 'invoice_void',
+  SYNC_VENDOR_PRODUCTS: 'sync_vendor_products',
+  PLATFORM_ROLLUP: 'platform_rollup',
+  NIGHTLY: 'nightly',
+  MARKETPLACE_NIGHTLY: 'marketplace_nightly',
+
+  // ---- Phase 6.1: financial ledger ----
+  LEDGER_POST: 'ledger_post',
+  LEDGER_REVERSE: 'ledger_reverse',
+  LEDGER_REPAIR: 'ledger_repair',
+
+  // ---- Phase 6.2: GST documents ----
+  INVOICE_ISSUE: 'invoice_issue',
+  INVOICE_CANCEL: 'invoice_cancel',
+  CREDIT_NOTE_ISSUE: 'credit_note_issue',
+  TAX_REGISTRATION_UPDATE: 'tax_registration_update',
+  RATE_OVERRIDE: 'rate_override',
+
+  // ---- Phase 6.3: vendor payouts ----
+  PAYOUT_COMPUTE: 'payout_compute',
+  PAYOUT_APPROVE: 'payout_approve',
+  PAYOUT_REJECT: 'payout_reject',
+  PAYOUT_SUBMIT: 'payout_submit',
+  PAYOUT_SETTLE: 'payout_settle',
+  PAYOUT_FAIL: 'payout_fail',
+  PAYOUT_REVERSE: 'payout_reverse',
+  PAYOUT_HOLD: 'payout_hold',
+  PAYOUT_ADJUST: 'payout_adjust',
+  KYC_REVIEW: 'kyc_review',
+  BANK_VERIFY: 'bank_verify',
+
   OTHER: 'other',
 });
 
@@ -708,5 +761,205 @@ export const MEDIA_PURPOSE = Object.freeze({
   STORE_LOGO: 'store_logo',
   STORE_BANNER: 'store_banner',
   PRODUCT_VIDEO: 'product_video',
+  OTHER: 'other',
+});
+
+// ============================================================
+// PHASE 6.1 — FINANCIAL LEDGER (double-entry)
+// ============================================================
+
+/**
+ * Account types decide the NATURAL BALANCE side:
+ *   asset/expense  -> debit-positive   (balance = debits − credits)
+ *   liability/income -> credit-positive (balance = credits − debits)
+ */
+export const LEDGER_ACCOUNT_TYPE = Object.freeze({
+  ASSET: 'asset',
+  LIABILITY: 'liability',
+  INCOME: 'income',
+  EXPENSE: 'expense',
+});
+
+/** Journal kinds — one per business event that moves money. */
+export const LEDGER_JOURNAL_KIND = Object.freeze({
+  SALE_CAPTURED: 'sale_captured',       // order confirmed: customer money recognised
+  PSP_SETTLED: 'psp_settled',           // gateway settled into our bank
+  REFUND_ISSUED: 'refund_issued',       // refund to wallet or original method
+  PAYOUT_INITIATED: 'payout_initiated', // money sent to a vendor
+  PAYOUT_REVERSED: 'payout_reversed',   // bank returned it
+  TDS_DEDUCTED: 'tds_deducted',
+  COMMISSION_INVOICED: 'commission_invoiced',
+  ADJUSTMENT: 'adjustment',             // manual, reason-coded, audited
+});
+
+/**
+ * Global (unscoped) account codes. Scoped accounts append an owner id:
+ * `vendor_payable:{vendorId}`, `tenant_payable:{tenantId}`, … — built with
+ * `ledgerAccounts.*` helpers in services/ledger.service.js so the string
+ * format lives in exactly one place.
+ */
+export const LEDGER_ACCOUNT = Object.freeze({
+  GATEWAY_CLEARING: 'gateway_clearing',                 // asset: captured by PSP, not yet settled
+  BANK: 'bank',                                         // asset: our settlement account
+  PLATFORM_COMMISSION_INCOME: 'platform_commission_income',
+  TCS_PAYABLE: 'tcs_payable',                           // liability: collected u/s 52
+  TDS_PAYABLE: 'tds_payable',                           // liability: deducted u/s 194-O
+  CUSTOMER_WALLET_LIABILITY: 'customer_wallet_liability',
+  ROUNDING_DIFFERENCE: 'rounding_difference',           // expense: never expected to be non-zero
+});
+
+/** Prefixes for owner-scoped accounts. */
+export const LEDGER_ACCOUNT_PREFIX = Object.freeze({
+  VENDOR_PAYABLE: 'vendor_payable',
+  TENANT_PAYABLE: 'tenant_payable',
+  GST_OUTPUT_PAYABLE: 'gst_output_payable',
+  REFUND_CLAWBACK: 'refund_clawback',
+});
+
+
+// ============================================================
+// PHASE 6.2 — GST / TAX INVOICING
+// ============================================================
+
+/**
+ * Nature of supply drives how a line is REPORTED, not just how it is taxed.
+ * A flower marketplace routinely mixes these on one invoice: fresh cut flowers
+ * and live plants are nil-rated, while pots, tools and artificial flowers are
+ * taxable — so rate-wise (HSN) summaries are mandatory, not optional.
+ */
+export const TAX_NATURE_OF_SUPPLY = Object.freeze({
+  TAXABLE: 'taxable',
+  NIL_RATED: 'nil_rated',
+  EXEMPT: 'exempt',
+  ZERO_RATED: 'zero_rated', // exports / SEZ
+  NON_GST: 'non_gst',
+});
+
+export const TAX_DOC_TYPE = Object.freeze({
+  INVOICE: 'invoice',
+  CREDIT_NOTE: 'credit_note',
+});
+
+/**
+ * DRAFT -> ISSUED -> CANCELLED. There is deliberately no "edit" state:
+ * an issued document is immutable and a mistake is corrected by a credit note.
+ * A cancelled document keeps its number forever (numbering must stay gapless).
+ */
+export const TAX_DOC_STATUS = Object.freeze({
+  DRAFT: 'draft',
+  ISSUED: 'issued',
+  CANCELLED: 'cancelled',
+});
+
+export const EINVOICE_STATUS = Object.freeze({
+  NOT_APPLICABLE: 'not_applicable',
+  PENDING: 'pending',
+  GENERATED: 'generated',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+});
+
+export const TAX_REGISTRATION_TYPE = Object.freeze({
+  REGULAR: 'regular',
+  COMPOSITION: 'composition',
+  UNREGISTERED: 'unregistered',
+});
+
+export const TAX_OWNER_TYPE = Object.freeze({
+  PLATFORM: 'platform',
+  TENANT: 'tenant',
+  VENDOR: 'vendor',
+});
+
+/** Statutory collection rates — DATA, because they change by notification. */
+export const STATUTORY_RATE_KIND = Object.freeze({
+  TCS_GST_52: 'tcs_gst_52',   // e-commerce operator TCS, GST s.52 (GSTR-8)
+  TDS_194O: 'tds_194o',       // income-tax deduction, s.194-O (26Q)
+});
+
+export const CREDIT_NOTE_REASON = Object.freeze({
+  RETURN: 'return',
+  CANCELLATION: 'cancellation',
+  PRICE_REVISION: 'price_revision',
+  DEFICIENCY: 'deficiency',
+  OTHER: 'other',
+});
+
+// ============================================================
+// PHASE 6.3 — VENDOR PAYOUTS
+// ============================================================
+
+/**
+ * A payout line's journey. Money is only ever paid for lines in ELIGIBLE
+ * state: accrued means "earned but still at risk of return", held means an
+ * operator or a dispute stopped it.
+ */
+export const PAYOUT_LINE_STATE = Object.freeze({
+  ACCRUED: 'accrued',     // order confirmed; return window still open
+  ELIGIBLE: 'eligible',   // return window closed (and cash settled) — payable
+  HELD: 'held',           // blocked: dispute, KYC, manual hold
+  BATCHED: 'batched',     // assigned to a payout batch
+  PAID: 'paid',
+  REVERSED: 'reversed',   // refunded before payout, or clawed back after
+});
+
+export const PAYOUT_HOLD_REASON = Object.freeze({
+  DISPUTE: 'dispute',
+  KYC_PENDING: 'kyc_pending',
+  BANK_UNVERIFIED: 'bank_unverified',
+  FRAUD_REVIEW: 'fraud_review',
+  MANUAL: 'manual',
+  NEGATIVE_BALANCE: 'negative_balance',
+});
+
+/**
+ * Batch state machine. Approval is a distinct, role-gated step because this is
+ * the one place in the platform where money leaves the building.
+ */
+export const PAYOUT_STATE = Object.freeze({
+  DRAFT: 'draft',
+  PENDING_APPROVAL: 'pending_approval',
+  APPROVED: 'approved',
+  QUEUED: 'queued',
+  PROCESSING: 'processing',
+  PAID: 'paid',
+  FAILED: 'failed',
+  REVERSED: 'reversed',
+  CANCELLED: 'cancelled',
+  REJECTED: 'rejected',
+});
+
+export const PAYOUT_METHOD = Object.freeze({
+  BANK: 'bank',
+  UPI: 'upi',
+});
+
+export const PAYOUT_TRANSFER_MODE = Object.freeze({
+  IMPS: 'IMPS',
+  NEFT: 'NEFT',
+  RTGS: 'RTGS',
+  UPI: 'UPI',
+});
+
+export const KYC_STATUS = Object.freeze({
+  NOT_SUBMITTED: 'not_submitted',
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+});
+
+export const BANK_VERIFICATION_STATUS = Object.freeze({
+  UNVERIFIED: 'unverified',
+  PENDING: 'pending',
+  VERIFIED: 'verified',
+  FAILED: 'failed',
+});
+
+export const PAYOUT_ADJUSTMENT_REASON = Object.freeze({
+  PENALTY_SLA: 'penalty_sla',
+  PENALTY_QUALITY: 'penalty_quality',
+  GOODWILL: 'goodwill',
+  CORRECTION: 'correction',
+  CHARGEBACK: 'chargeback',
   OTHER: 'other',
 });

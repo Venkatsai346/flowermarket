@@ -12,6 +12,10 @@ import analyticsService from './analytics.service.js';
 import exportService from './export.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import notificationService from './notification.service.js';
+import ledgerService from './ledger.service.js';
+import ledgerPostingService from './ledgerPosting.service.js';
+import taxDocumentService from './taxDocument.service.js';
+import payoutService from './payout.service.js';
 import auditService from './audit.service.js';
 import config from '../config/index.js';
 import { EXPORT_JOB_TYPE } from '../constants/enums.js';
@@ -85,6 +89,29 @@ class MaintenanceService {
       out.notificationsSent = { error: err?.message || String(err) };
     }
 
+    // 7. Phase 6.1 — post any sale journal the saga could not write (crash,
+    //    non-strict failure, or an order predating the ledger). Idempotent.
+    try {
+      out.ledgerBackfill = await ledgerPostingService.backfillSales({
+        tenantId,
+        limit: opts.ledgerBackfillLimit || 500,
+      });
+    } catch (err) {
+      out.ledgerBackfill = { error: err?.message || String(err) };
+    }
+
+    // 8. Phase 6.2 — retry IRN registration for documents the IRP rejected or
+    //    that were issued while the GSP was unreachable. A document is legally
+    //    issued the moment it is numbered, so this is a follow-up, never a
+    //    blocker.
+    try {
+      out.einvoiceRetries = await taxDocumentService.retryFailedEinvoices({
+        limit: opts.einvoiceLimit || 50,
+      });
+    } catch (err) {
+      out.einvoiceRetries = { error: err?.message || String(err) };
+    }
+
     await auditService.record({
       action: 'nightly', entityType: 'maintenance', entityId: tenantId || 'platform',
       tenantId, actorId: actorId || null, actorType,
@@ -143,6 +170,58 @@ class MaintenanceService {
       out.notificationsSent = await notificationService.processPending({ limit: opts.notificationLimit || config.notifications.workerBatch });
     } catch (err) {
       out.notificationsSent = { error: err?.message || String(err) };
+    }
+
+    // 5b. Phase 6.3 — payout eligibility sweep. Promotes accrued lines to
+    //     eligible once the return window has closed (and, when the policy
+    //     requires it, once the PSP has actually settled the cash).
+    try {
+      out.payoutEligibility = await payoutService.markEligible({});
+    } catch (err) {
+      out.payoutEligibility = { error: err?.message || String(err) };
+    }
+
+    // 5c. Phase 6.3 — build payout batches for the cycle that just closed.
+    //     Batches are created in DRAFT: a human still has to approve before
+    //     any money moves. Idempotent on (vendor, cycle).
+    try {
+      if (opts.runPayoutCycle) {
+        const to = new Date();
+        const from = new Date(to.getTime() - (opts.payoutCycleDays || 7) * 86400000);
+        out.payoutCycle = await payoutService.computeCycle({ from, to, actorId, req });
+      } else {
+        out.payoutCycle = { skipped: 'not a cycle day' };
+      }
+    } catch (err) {
+      out.payoutCycle = { error: err?.message || String(err) };
+    }
+
+    // 6. Phase 6.1 — LEDGER INTEGRITY. Two independent checks:
+    //    a) trial balance: Σ debits === Σ credits across every entry. A failure
+    //       means data was written outside ledgerService (post() makes an
+    //       unbalanced journal impossible), i.e. tampering or a bad migration.
+    //    b) drift: the materialized accountbalances vs a recompute from
+    //       ledgerentries. On a standalone mongod this closes the crash window
+    //       between the journal write and the balance $inc.
+    //    Drift is REPAIRED (entries are the truth) and reported — a non-zero
+    //    count is an ops alert, not a silent fix.
+    try {
+      const trial = await ledgerService.trialBalance();
+      const verify = await ledgerService.verifyBalances({ repair: opts.repairLedger !== false });
+      out.ledger = {
+        balanced: trial.balanced,
+        differencePaise: trial.differencePaise,
+        accountsChecked: verify.checked,
+        driftedAccounts: verify.drifted.length,
+        repaired: verify.repaired,
+        drift: verify.drifted.slice(0, 10),
+      };
+      if (!trial.balanced || verify.drifted.length) {
+        // eslint-disable-next-line no-console
+        console.error('[ledger] INTEGRITY ALERT', JSON.stringify(out.ledger));
+      }
+    } catch (err) {
+      out.ledger = { error: err?.message || String(err) };
     }
 
     await auditService.record({
