@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@flower-market/shared';
 import { api } from './api.js';
@@ -33,6 +33,8 @@ import VendorPayoutsPage from './features/payouts/VendorPayoutsPage.jsx';
 import VendorPayoutAccountPage from './features/payouts/VendorPayoutAccountPage.jsx';
 import VendorProductsPage from './features/vendor/VendorProductsPage.jsx';
 import NoAccessPage from './features/auth/NoAccessPage.jsx';
+
+const SearchAdminPage = lazy(() => import('./features/search/SearchAdminPage.jsx'));
 
 /** gate: must be logged in; hydrates the user profile from /users/me */
 function RequireAuth() {
@@ -96,6 +98,7 @@ export default function App() {
           <Route path="fulfillment" element={storeOnly(<FulfillmentPage />)} />
           <Route path="returns" element={storeOnly(<AftersalesPage />)} />
           <Route path="policies" element={storeOnly(<PoliciesPage />)} />
+          <Route path="search" element={storeOnly(<Suspense fallback={<LoadingBlock />}><SearchAdminPage /></Suspense>)} />
           <Route path="rider" element={riderAccess(<RiderDeliveryPage />)} />
           <Route path="vendors" element={storeOnly(<StoreVendorsPage />)} />
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
