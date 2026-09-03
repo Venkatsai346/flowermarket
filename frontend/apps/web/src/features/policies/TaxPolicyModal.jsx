@@ -1,12 +1,10 @@
 import { useState } from 'react';
 import { Percent } from 'lucide-react';
-import { fmtDate } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction } from '../../lib/useApi.js';
 import { errMsg, rid } from '../../lib/utils.js';
 import { toast } from '../../lib/toasts.js';
 import Modal from '../../components/ui/Modal.jsx';
-import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import { Field, Input, Select } from '../../components/ui/Field.jsx';
 import { emptyTax, taxPayload } from './policiesMeta.js';
@@ -62,40 +60,5 @@ export default function TaxPolicyModal({ categories = [], onClose }) {
         </div>
       </div>
     </Modal>
-  );
-}
-
-export function TaxPolicyList({ data, categories, loading, onUpsert }) {
-  const rows = data || [];
-  const catName = (id) => categories.find((c) => rid(c) === id)?.name || id;
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500">{rows.length} rate policy version(s)</p>
-        <Button variant="primary" icon={Percent} onClick={onUpsert}>Set GST rate</Button>
-      </div>
-      <div className="grid gap-3 md:grid-cols-2">
-        {rows.map((p, i) => (
-          <div key={rid(p) || i} className="rounded-xl border border-slate-200 p-4">
-            <div className="flex items-center justify-between gap-2">
-              <p className="truncate text-sm font-semibold text-slate-800">{catName(p.categoryId)}</p>
-              {p.isActive && <Badge tone="emerald" dot>Active</Badge>}
-              {!p.isActive && <Badge tone="slate">Inactive</Badge>}
-            </div>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{p.gstSlabPct}%</p>
-            <p className="mt-1 text-xs text-slate-500">
-              HSN {p.hsnCode || '—'}
-              {p.rateBps != null ? ` · ${p.rateBps} bps` : ''}
-            </p>
-            {(p.effectiveFrom || p.effectiveTo) && (
-              <p className="mt-1 text-[11px] text-slate-400">
-                {fmtDate(p.effectiveFrom)}{p.effectiveTo ? ` → ${fmtDate(p.effectiveTo)}` : ''}
-              </p>
-            )}
-          </div>
-        ))}
-        {!rows.length && <p className="text-sm text-slate-400">No tax policies yet.</p>}
-      </div>
-    </div>
   );
 }
