@@ -15,6 +15,7 @@ import OrdersPage from './features/orders/OrdersPage.jsx';
 import FulfillmentPage from './features/ops/FulfillmentPage.jsx';
 import AftersalesPage from './features/aftersales/AftersalesPage.jsx';
 import RiderDeliveryPage from './features/rider/RiderDeliveryPage.jsx';
+import PoliciesPage from './features/policies/PoliciesPage.jsx';
 import StoreVendorsPage from './features/vendors/StoreVendorsPage.jsx';
 import StoreBillingPage from './features/billing/StoreBillingPage.jsx';
 import BrandingPage from './features/storefront/BrandingPage.jsx';
@@ -94,6 +95,7 @@ export default function App() {
           <Route path="orders" element={storeOnly(<OrdersPage />)} />
           <Route path="fulfillment" element={storeOnly(<FulfillmentPage />)} />
           <Route path="returns" element={storeOnly(<AftersalesPage />)} />
+          <Route path="policies" element={storeOnly(<PoliciesPage />)} />
           <Route path="rider" element={riderAccess(<RiderDeliveryPage />)} />
           <Route path="vendors" element={storeOnly(<StoreVendorsPage />)} />
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
