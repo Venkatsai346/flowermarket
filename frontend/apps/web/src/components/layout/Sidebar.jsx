@@ -23,6 +23,7 @@ import {
   Store,
   Truck,
   User,
+  Zap,
 } from 'lucide-react';
 import { useAuthStore } from '@flower-market/shared';
 import { ROLE_META, initials, titleCase } from '@flower-market/shared';
@@ -66,6 +67,7 @@ const GROUPS = {
   catalog: {
     label: 'Catalog',
     items: [
+      { to: '/catalog/ops', label: 'Deep admin', icon: Zap },
       { to: '/catalog/masters', label: 'Masters', icon: Package },
       { to: '/catalog/categories', label: 'Categories', icon: FolderTree },
       { to: '/catalog/brands', label: 'Brands', icon: Truck },

@@ -39,6 +39,7 @@ const TaxPage = lazy(() => import('./features/tax/TaxPage.jsx'));
 const UsersPage = lazy(() => import('./features/users/UsersPage.jsx'));
 const InventoryPage = lazy(() => import('./features/inventory/InventoryPage.jsx'));
 const HubsPage = lazy(() => import('./features/hubs/HubsPage.jsx'));
+const CatalogOpsPage = lazy(() => import('./features/catalog/CatalogOpsPage.jsx'));
 
 /** gate: must be logged in; hydrates the user profile from /users/me */
 function RequireAuth() {
@@ -98,6 +99,7 @@ export default function App() {
           <Route path="catalog/masters" element={storeOnly(<MastersPage />)} />
           <Route path="catalog/categories" element={storeOnly(<CategoriesPage />)} />
           <Route path="catalog/brands" element={storeOnly(<BrandsPage />)} />
+          <Route path="catalog/ops" element={storeOnly(<Suspense fallback={<LoadingBlock />}><CatalogOpsPage /></Suspense>)} />
           <Route path="orders" element={storeOnly(<OrdersPage />)} />
           <Route path="fulfillment" element={storeOnly(<FulfillmentPage />)} />
           <Route path="returns" element={storeOnly(<AftersalesPage />)} />
