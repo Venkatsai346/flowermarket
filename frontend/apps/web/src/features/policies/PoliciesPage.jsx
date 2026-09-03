@@ -3,7 +3,7 @@ import { Percent, RefreshCw, Tag, Truck, WalletCards } from 'lucide-react';
 import { inr, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
-import { cn } from '../../lib/utils.js';
+import { cn, errMsg } from '../../lib/utils.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import Button from '../../components/ui/Button.jsx';
@@ -25,7 +25,7 @@ export default function PoliciesPage() {
   const [tab, setTab] = useState('deliveryFee');
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const { data, loading } = useApi(
+  const { data, loading, error } = useApi(
     () => Promise.all([
       api.policies.deliveryFees(),
       api.policies.taxPolicies(),
@@ -60,7 +60,15 @@ export default function PoliciesPage() {
         }
       />
 
-      {loading && !data ? (
+      {error && !data ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4">
+          <div>
+            <p className="text-sm font-semibold text-rose-700">Couldn’t load policies</p>
+            <p className="mt-0.5 text-xs text-rose-600">{errMsg(error)}</p>
+          </div>
+          <Button variant="secondary" size="sm" icon={RefreshCw} onClick={refresh}>Retry</Button>
+        </div>
+      ) : loading && !data ? (
         <LoadingBlock />
       ) : (
         <>
