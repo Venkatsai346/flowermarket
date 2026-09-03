@@ -30,7 +30,7 @@ function Tile({ label, value }) {
 
 export default function OpsPaymentDrawer({ payment, onClose }) {
   const { data, loading, error } = useApi(() => api.fulfillment.payment(payment?.id), [payment?.id]);
-  if (loading && !data) return <Modal open onClose={onClose} title="Payment" size="lg"><LoadingBlock /></Modal>;
+  if (loading && !data) return <Modal open onClose={onClose} title="Payment" size="lg"><LoadingBlock compact /></Modal>;
   if (error) return <Modal open onClose={onClose} title="Payment" size="lg"><p className="text-sm text-rose-600">{error.message}</p></Modal>;
 
   const p = data?.payment || data || {};

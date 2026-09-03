@@ -89,7 +89,7 @@ export default function OrderOpsDrawer({ order, onClose, onChanged }) {
     children: label,
   });
 
-  if (loading && !data) return <Modal open onClose={onClose} title="Order ops" size="lg"><LoadingBlock /></Modal>;
+  if (loading && !data) return <Modal open onClose={onClose} title="Order ops" size="lg"><LoadingBlock compact /></Modal>;
 
   const confirm = () => runAction(() => api.fulfillment.dispatch(o.id), 'Rider assigned — order is out for delivery');
   const pick = () => runAction(() => api.fulfillment.startPicking(o.id), 'Picking started');

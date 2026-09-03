@@ -3,8 +3,8 @@ import { Download, FileUp, RefreshCw, UploadCloud } from 'lucide-react';
 import { fmtDateTime, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
+import { useDownload } from '../../lib/useDownload.js';
 import { errMsg } from '../../lib/utils.js';
-import { saveDownload } from '../../lib/download.js';
 import { toast } from '../../lib/toasts.js';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
@@ -25,8 +25,9 @@ export default function BulkPanel() {
   const [dryRun, setDryRun] = useState(true);
   const [active, setActive] = useState(null);
   const fileRef = useRef(null);
-  const { data: jobs, loading, error, refetch } = useApi(() => api.catalogTenant.bulkJobs(), [refreshKey]);
+  const { data: jobs, loading, error, refetch } = useApi(() => api.catalogTenant.bulkJobs(), [refreshKey], { toastOnError: false });
   const { busy, run } = useAction();
+  const { busy: preparing, run: download } = useDownload();
 
   const refresh = () => setRefreshKey((k) => k + 1);
 
@@ -57,14 +58,10 @@ export default function BulkPanel() {
     }
   };
 
-  const downloadTemplate = async (k) => {
-    try {
-      await saveDownload(await api.catalogTenant.bulkTemplate(k), `${k}-template.csv`);
-      toast.success(`${BULK_KIND_LABELS[k]} template downloaded`);
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  };
+  const downloadTemplate = (k) => download(
+    () => api.catalogTenant.bulkTemplate(k),
+    `${k}-template.csv`,
+  );
 
   const live = (jobs || []).filter((j) => j.status === 'queued' || j.status === 'running');
   const totalRows = (jobs || []).reduce((s, j) => s + (j.rows || 0), 0);
@@ -85,7 +82,7 @@ export default function BulkPanel() {
               <option value="price">Price</option>
               <option value="stock">Stock</option>
             </Select>
-            <Button variant="secondary" size="sm" icon={Download} onClick={() => downloadTemplate(kind)}>Download template</Button>
+            <Button variant="secondary" size="sm" icon={Download} loading={preparing} onClick={() => downloadTemplate(kind)}>{preparing ? 'Preparing…' : 'Download template'}</Button>
             <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ''; }} />
             <Button variant="secondary" size="sm" icon={FileUp} onClick={() => fileRef.current?.click()}>Upload CSV</Button>
           </div>
@@ -144,7 +141,7 @@ export default function BulkPanel() {
 }
 
 function JobModal({ jobId, onClose, onChanged }) {
-  const { data, loading, error } = useApi(() => api.catalogTenant.bulkJob(jobId), [jobId]);
+  const { data, loading, error } = useApi(() => api.catalogTenant.bulkJob(jobId), [jobId], { toastOnError: false });
   const isLive = data?.status === 'queued' || data?.status === 'running';
 
   useEffect(() => {

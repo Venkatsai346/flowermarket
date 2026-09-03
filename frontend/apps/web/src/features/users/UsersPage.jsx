@@ -1,19 +1,17 @@
 import { useState } from 'react';
-import { Download, RefreshCw, Search, UserPlus, Users as UsersIcon } from 'lucide-react';
-import { pickMeta } from '@flower-market/shared';
-import { useAuthStore } from '@flower-market/shared';
+import { Download, RefreshCw, UserPlus, Users as UsersIcon } from 'lucide-react';
+import { pickMeta, useAuthStore } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
+import { useDownload } from '../../lib/useDownload.js';
 import { cn, errMsg } from '../../lib/utils.js';
-import { saveDownload } from '../../lib/download.js';
-import { toast } from '../../lib/toasts.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
-import { Input, Select } from '../../components/ui/Field.jsx';
+import FilterBar from '../../components/ui/FilterBar.jsx';
 import Table from '../../components/ui/Table.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
 import UserDetailDrawer from './UserDetailDrawer.jsx';
@@ -33,7 +31,7 @@ export default function UsersPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [selected, setSelected] = useState(null);
   const [createStaff, setCreateStaff] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const { busy: exporting, run: download } = useDownload();
 
   const { data, meta, loading, error, refetch } = useApi(
     () => api.admin.users({
@@ -49,17 +47,10 @@ export default function UsersPage() {
   );
 
   const refresh = () => { setRefreshKey((k) => k + 1); };
-  const download = async () => {
-    setExporting(true);
-    try {
-      await saveDownload(await api.admin.exportUsers({ search: search || undefined, role: role || undefined, status: status || undefined, from: from || undefined, to: to || undefined }), 'users.csv');
-      toast.success('Users CSV downloaded');
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setExporting(false);
-    }
-  };
+  const saveUsers = () => download(
+    () => api.admin.exportUsers({ search: search || undefined, role: role || undefined, status: status || undefined, from: from || undefined, to: to || undefined }),
+    'users.csv',
+  );
 
   const rows = data || [];
   const activeStaff = rows.filter((r) => ['admin', 'picker', 'rider'].includes(r.role) && r.status === 'active').length;
@@ -73,7 +64,7 @@ export default function UsersPage() {
           <>
             {tab === 'directory' && (
               <>
-                <Button variant="secondary" icon={Download} loading={exporting} onClick={download}>Export CSV</Button>
+                <Button variant="secondary" icon={Download} loading={exporting} onClick={saveUsers}>{exporting ? 'Preparing…' : 'Export CSV'}</Button>
                 <Button variant="primary" icon={UserPlus} onClick={() => setCreateStaff(true)}>Create staff</Button>
               </>
             )}
@@ -116,22 +107,20 @@ export default function UsersPage() {
           subtitle={`${meta?.total ?? rows.length} accounts · ${activeStaff} active staff on this page`}
           bodyClassName="p-0!"
         >
-          <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3">
-            <div className="relative min-w-[220px] flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input className="pl-9!" placeholder="Search name, phone or email…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-            </div>
-            <Select className="w-44!" value={role} onChange={(e) => { setRole(e.target.value); setPage(1); }}>
-              <option value="">All roles</option>
-              {Object.entries(USER_ROLE_META).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
-            </Select>
-            <Select className="w-44!" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
-              <option value="">All statuses</option>
-              {Object.entries(USER_STATUS_META).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
-            </Select>
-            <Input className="w-36!" type="date" value={from} onChange={(e) => { setFrom(e.target.value); setPage(1); }} />
-            <Input className="w-36!" type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} />
-          </div>
+          <FilterBar
+            search={search}
+            onSearch={(v) => { setSearch(v); setPage(1); }}
+            searchPlaceholder="Search name, phone or email…"
+            selects={[
+              { label: 'Role', value: role, options: Object.entries(USER_ROLE_META).map(([v, m]) => [v, m.label]), onChange: (v) => { setRole(v); setPage(1); } },
+              { label: 'Status', value: status, options: Object.entries(USER_STATUS_META).map(([v, m]) => [v, m.label]), onChange: (v) => { setStatus(v); setPage(1); } },
+            ]}
+            from={from}
+            to={to}
+            onFrom={(v) => { setFrom(v); setPage(1); }}
+            onTo={(v) => { setTo(v); setPage(1); }}
+            onReset={() => { setSearch(''); setRole(''); setStatus(''); setFrom(''); setTo(''); setPage(1); }}
+          />
 
           <Table
             loading={loading && !data}

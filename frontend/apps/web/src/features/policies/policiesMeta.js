@@ -1,21 +1,7 @@
 /** Policy/coupon display + form metadata (matches backend enums). */
+import { COUPON_STATUS_META, DISCOUNT_TYPE_META, REFUND_FEE_POLICY_META } from '@flower-market/shared';
 
-export const DISCOUNT_TYPE_META = {
-  flat: { label: 'Flat ₹', tone: 'sky' },
-  percent: { label: 'Percent %', tone: 'violet' },
-};
-
-export const COUPON_STATUS_META = {
-  active: { label: 'Active', tone: 'emerald' },
-  disabled: { label: 'Disabled', tone: 'slate' },
-  expired: { label: 'Expired', tone: 'amber' },
-};
-
-export const REFUND_FEE_POLICY_META = {
-  never: { label: 'Never refund fee', tone: 'slate' },
-  full_order_return_only: { label: 'On full-order return only', tone: 'sky' },
-  always: { label: 'Always refund fee', tone: 'emerald' },
-};
+export { COUPON_STATUS_META, DISCOUNT_TYPE_META, REFUND_FEE_POLICY_META };
 
 export const COUPON_STATUS_OPTIONS = [
   ['active', 'Active'],

@@ -39,7 +39,7 @@ const INVOICE_META = {
 
 function InvoiceDetail({ invoiceId, onClose }) {
   const { data, loading } = useApi(() => api.marketplace.myInvoiceDetail(invoiceId), [invoiceId]);
-  if (loading) return <Modal open onClose={onClose} title="Invoice"><LoadingBlock /></Modal>;
+  if (loading) return <Modal open onClose={onClose} title="Invoice"><LoadingBlock compact /></Modal>;
   const inv = data || {};
   return (
     <Modal open onClose={onClose} title={`Invoice ${inv.number || ''}`} subtitle={periodLabel(inv.period)}>
@@ -196,7 +196,7 @@ export default function StoreBillingPage() {
         }
       >
         {plans.loading && !plans.data ? (
-          <LoadingBlock />
+          <LoadingBlock compact />
         ) : (
           <div className="grid gap-3 sm:grid-cols-3">
             {plans.data.map((p) => (

@@ -1,9 +1,10 @@
 /** Inventory + hub/slot display metadata and form converters (matches backend enums). */
+import {
+  ADJUSTMENT_TYPE_META, INVENTORY_HEALTH_META, SLOT_STATUS_META, SLOT_WINDOW_META,
+} from '@flower-market/shared';
 
-export const INVENTORY_HEALTH_META = {
-  in_stock: { label: 'In stock', tone: 'emerald' },
-  low_stock: { label: 'Low stock', tone: 'amber' },
-  out_of_stock: { label: 'Out of stock', tone: 'rose' },
+export {
+  ADJUSTMENT_TYPE_META, INVENTORY_HEALTH_META, SLOT_STATUS_META, SLOT_WINDOW_META,
 };
 
 export const INVENTORY_HEALTH_OPTIONS = [
@@ -13,31 +14,12 @@ export const INVENTORY_HEALTH_OPTIONS = [
   ['out_of_stock', 'Out of stock'],
 ];
 
-export const ADJUSTMENT_TYPE_META = {
-  restock: { label: 'Restock', tone: 'emerald' },
-  shrinkage: { label: 'Shrinkage', tone: 'rose' },
-  audit_correction: { label: 'Audit correction', tone: 'sky' },
-  return_restock: { label: 'Return restock', tone: 'violet' },
-};
-
 export const ADJUSTMENT_TYPE_OPTIONS = [
   ['restock', 'Restock'],
   ['shrinkage', 'Shrinkage'],
   ['audit_correction', 'Audit correction'],
   ['return_restock', 'Return restock'],
 ];
-
-export const SLOT_STATUS_META = {
-  open: { label: 'Open', tone: 'emerald' },
-  closed: { label: 'Closed', tone: 'rose' },
-  full: { label: 'Full', tone: 'amber' },
-  cancelled: { label: 'Cancelled', tone: 'slate' },
-};
-
-export const SLOT_WINDOW_META = {
-  normal: { label: 'Normal', tone: 'sky' },
-  express: { label: 'Express', tone: 'amber' },
-};
 
 export const fmtPct = (n) => `${Math.round((Number(n) || 0) * 100)}%`;
 

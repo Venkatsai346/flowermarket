@@ -1,27 +1,7 @@
 /** User-directory display metadata + form converters (matches backend enums). */
+import { RIDER_AVAILABILITY_META, USER_ROLE_META, USER_STATUS_META } from '@flower-market/shared';
 
-export const USER_ROLE_META = {
-  customer: { label: 'Customer', tone: 'sky' },
-  vendor: { label: 'Vendor', tone: 'violet' },
-  admin: { label: 'Admin', tone: 'emerald' },
-  super_admin: { label: 'Super admin', tone: 'rose' },
-  picker: { label: 'Picker', tone: 'amber' },
-  rider: { label: 'Rider', tone: 'orange' },
-};
-
-export const USER_STATUS_META = {
-  active: { label: 'Active', tone: 'emerald' },
-  inactive: { label: 'Inactive', tone: 'slate' },
-  deleted: { label: 'Deleted', tone: 'slate' },
-  verification_pending: { label: 'Verification pending', tone: 'amber' },
-  blocked: { label: 'Blocked', tone: 'rose' },
-};
-
-export const RIDER_AVAILABILITY_META = {
-  available: { label: 'Available', tone: 'emerald' },
-  busy: { label: 'Busy', tone: 'amber' },
-  offline: { label: 'Offline', tone: 'slate' },
-};
+export { RIDER_AVAILABILITY_META, USER_ROLE_META, USER_STATUS_META };
 
 export const USER_TABS = [
   ['directory', 'Directory'],

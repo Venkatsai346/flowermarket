@@ -34,7 +34,7 @@ export default function ReturnDetailDrawer({ returnId, onClose, onChanged }) {
   const action = useAction();
   const { data, loading, error, refetch } = useApi(() => api.returns.detail(returnId), [returnId]);
 
-  if (loading && !data) return <Modal open onClose={onClose} title="Return request" size="lg"><LoadingBlock /></Modal>;
+  if (loading && !data) return <Modal open onClose={onClose} title="Return request" size="lg"><LoadingBlock compact /></Modal>;
   if (error) return <Modal open onClose={onClose} title="Return request" size="lg"><p className="text-sm text-rose-600">{error.message}</p></Modal>;
 
   const rr = data?.returnRequest || data || {};

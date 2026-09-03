@@ -1,13 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { errMsg } from './utils.js';
+import { toast } from './toasts.js';
 
 /**
  * useApi — fetch-on-mount hook for a single endpoint call.
  *   const { data, meta, loading, error, refetch } = useApi(() => api.admin.orders({page}), [page]);
+ *
+ * Errors are surfaced via the standard toast system by default so no page can
+ * silently swallow a failed load. Pass `{ toastOnError: false }` for silent
+ * background polls that already communicate their own state.
  */
-export function useApi(fn, deps = []) {
+export function useApi(fn, deps = [], { toastOnError = true } = {}) {
   const [state, setState] = useState({ data: null, meta: null, loading: true, error: null });
   const fnRef = useRef(fn);
   fnRef.current = fn;
+
+  const notifyError = (e) => {
+    if (toastOnError) toast.error(errMsg(e));
+  };
 
   const run = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }));
@@ -17,9 +27,11 @@ export function useApi(fn, deps = []) {
       return r;
     } catch (e) {
       setState((s) => ({ data: s.data, meta: s.meta, loading: false, error: e }));
+      notifyError(e);
       throw e;
     }
-  }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
 
   useEffect(() => {
     let alive = true;
@@ -29,10 +41,14 @@ export function useApi(fn, deps = []) {
         const r = await fnRef.current();
         if (alive) setState({ data: r.data, meta: r.meta, loading: false, error: null });
       } catch (e) {
-        if (alive) setState((s) => ({ data: s.data, meta: s.meta, loading: false, error: e }));
+        if (alive) {
+          setState((s) => ({ data: s.data, meta: s.meta, loading: false, error: e }));
+          notifyError(e);
+        }
       }
     })();
     return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run]);
 
   return { ...state, refetch: run };

@@ -26,7 +26,7 @@ const STATUS_OPTIONS = [
 
 function OrderDetail({ orderId, onClose }) {
   const { data, loading, error } = useApi(() => api.admin.order(orderId), [orderId]);
-  if (loading) return <Modal open onClose={onClose} title="Order"><LoadingBlock /></Modal>;
+  if (loading) return <Modal open onClose={onClose} title="Order"><LoadingBlock compact /></Modal>;
   const o = data || {};
   const order = o.order || o; // detail endpoint nests the order doc
   const items = o.items || o.orderItems || [];

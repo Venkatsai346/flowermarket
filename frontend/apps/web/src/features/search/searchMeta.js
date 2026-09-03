@@ -37,10 +37,9 @@ export const DEFAULT_TUNING = Object.freeze({
   outOfStockFloor: true,
 });
 
-export const SYNONYM_TYPE_META = {
-  equivalent: { label: 'Equivalent', tone: 'emerald' },
-  oneway: { label: 'One-way', tone: 'sky' },
-};
+import { SYNONYM_TYPE_META } from '@flower-market/shared';
+
+export { SYNONYM_TYPE_META };
 
 /** 0.923 -> "92.3" (percentage display without the trailing sign). */
 export const ctrTooltip = (n) => (Number(n) || 0).toFixed(1);

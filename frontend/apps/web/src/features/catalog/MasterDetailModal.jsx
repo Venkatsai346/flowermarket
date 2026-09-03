@@ -150,7 +150,7 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
     }
   };
 
-  if (loading && !m) return <Modal open onClose={onClose} title="Master"><LoadingBlock /></Modal>;
+  if (loading && !m) return <Modal open onClose={onClose} title="Master"><LoadingBlock compact /></Modal>;
 
   if (error || !m) {
     return (

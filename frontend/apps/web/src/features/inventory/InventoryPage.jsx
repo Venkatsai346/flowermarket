@@ -1,24 +1,23 @@
 import { useState } from 'react';
-import { Download, History, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
+import { Download, History, RefreshCw, SlidersHorizontal } from 'lucide-react';
 import { inr, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
+import { useDownload } from '../../lib/useDownload.js';
 import { errMsg } from '../../lib/utils.js';
-import { saveDownload } from '../../lib/download.js';
-import { toast } from '../../lib/toasts.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
-import { Input, Select } from '../../components/ui/Field.jsx';
+import FilterBar from '../../components/ui/FilterBar.jsx';
 import Table from '../../components/ui/Table.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
 import Stat from '../../components/ui/Stat.jsx';
 import InventoryLedgerDrawer from './InventoryLedgerDrawer.jsx';
 import AdjustStockModal from './AdjustStockModal.jsx';
-import { INVENTORY_HEALTH_META, INVENTORY_HEALTH_OPTIONS } from './inventoryMeta.js';
+import { INVENTORY_HEALTH_META } from './inventoryMeta.js';
 
 export default function InventoryPage() {
   const [page, setPage] = useState(1);
@@ -27,7 +26,7 @@ export default function InventoryPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [selected, setSelected] = useState(null);
   const [adjustRow, setAdjustRow] = useState(null);
-  const [exporting, setExporting] = useState(false);
+  const { busy: exporting, run: download } = useDownload();
 
   const { data: rows, meta, loading, error, refetch } = useApi(
     () => api.admin.inventory({
@@ -42,17 +41,10 @@ export default function InventoryPage() {
   const { data: summary } = useApi(() => api.admin.inventorySummary(), [refreshKey]);
 
   const refresh = () => setRefreshKey((k) => k + 1);
-  const download = async () => {
-    setExporting(true);
-    try {
-      await saveDownload(await api.admin.exportInventory({ search: search || undefined, health: health || undefined }), 'inventory.csv');
-      toast.success('Inventory CSV downloaded');
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setExporting(false);
-    }
-  };
+  const saveInventory = () => download(
+    () => api.admin.exportInventory({ search: search || undefined, health: health || undefined }),
+    'inventory.csv',
+  );
 
   return (
     <div>
@@ -61,7 +53,7 @@ export default function InventoryPage() {
         description="Stock health, ledger and manual adjustments."
         actions={
           <>
-            <Button variant="secondary" icon={Download} loading={exporting} onClick={download}>Export CSV</Button>
+            <Button variant="secondary" icon={Download} loading={exporting} onClick={saveInventory}>{exporting ? 'Preparing…' : 'Export CSV'}</Button>
             <Button variant="secondary" icon={RefreshCw} onClick={refresh}>Refresh</Button>
           </>
         }
@@ -91,15 +83,16 @@ export default function InventoryPage() {
           subtitle="Ordered by health — open the ledger for movements or adjust directly."
           bodyClassName="p-0!"
         >
-          <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3">
-            <div className="relative min-w-[220px] flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input className="pl-9!" placeholder="Search title or SKU…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-            </div>
-            <Select className="w-48!" value={health} onChange={(e) => { setHealth(e.target.value); setPage(1); }}>
-              {INVENTORY_HEALTH_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </Select>
-          </div>
+          <FilterBar
+            search={search}
+            onSearch={(v) => { setSearch(v); setPage(1); }}
+            searchPlaceholder="Search title or SKU…"
+            status={health}
+            statusOptions={Object.entries(INVENTORY_HEALTH_META).map(([v, m]) => [v, m.label])}
+            onStatus={(v) => { setHealth(v); setPage(1); }}
+            statusLabel="Health"
+            onReset={() => { setSearch(''); setHealth(''); setPage(1); }}
+          />
 
           <Table
             loading={loading && !rows}

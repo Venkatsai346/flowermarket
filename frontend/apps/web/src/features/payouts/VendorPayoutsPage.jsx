@@ -3,7 +3,9 @@ import { Banknote, Clock, Download, Eye, HandCoins, Hourglass, PauseCircle } fro
 import { inr, fmtDate } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
+import { triggerBlobDownload } from '../../lib/download.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
+import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import Card from '../../components/ui/Card.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 import Stat from '../../components/ui/Stat.jsx';
@@ -29,21 +31,24 @@ function StateBadge({ state }) {
 function StatementModal({ batchId, onClose }) {
   const { data, loading } = useApi(() => api.payouts.me.statement(batchId), [batchId]);
   const batch = data?.batch;
+  const [exporting, setExporting] = useState(false);
 
-  const download = () => {
-    const lines = data?.lines || [];
-    const head = ['Order', 'Gross', 'Taxable', 'Your GST', 'Commission %', 'Commission', 'GST on commission', 'TCS', 'TDS', 'Net'];
-    const rows = lines.map((l) => [
-      l.orderNumber, l.gross, l.taxableValue, l.sellerGst, l.commissionRatePct,
-      l.commission, l.gstOnCommission, l.tcs, l.tds, l.netPayable,
-    ]);
-    const csv = `\uFEFF${[head, ...rows].map((r) => r.join(',')).join('\r\n')}\r\n`;
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${batch?.batchNumber || 'payout'}-statement.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const download = async () => {
+    setExporting(true);
+    try {
+      const lines = data?.lines || [];
+      const head = ['Order', 'Gross', 'Taxable', 'Your GST', 'Commission %', 'Commission', 'GST on commission', 'TCS', 'TDS', 'Net'];
+      const rows = lines.map((l) => [
+        l.orderNumber, l.gross, l.taxableValue, l.sellerGst, l.commissionRatePct,
+        l.commission, l.gstOnCommission, l.tcs, l.tds, l.netPayable,
+      ]);
+      const csv = `\uFEFF${[head, ...rows].map((r) => r.join(',')).join('\r\n')}\r\n`;
+      // Let the button render "Preparing…" before the browser's save flow opens.
+      await new Promise((r) => setTimeout(r, 30));
+      triggerBlobDownload(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `${batch?.batchNumber || 'payout'}-statement.csv`);
+    } finally {
+      setExporting(false);
+    }
   };
 
   return (
@@ -55,16 +60,16 @@ function StatementModal({ batchId, onClose }) {
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Close</Button>
-          <Button variant="secondary" icon={Download} onClick={download} disabled={!data?.lines?.length}>
-            Download CSV
+          <Button variant="secondary" icon={Download} loading={exporting} onClick={download} disabled={!data?.lines?.length}>
+            {exporting ? 'Preparing…' : 'Download CSV'}
           </Button>
         </>
       }
     >
       {loading && !batch ? (
-        <p className="py-8 text-center text-sm text-slate-400">Loading…</p>
+        <LoadingBlock compact />
       ) : !batch ? (
-        <p className="py-8 text-center text-sm text-slate-400">Not found.</p>
+        <EmptyState compact icon={Banknote} title="Statement unavailable" message="This payout statement could not be found." />
       ) : (
         <div className="space-y-4">
           <StateBadge state={batch.state} />

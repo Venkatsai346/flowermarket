@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BadgeCheck, RefreshCw, Search, ShieldAlert, ShieldCheck, XCircle } from 'lucide-react';
+import { BadgeCheck, RefreshCw, ShieldAlert, ShieldCheck, XCircle } from 'lucide-react';
 import { fmtDate, fmtDateTime, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
@@ -9,7 +9,8 @@ import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
-import { Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
+import { Field, Textarea } from '../../components/ui/Field.jsx';
+import FilterBar from '../../components/ui/FilterBar.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
 import Table from '../../components/ui/Table.jsx';
@@ -69,15 +70,16 @@ export default function KycPanel() {
               Refresh failed — showing the last loaded queue. {errMsg(error)}
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3">
-            <div className="relative min-w-[220px] flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input className="pl-9!" placeholder="Search vendor or slug…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-            </div>
-            <Select className="w-48!" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
-              {STATUSES.map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
-            </Select>
-          </div>
+          <FilterBar
+            search={search}
+            onSearch={(v) => { setSearch(v); setPage(1); }}
+            searchPlaceholder="Search vendor or slug…"
+            status={status}
+            statusOptions={STATUSES.map(([v, m]) => [v, m.label])}
+            onStatus={(v) => { setStatus(v); setPage(1); }}
+            statusLabel="KYC status"
+            onReset={() => { setSearch(''); setStatus('pending'); setPage(1); }}
+          />
 
           <Table
             loading={loading && !data}

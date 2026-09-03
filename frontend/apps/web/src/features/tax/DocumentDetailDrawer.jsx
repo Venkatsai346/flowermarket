@@ -28,7 +28,7 @@ export default function DocumentDetailDrawer({ documentId, onClose, onChanged })
   const [confirmCancel, setConfirmCancel] = useState(false);
   const { data, loading, error, refetch } = useApi(() => api.tax.document(documentId), [documentId]);
 
-  if (loading && !data) return <Modal open onClose={onClose} title="Tax document" size="lg"><LoadingBlock /></Modal>;
+  if (loading && !data) return <Modal open onClose={onClose} title="Tax document" size="lg"><LoadingBlock compact /></Modal>;
   if (error) return <Modal open onClose={onClose} title="Tax document" size="lg"><p className="text-sm text-rose-600">{errMsg(error)}</p></Modal>;
 
   const doc = data || {};

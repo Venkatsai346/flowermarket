@@ -1,54 +1,14 @@
 /** GST/tax display metadata + form converters (matches backend enums). */
+import {
+  CREDIT_NOTE_REASON_META, EINVOICE_STATUS_META, STATUTORY_APPLIES_TO_META,
+  STATUTORY_RATE_KIND_META, TAX_DOC_STATUS_META, TAX_DOC_TYPE_META,
+  TAX_NATURE_OF_SUPPLY_META, TAX_REGISTRATION_TYPE_META,
+} from '@flower-market/shared';
 
-export const TAX_DOC_TYPE_META = {
-  invoice: { label: 'Tax invoice', tone: 'sky' },
-  credit_note: { label: 'Credit note', tone: 'violet' },
-};
-
-export const TAX_DOC_STATUS_META = {
-  draft: { label: 'Draft', tone: 'slate' },
-  issued: { label: 'Issued', tone: 'emerald' },
-  cancelled: { label: 'Cancelled', tone: 'rose' },
-};
-
-export const EINVOICE_STATUS_META = {
-  not_applicable: { label: 'Not applicable', tone: 'slate' },
-  pending: { label: 'Pending', tone: 'amber' },
-  generated: { label: 'Generated', tone: 'emerald' },
-  failed: { label: 'Failed', tone: 'rose' },
-  cancelled: { label: 'Cancelled', tone: 'slate' },
-};
-
-export const TAX_REGISTRATION_TYPE_META = {
-  regular: { label: 'Regular', tone: 'emerald' },
-  composition: { label: 'Composition', tone: 'sky' },
-  unregistered: { label: 'Unregistered', tone: 'slate' },
-};
-
-export const TAX_NATURE_OF_SUPPLY_META = {
-  taxable: { label: 'Taxable', tone: 'emerald' },
-  nil_rated: { label: 'Nil-rated', tone: 'sky' },
-  exempt: { label: 'Exempt', tone: 'violet' },
-  zero_rated: { label: 'Zero-rated (export/SEZ)', tone: 'amber' },
-  non_gst: { label: 'Non-GST', tone: 'slate' },
-};
-
-export const STATUTORY_RATE_KIND_META = {
-  tcs_gst_52: { label: 'TCS — GST s.52', tone: 'rose' },
-  tds_194o: { label: 'TDS — IT s.194-O', tone: 'sky' },
-};
-
-export const CREDIT_NOTE_REASON_META = {
-  return: { label: 'Return', tone: 'emerald' },
-  cancellation: { label: 'Cancellation', tone: 'rose' },
-  price_revision: { label: 'Price revision', tone: 'violet' },
-  deficiency: { label: 'Deficiency', tone: 'amber' },
-  other: { label: 'Other', tone: 'slate' },
-};
-
-export const STATUTORY_APPLIES_TO_META = {
-  net_taxable: { label: 'Net taxable value', tone: 'sky' },
-  gross_sales: { label: 'Gross sales', tone: 'violet' },
+export {
+  CREDIT_NOTE_REASON_META, EINVOICE_STATUS_META, STATUTORY_APPLIES_TO_META,
+  STATUTORY_RATE_KIND_META, TAX_DOC_STATUS_META, TAX_DOC_TYPE_META,
+  TAX_NATURE_OF_SUPPLY_META, TAX_REGISTRATION_TYPE_META,
 };
 
 export const TAX_TABS = [

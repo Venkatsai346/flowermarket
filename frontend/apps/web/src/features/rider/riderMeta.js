@@ -1,26 +1,10 @@
 /** Rider delivery workspace metadata + state helpers. */
+import {
+  RIDER_ASSIGNMENT_STATUS_META, RIDER_AVAILABILITY_META, RIDER_POD_TYPE_META,
+} from '@flower-market/shared';
 
-export const RIDER_ASSIGNMENT_STATUS_META = {
-  pending_accept: { label: 'Pending accept', tone: 'amber' },
-  accepted: { label: 'Accepted', tone: 'sky' },
-  at_hub: { label: 'At hub', tone: 'violet' },
-  in_transit: { label: 'In transit', tone: 'sky' },
-  arrived: { label: 'Arrived', tone: 'emerald' },
-  delivered: { label: 'Delivered', tone: 'emerald' },
-  failed: { label: 'Failed', tone: 'rose' },
-  cancelled: { label: 'Cancelled', tone: 'slate' },
-};
-
-export const RIDER_AVAILABILITY_META = {
-  available: { label: 'Available', tone: 'emerald' },
-  busy: { label: 'Busy', tone: 'amber' },
-  offline: { label: 'Offline', tone: 'slate' },
-};
-
-export const RIDER_POD_TYPE_META = {
-  otp: { label: 'OTP', tone: 'sky' },
-  photo: { label: 'Photo', tone: 'violet' },
-  signature: { label: 'Signature', tone: 'emerald' },
+export {
+  RIDER_ASSIGNMENT_STATUS_META, RIDER_AVAILABILITY_META, RIDER_POD_TYPE_META,
 };
 
 // State machine: PENDING_ACCEPT -> ACCEPTED -> AT_HUB -> IN_TRANSIT -> ARRIVED -> DELIVERED

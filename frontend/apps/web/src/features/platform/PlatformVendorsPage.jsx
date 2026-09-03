@@ -26,7 +26,7 @@ function VendorDetail({ vendorId, onClose, onChanged }) {
   const { data, loading, refetch } = useApi(() => api.marketplace.adminVendorDetail(vendorId), [vendorId]);
   const { busy, run } = useAction();
 
-  if (loading && !data) return <Modal open onClose={onClose} title="Vendor"><LoadingBlock /></Modal>;
+  if (loading && !data) return <Modal open onClose={onClose} title="Vendor"><LoadingBlock compact /></Modal>;
   const v = data || {};
   const products = v.products || [];
 

@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Boxes, Download, PackagePlus, Pencil, RefreshCw, Search, Trash2, Warehouse } from 'lucide-react';
+import { Boxes, Download, PackagePlus, Pencil, RefreshCw, Trash2, Warehouse } from 'lucide-react';
 import { inr, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
+import { useDownload } from '../../lib/useDownload.js';
 import { errMsg, rid } from '../../lib/utils.js';
-import { saveDownload } from '../../lib/download.js';
 import { toast } from '../../lib/toasts.js';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
+import FilterBar from '../../components/ui/FilterBar.jsx';
 import { Field, Input, Select } from '../../components/ui/Field.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
@@ -252,7 +253,7 @@ export default function ListingPanel() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [create, setCreate] = useState(false);
   const [selected, setSelected] = useState(null);
-  const [exporting, setExporting] = useState(false);
+  const { busy: exporting, run: download } = useDownload();
 
   const { data, meta, loading, error, refetch } = useApi(
     () => api.catalogTenant.listings({
@@ -269,18 +270,10 @@ export default function ListingPanel() {
   const counts = { draft: 0, active: 0, inactive: 0, out_of_stock: 0 };
   rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
 
-  const download = async () => {
-    setExporting(true);
-    try {
-      const tpl = await api.catalogTenant.bulkTemplate('price');
-      await saveDownload(tpl, 'price-template.csv');
-      toast.success('Price template downloaded — use Bulk import to apply it.');
-    } catch (e) {
-      toast.error(errMsg(e));
-    } finally {
-      setExporting(false);
-    }
-  };
+  const saveTemplate = () => download(
+    () => api.catalogTenant.bulkTemplate('price'),
+    'price-template.csv',
+  );
 
   return (
     <div className="space-y-4">
@@ -303,22 +296,22 @@ export default function ListingPanel() {
           bodyClassName="p-0!"
           actions={
             <>
-              <Button variant="ghost" size="sm" icon={Download} loading={exporting} onClick={download}>Price template</Button>
+              <Button variant="ghost" size="sm" icon={Download} loading={exporting} onClick={saveTemplate}>{exporting ? 'Preparing…' : 'Price template'}</Button>
               <Button variant="primary" size="sm" icon={PackagePlus} onClick={() => setCreate(true)}>Create listing</Button>
               <Button variant="ghost" size="sm" icon={RefreshCw} onClick={refresh}>Refresh</Button>
             </>
           }
         >
-          <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3">
-            <div className="relative min-w-[220px] flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-              <Input className="pl-9!" placeholder="Search title or SKU…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
-            </div>
-            <Select className="w-44!" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
-              <option value="">All statuses</option>
-              {LISTING_STATUS_OPTIONS.map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
-            </Select>
-          </div>
+          <FilterBar
+            search={search}
+            onSearch={(v) => { setSearch(v); setPage(1); }}
+            searchPlaceholder="Search title or SKU…"
+            status={status}
+            statusOptions={Object.entries(LISTING_STATUS_META).map(([v, m]) => [v, m.label])}
+            onStatus={(v) => { setStatus(v); setPage(1); }}
+            statusLabel="Status"
+            onReset={() => { setSearch(''); setStatus(''); setPage(1); }}
+          />
 
           <Table
             loading={loading && !rows.length}
