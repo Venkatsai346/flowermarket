@@ -37,6 +37,8 @@ import NoAccessPage from './features/auth/NoAccessPage.jsx';
 const SearchAdminPage = lazy(() => import('./features/search/SearchAdminPage.jsx'));
 const TaxPage = lazy(() => import('./features/tax/TaxPage.jsx'));
 const UsersPage = lazy(() => import('./features/users/UsersPage.jsx'));
+const InventoryPage = lazy(() => import('./features/inventory/InventoryPage.jsx'));
+const HubsPage = lazy(() => import('./features/hubs/HubsPage.jsx'));
 
 /** gate: must be logged in; hydrates the user profile from /users/me */
 function RequireAuth() {
@@ -103,6 +105,8 @@ export default function App() {
           <Route path="search" element={storeOnly(<Suspense fallback={<LoadingBlock />}><SearchAdminPage /></Suspense>)} />
           <Route path="tax" element={storeOnly(<Suspense fallback={<LoadingBlock />}><TaxPage /></Suspense>)} />
           <Route path="users" element={storeOnly(<Suspense fallback={<LoadingBlock />}><UsersPage /></Suspense>)} />
+          <Route path="inventory" element={storeOnly(<Suspense fallback={<LoadingBlock />}><InventoryPage /></Suspense>)} />
+          <Route path="hubs" element={storeOnly(<Suspense fallback={<LoadingBlock />}><HubsPage /></Suspense>)} />
           <Route path="rider" element={riderAccess(<RiderDeliveryPage />)} />
           <Route path="vendors" element={storeOnly(<StoreVendorsPage />)} />
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
