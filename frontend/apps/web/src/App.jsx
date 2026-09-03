@@ -36,6 +36,7 @@ import NoAccessPage from './features/auth/NoAccessPage.jsx';
 
 const SearchAdminPage = lazy(() => import('./features/search/SearchAdminPage.jsx'));
 const TaxPage = lazy(() => import('./features/tax/TaxPage.jsx'));
+const UsersPage = lazy(() => import('./features/users/UsersPage.jsx'));
 
 /** gate: must be logged in; hydrates the user profile from /users/me */
 function RequireAuth() {
@@ -101,6 +102,7 @@ export default function App() {
           <Route path="policies" element={storeOnly(<PoliciesPage />)} />
           <Route path="search" element={storeOnly(<Suspense fallback={<LoadingBlock />}><SearchAdminPage /></Suspense>)} />
           <Route path="tax" element={storeOnly(<Suspense fallback={<LoadingBlock />}><TaxPage /></Suspense>)} />
+          <Route path="users" element={storeOnly(<Suspense fallback={<LoadingBlock />}><UsersPage /></Suspense>)} />
           <Route path="rider" element={riderAccess(<RiderDeliveryPage />)} />
           <Route path="vendors" element={storeOnly(<StoreVendorsPage />)} />
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
