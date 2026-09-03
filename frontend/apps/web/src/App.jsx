@@ -40,6 +40,7 @@ const UsersPage = lazy(() => import('./features/users/UsersPage.jsx'));
 const InventoryPage = lazy(() => import('./features/inventory/InventoryPage.jsx'));
 const HubsPage = lazy(() => import('./features/hubs/HubsPage.jsx'));
 const CatalogOpsPage = lazy(() => import('./features/catalog/CatalogOpsPage.jsx'));
+const PlatformLifecyclePage = lazy(() => import('./features/platform/PlatformLifecyclePage.jsx'));
 
 /** gate: must be logged in; hydrates the user profile from /users/me */
 function RequireAuth() {
@@ -114,6 +115,7 @@ export default function App() {
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
           <Route path="storefront" element={storeOnly(<BrandingPage />)} />
           <Route path="platform" element={platformOnly(<PlatformOverview />)} />
+          <Route path="platform/lifecycle" element={platformOnly(<Suspense fallback={<LoadingBlock />}><PlatformLifecyclePage /></Suspense>)} />
           <Route path="platform/stores" element={platformOnly(<PlatformStoresPage />)} />
           <Route path="platform/vendor-applications" element={platformOnly(<VendorApplicationsPage />)} />
           <Route path="platform/vendors" element={platformOnly(<PlatformVendorsPage />)} />

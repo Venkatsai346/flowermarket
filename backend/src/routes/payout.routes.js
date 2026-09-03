@@ -7,7 +7,7 @@ import { USER_ROLES } from '../constants/enums.js';
 import {
   payoutListQuerySchema, payoutIdParamSchema, computeCycleSchema, approveSchema,
   reasonSchema, holdSchema, releaseSchema, adjustmentSchema, payoutAccountSchema,
-  kycSchema, kycReviewSchema, payoutPolicySchema, settlementIngestSchema,
+  kycSchema, kycReviewSchema, kycListQuerySchema, payoutPolicySchema, settlementIngestSchema,
 } from '../utils/validators/payout.validators.js';
 
 const router = Router();
@@ -39,6 +39,7 @@ router.post('/me/kyc', vendorOnly, validate(kycSchema), PayoutController.submitK
 
 // ---- platform: the money-moving surface ----
 router.get('/admin', platformAdmin, validate(payoutListQuerySchema, 'query'), PayoutController.listPayouts);
+router.get('/admin/kyc', platformAdmin, validate(kycListQuerySchema, 'query'), PayoutController.listKyc);
 router.get('/admin/policy', platformAdmin, PayoutController.getPolicy);
 router.put('/admin/policy', platformAdmin, validate(payoutPolicySchema), PayoutController.upsertPolicy);
 router.post('/admin/eligibility/sweep', platformAdmin, PayoutController.markEligible);

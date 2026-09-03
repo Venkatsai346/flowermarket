@@ -1,6 +1,6 @@
 import Joi from 'joi';
 import {
-  PAYOUT_STATE, PAYOUT_HOLD_REASON, PAYOUT_ADJUSTMENT_REASON, PAYOUT_METHOD,
+  KYC_STATUS, PAYOUT_STATE, PAYOUT_HOLD_REASON, PAYOUT_ADJUSTMENT_REASON, PAYOUT_METHOD,
 } from '../../constants/enums.js';
 
 const objectId = Joi.string().hex().length(24);
@@ -60,6 +60,13 @@ export const kycSchema = Joi.object({
 export const kycReviewSchema = Joi.object({
   status: Joi.string().valid('approved', 'rejected').required(),
   rejectionReason: Joi.string().max(300).allow(null, ''),
+});
+
+export const kycListQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1),
+  limit: Joi.number().integer().min(1).max(100),
+  status: Joi.string().valid(...Object.values(KYC_STATUS)),
+  search: Joi.string().max(120).allow('', null),
 });
 
 export const payoutPolicySchema = Joi.object({

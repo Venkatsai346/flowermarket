@@ -213,6 +213,7 @@ export function createEndpoints(client) {
       admin: {
         list: (q = {}) => c.get('/payouts/admin', { query: q }),
         get: (id) => c.get(`/payouts/admin/${id}`),
+        kyc: (q = {}) => c.get('/payouts/admin/kyc', { query: q }),
         policy: (q = {}) => c.get('/payouts/admin/policy', { query: q }),
         savePolicy: (body) => c.put('/payouts/admin/policy', body),
         sweepEligibility: () => c.post('/payouts/admin/eligibility/sweep'),

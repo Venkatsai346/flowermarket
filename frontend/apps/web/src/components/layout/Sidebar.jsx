@@ -1,5 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
+  Activity,
   Banknote,
   Bike,
   BookOpenCheck,
@@ -35,6 +36,7 @@ const GROUPS = {
     label: 'Platform',
     items: [
       { to: '/platform', label: 'Overview', icon: LayoutDashboard, end: true },
+      { to: '/platform/lifecycle', label: 'Lifecycle & ops', icon: Activity },
       { to: '/platform/stores', label: 'Stores', icon: Store },
       { to: '/platform/vendor-applications', label: 'Vendor applications', icon: ClipboardCheck },
       { to: '/platform/vendors', label: 'Vendors', icon: Truck },

@@ -279,6 +279,11 @@ class PayoutController {
     return res.status(200).json(success(result, { message: 'Webhook processed' }));
   });
 
+  listKyc = asyncHandler(async (req, res) => {
+    const result = await payoutService.listKyc({ query: req.query });
+    res.status(200).json(success(result.items, { meta: result.meta, message: 'KYC queue fetched' }));
+  });
+
   reviewKyc = asyncHandler(async (req, res) => {
     const account = await VendorPayoutAccount.findOne({ vendorId: req.params.id, isDefault: true });
     if (!account) throw notFound('Vendor payout account not found', 'PAYOUT_NO_ACCOUNT');

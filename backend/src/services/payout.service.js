@@ -21,8 +21,8 @@ import { serializeList } from '../utils/serialize.js';
 import { toPaise, fromPaise, sumPaise, applyBps } from '../utils/money.js';
 import { assertTransition, PAYOUT_IN_FLIGHT } from '../utils/payoutStateMachine.js';
 import {
-  PAYOUT_LINE_STATE, PAYOUT_STATE, PAYOUT_HOLD_REASON, STATUTORY_RATE_KIND,
-  LEDGER_JOURNAL_KIND, ORDER_STATUS, AUDIT_ACTION, AUDIT_ACTOR_TYPE,
+  BANK_VERIFICATION_STATUS, KYC_STATUS, PAYOUT_LINE_STATE, PAYOUT_STATE, PAYOUT_HOLD_REASON,
+  STATUTORY_RATE_KIND, LEDGER_JOURNAL_KIND, ORDER_STATUS, AUDIT_ACTION, AUDIT_ACTOR_TYPE,
 } from '../constants/enums.js';
 
 /**
@@ -1066,6 +1066,67 @@ class PayoutService {
     const batch = await PayoutBatch.findOne(q);
     if (!batch) throw notFound('Payout batch not found', 'PAYOUT_NOT_FOUND');
     return batch;
+  }
+
+  /**
+   * Platform KYC review queue — vendor payout accounts joined with vendor
+   * profile metadata. Returns only the safe, non-encrypted account fields.
+   */
+  async listKyc({ query = {} } = {}) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const q = { isDefault: true };
+
+    if (query.status) q['kyc.status'] = query.status;
+    if (query.search) {
+      const rx = new RegExp(String(query.search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const vendorHits = await Vendor.find({ $or: [{ businessName: rx }, { slug: rx }] })
+        .select('_id').lean();
+      const vendorIds = vendorHits.map((v) => v._id);
+      q.vendorId = { $in: vendorIds };
+    }
+
+    const [accounts, total] = await Promise.all([
+      VendorPayoutAccount.find(q).sort({ _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      VendorPayoutAccount.countDocuments(q),
+    ]);
+
+    const vendorIds = [...new Set(accounts.map((a) => String(a.vendorId)).filter(Boolean))];
+    const vendors = vendorIds.length
+      ? await Vendor.find({ _id: { $in: vendorIds } })
+        .select('_id businessName slug city gstin status joinedAt')
+        .lean()
+      : [];
+    const vendorById = new Map(vendors.map((v) => [String(v._id), v]));
+
+    const items = accounts.map((a) => {
+      const vendor = vendorById.get(String(a.vendorId)) || null;
+      const now = new Date();
+      return {
+        id: a._id,
+        vendorId: a.vendorId,
+        vendor: vendor ? {
+          id: vendor._id, businessName: vendor.businessName, slug: vendor.slug,
+          city: vendor.city, gstin: vendor.gstin, status: vendor.status, joinedAt: vendor.joinedAt,
+        } : null,
+        method: a.method,
+        accountHolderName: a.accountHolderName,
+        maskedAccount: a.maskedAccount,
+        ifsc: a.ifsc,
+        vpa: a.vpa,
+        bankName: a.bankName,
+        accountStatus: a.status,
+        verification: a.verification || {},
+        kyc: a.kyc || {},
+        frozenUntil: a.frozenUntil || null,
+        payable: a.status === 'active'
+          && a.verification?.status === BANK_VERIFICATION_STATUS.VERIFIED
+          && a.kyc?.status === KYC_STATUS.APPROVED
+          && (!a.frozenUntil || new Date(a.frozenUntil) <= now),
+      };
+    });
+
+    return { items, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: page * limit < total } };
   }
 
   async listBatches({ vendorId = null, query = {} }) {

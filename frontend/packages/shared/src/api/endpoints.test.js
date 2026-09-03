@@ -82,6 +82,18 @@ test('admin user, hub, slot, notification and export helpers map correctly', asy
   check(api, client.calls, ['POST', '/admin/exports']);
 });
 
+test('payout admin KYC queue helpers map correctly', async () => {
+  const client = routeMock();
+  const api = createEndpoints(client);
+
+  api.payouts.admin.kyc({ status: 'pending', page: 2 });
+  const kyc = check(api, client.calls, ['GET', '/payouts/admin/kyc']);
+  assert.deepEqual(kyc.opts.query, { status: 'pending', page: 2 });
+
+  api.payouts.admin.reviewKyc('v_1', { status: 'approved' });
+  check(api, client.calls, ['POST', '/payouts/admin/kyc/v_1/review']);
+});
+
 test('fulfillment, returns, rider and policies helpers map correctly', async () => {
   const client = routeMock();
   const api = createEndpoints(client);
