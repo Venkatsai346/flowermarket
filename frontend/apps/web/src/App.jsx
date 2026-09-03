@@ -12,6 +12,9 @@ import MastersPage from './features/catalog/MastersPage.jsx';
 import CategoriesPage from './features/catalog/CategoriesPage.jsx';
 import BrandsPage from './features/catalog/BrandsPage.jsx';
 import OrdersPage from './features/orders/OrdersPage.jsx';
+import FulfillmentPage from './features/ops/FulfillmentPage.jsx';
+import AftersalesPage from './features/aftersales/AftersalesPage.jsx';
+import RiderDeliveryPage from './features/rider/RiderDeliveryPage.jsx';
 import StoreVendorsPage from './features/vendors/StoreVendorsPage.jsx';
 import StoreBillingPage from './features/billing/StoreBillingPage.jsx';
 import BrandingPage from './features/storefront/BrandingPage.jsx';
@@ -64,13 +67,17 @@ function RoleGuard({ roles, children }) {
 function HomeRedirect() {
   const role = useAuthStore((s) => s.user?.role);
   if (!role) return <LoadingBlock />;
-  const home = role === 'super_admin' ? '/platform' : role === 'admin' ? '/' : role === 'vendor' ? '/vendor' : '/no-access';
+  const home = role === 'super_admin' ? '/platform'
+    : role === 'admin' ? '/'
+      : role === 'rider' ? '/rider'
+        : role === 'vendor' ? '/vendor' : '/no-access';
   return <Navigate to={home} replace />;
 }
 
 const storeOnly = (el) => <RoleGuard roles={['admin', 'super_admin']}>{el}</RoleGuard>;
 const platformOnly = (el) => <RoleGuard roles={['super_admin']}>{el}</RoleGuard>;
 const vendorOnly = (el) => <RoleGuard roles={['vendor']}>{el}</RoleGuard>;
+const riderAccess = (el) => <RoleGuard roles={['rider', 'admin', 'super_admin']}>{el}</RoleGuard>;
 
 export default function App() {
   return (
@@ -85,6 +92,9 @@ export default function App() {
           <Route path="catalog/categories" element={storeOnly(<CategoriesPage />)} />
           <Route path="catalog/brands" element={storeOnly(<BrandsPage />)} />
           <Route path="orders" element={storeOnly(<OrdersPage />)} />
+          <Route path="fulfillment" element={storeOnly(<FulfillmentPage />)} />
+          <Route path="returns" element={storeOnly(<AftersalesPage />)} />
+          <Route path="rider" element={riderAccess(<RiderDeliveryPage />)} />
           <Route path="vendors" element={storeOnly(<StoreVendorsPage />)} />
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
           <Route path="storefront" element={storeOnly(<BrandingPage />)} />

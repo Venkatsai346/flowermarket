@@ -11,6 +11,12 @@ export const updateCartItemSchema = Joi.object({
   qty: Joi.number().integer().min(1).max(99).required(),
 });
 
+export const checkoutQuoteSchema = Joi.object({
+  slotReservationId: objectId.required(),
+  addressId: objectId.required(),
+  confirmPriceChanges: Joi.boolean().default(false),
+});
+
 export const checkoutSchema = Joi.object({
   slotReservationId: objectId.required(),
   addressId: objectId.required(),

@@ -6,6 +6,8 @@
  * - on 401: single-flight refresh via POST /auth/refresh (rotating token), retries
  *   the original request once; only clears the session when refresh itself fails
  * - throws ApiError { status, code, details } for non-2xx / !success responses
+ * - `raw: true` returns the untouched `Response` for downloads (CSV, templates,
+ *   exported files); `download()` is the typed convenience for that path.
  *
  * Framework-agnostic (plain ESM) — used by the web console and the mobile app.
  */
@@ -30,6 +32,33 @@ function buildQuery(q) {
   }
   const t = s.toString();
   return t ? `?${t}` : '';
+}
+
+/**
+ * Read a JSON error payload from a response without assuming the body is JSON.
+ * Raw downloads (CSV, exported files) can fail with a `{ success, code, message }`
+ * envelope exactly like JSON endpoints.
+ */
+async function parseErrorResponse(res, fallbackMessage) {
+  let json = null;
+  try {
+    const text = await res.text();
+    if (text && text.trim()) json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
+  return new ApiError(json?.message || fallbackMessage, {
+    status: res.status,
+    code: json?.code || 'REQUEST_FAILED',
+    details: json?.details || null,
+    response: json,
+  });
+}
+
+function toHeadersObject(res) {
+  const out = {};
+  res.headers?.forEach?.((value, name) => { out[name] = value; });
+  return out;
 }
 
 export function createApiClient({
@@ -64,7 +93,15 @@ export function createApiClient({
     return json.data.tokens.accessToken;
   };
 
-  const request = async (path, { method = 'GET', query, body, headers = {}, signal, retry = true } = {}) => {
+  const request = async (path, {
+    method = 'GET',
+    query,
+    body,
+    headers = {},
+    signal,
+    retry = true,
+    raw = false,
+  } = {}) => {
     const url = `${baseURL}${path}${buildQuery(query)}`;
     const h = { ...extraHeaders(), ...headers };
     const token = getAccessToken();
@@ -82,14 +119,11 @@ export function createApiClient({
       throw new ApiError(err.message || 'Network error', { status: 0, code: 'NETWORK_ERROR' });
     }
 
-    let json = null;
-    try { json = await res.json(); } catch { json = null; }
-
     if (res.status === 401 && retry) {
       try {
         if (!refreshing) refreshing = doRefresh().finally(() => { refreshing = null; });
         await refreshing;
-        return request(path, { method, query, body, headers, signal, retry: false });
+        return request(path, { method, query, body, headers, signal, retry: false, raw });
       } catch (refreshErr) {
         clearSession();
         onUnauthorized(refreshErr);
@@ -99,6 +133,23 @@ export function createApiClient({
         });
       }
     }
+
+    // Raw downloads do not use the JSON success envelope; return the untouched
+    // Response so the caller can stream a Blob and read Content-Disposition.
+    if (raw) {
+      if (!res.ok) throw await parseErrorResponse(res, `Request failed (${res.status})`);
+      return {
+        data: res,
+        headers: toHeadersObject(res),
+        status: res.status,
+        message: null,
+        meta: null,
+        raw: true,
+      };
+    }
+
+    let json = null;
+    try { json = await res.json(); } catch { json = null; }
 
     if (!res.ok || !json?.success) {
       throw new ApiError(json?.message || `Request failed (${res.status})`, {
@@ -119,6 +170,11 @@ export function createApiClient({
     patch: (path, body, o = {}) => request(path, { ...o, method: 'PATCH', body }),
     put: (path, body, o = {}) => request(path, { ...o, method: 'PUT', body }),
     del: (path, o = {}) => request(path, { ...o, method: 'DELETE' }),
+    /**
+     * Download an authenticated file response (CSV, template, exported export).
+     * Returns `{ data: Response, headers, status, message, meta, raw: true }`.
+     */
+    download: (path, o = {}) => request(path, { ...o, method: 'GET', raw: true }),
   };
 }
 

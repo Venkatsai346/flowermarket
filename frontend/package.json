@@ -14,7 +14,8 @@
     "preview": "npm run preview -w @flower-market/web",
     "mobile": "npm run start -w @flower-market/mobile",
     "storefront": "npm run dev -w @flower-market/storefront",
-    "build:storefront": "npm run build -w @flower-market/storefront"
+    "build:storefront": "npm run build -w @flower-market/storefront",
+    "test": "npm run test -w @flower-market/storefront"
   },
   "engines": {
     "node": ">=18"

@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Flower2, Package, Search, ShoppingBag, User, X } from 'lucide-react';
+import { Flower2, Package, Search, ShoppingBag, X } from 'lucide-react';
 import { useShop } from '../store.js';
-import { api, useShopAuth } from '../api.js';
+import { api } from '../api.js';
+import AccountMenu from './AccountMenu.jsx';
 import { cn } from '../lib/utils.js';
 
 export default function Header({ query, onQuery }) {
   const store = useShop((s) => s.store);
   const count = useShop((s) => s.itemCount());
   const openCart = useShop((s) => s.openCart);
-  const openAuth = useShop((s) => s.openAuth);
-  const isAuth = useShopAuth((s) => s.isAuthenticated());
   const [local, setLocal] = useState(query || '');
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
@@ -112,14 +111,7 @@ export default function Header({ query, onQuery }) {
           >
             <Package className="h-5 w-5" />
           </Link>
-          <button
-            type="button"
-            onClick={() => (isAuth ? window.location.assign('/orders') : openAuth())}
-            className="flex h-10 w-10 items-center justify-center rounded-full text-slate-600 transition hover:bg-slate-100"
-            aria-label={isAuth ? 'Account' : 'Sign in'}
-          >
-            <User className="h-5 w-5" />
-          </button>
+          <AccountMenu />
           <button
             type="button"
             onClick={openCart}

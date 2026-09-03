@@ -555,15 +555,20 @@ class OrderService {
     return SlotReservation.findOne({ _id: slotReservationId, tenantId, userId });
   }
 
-  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source }) {
+  /**
+   * Pure-order computation shared by checkout (persist) and the checkout quote
+   * (gate the wallet option on the EXACT amount the server will charge).
+   *
+   * It resolves the slot type + product category per line, then lets the
+   * pricing policy engine produce the authoritative immutable breakdown. No
+   * state is written here — the caller decides whether to persist.
+   */
+  async computeOrderChargesForCart({ tenantId, userId, cart, items, hold }) {
     const { default: DeliverySlot } = await import('../models/deliverySlot.model.js');
     const slotDoc = await DeliverySlot.findById(hold.slotId);
 
-    // ---- Phase 3.5: compute charges from POLICY (delivery fee / tax /
-    //      discount), not a hardcoded 49. The result is an immutable
-    //      breakdown persisted separately + per-item amounts on OrderItem. ----
-    // Resolve the category per line — GST is a CATEGORY-level legal
-    // classification, so the per-line TaxPolicy lookup needs it.
+    // GST is a CATEGORY-level legal classification, so the per-line TaxPolicy
+    // lookup needs the product master's category.
     const { default: ProductMaster } = await import('../models/productMaster.model.js');
     const masters = await ProductMaster.find({ _id: { $in: items.map((i) => i.productMasterId).filter(Boolean) } })
       .select('_id categoryId vendorId').lean();
@@ -584,6 +589,57 @@ class OrderService {
       zoneDistanceKm: null, // zone pricing: pass hub->address distance when available
       couponCode: cart.couponCode || null,
       userId,
+    });
+
+    return { charges, slotDoc, categoryByMaster, vendorByMaster };
+  }
+
+  /**
+   * Exact checkout preflight for a held slot + owned address. It mirrors the
+   * checkout revalidation contract: if prices/stocks changed, the caller must
+   * pass `confirmPriceChanges: true` (the storefront already does) and we snap
+   * the disposable cart to live prices. The returned grandTotal is therefore
+   * the same number checkout will charge.
+   */
+  async quote({ tenantId, userId, slotReservationId, addressId, confirmPriceChanges = false }) {
+    const revalidated = await cartService.revalidate({ tenantId, userId });
+    if (revalidated.changed && !confirmPriceChanges) {
+      throw conflict('Prices or stock changed since you added items — please confirm',
+        'PRICE_CHANGED', { diffs: revalidated.diffs });
+    }
+    if (revalidated.changed) {
+      await cartService.applyLivePrices({ tenantId, userId });
+    }
+
+    const hold = await this.findMyHold({ tenantId, userId, slotReservationId });
+    if (!hold || hold.status !== SLOT_RESERVATION_STATUS.HELD || hold.expiresAt < new Date()) {
+      throw conflict('Slot hold is invalid or expired — please reserve again', 'RESERVATION_INVALID');
+    }
+
+    const address = await Address.findOne({ _id: addressId, tenantId, userId });
+    if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
+
+    const { cart, items } = await cartService.getCart({ tenantId, userId });
+    if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
+    const { charges, slotDoc } = await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
+
+    return {
+      itemSubtotal: charges.itemSubtotal,
+      deliveryFee: charges.deliveryFee,
+      taxTotal: charges.taxTotal,
+      discountTotal: charges.discountTotal,
+      grandTotal: charges.grandTotal,
+      currency: 'INR',
+      couponCode: cart.couponCode || null,
+      slotType: slotDoc?.windowType || 'normal',
+      itemCount: items.reduce((a, i) => a + i.qty, 0),
+      priceChanged: revalidated.changed,
+    };
+  }
+
+  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source }) {
+    const { charges, slotDoc, categoryByMaster, vendorByMaster } = await this.computeOrderChargesForCart({
+      tenantId, userId, cart, items, hold,
     });
 
     // resolve category per line for tax lookup (computeOrderCharges already

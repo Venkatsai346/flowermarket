@@ -50,6 +50,13 @@ const PaymentSchema = new Schema(
     paidAt: { type: Date, default: null },
     failedAt: { type: Date, default: null },
     failureReason: { type: String, default: null, maxlength: 300 },
+
+    // Internal optimistic "only one thread debits the wallet for this Payment"
+    // claim. Wallet debits CANNOT be safely retried on a raw idempotency key
+    // alone, so a concurrent retry must not race the first debit; the winner
+    // holds a token here and the loser heals/retries once the token clears.
+    walletClaimToken: { type: String, default: null },
+    walletClaimedAt: { type: Date, default: null },
   },
   { collection: 'payments' }
 );

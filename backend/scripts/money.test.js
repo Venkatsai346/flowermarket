@@ -309,6 +309,30 @@ section('6. multi-vendor order — every seller gets exactly their share');
 }
 
 // ---------------------------------------------------------------------------
+section('7. wallet payment — the source account is customer_wallet_liability');
+// ---------------------------------------------------------------------------
+
+{
+  const { order, items } = buildFixture();
+  order.paymentMethod = 'wallet';
+  const { lines } = await ledgerPostingService.buildSaleLines({ order, items, vendorCache, isWalletPayment: true });
+
+  const debits = sumPaise(...lines.map((l) => l.debitPaise || 0));
+  const credits = sumPaise(...lines.map((l) => l.creditPaise || 0));
+  const byAccount = Object.fromEntries(
+    lines.map((l) => [l.accountCode, (l.creditPaise || 0) - (l.debitPaise || 0)])
+  );
+
+  eq('a wallet sale still balances to the paisa', debits, credits);
+  eq('wallet sale debits customer_wallet_liability, not gateway_clearing',
+    byAccount[ledgerAccounts.walletLiability()], -toPaise(order.totalAmount));
+  eq('gateway_clearing is untouched for a wallet sale',
+    byAccount[ledgerAccounts.gatewayClearing()] || 0, 0);
+  eq('vendor credits are unchanged for a wallet sale',
+    byAccount[ledgerAccounts.vendorPayable(VENDOR_ID)], toPaise(4500));
+}
+
+// ---------------------------------------------------------------------------
 console.log(`\n${'─'.repeat(60)}`);
 console.log(`money core: ${passed} passed, ${failed} failed`);
 if (failed) {

@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate.js';
 import {
   addCartItemSchema,
   updateCartItemSchema,
+  checkoutQuoteSchema,
   checkoutSchema,
   slotReserveSchema,
   cartCouponSchema,
@@ -23,6 +24,7 @@ router.patch('/items/:id', validate(updateCartItemSchema), CartController.update
 router.delete('/items/:id', CartController.removeItem);
 router.delete('/', CartController.clear);
 router.post('/revalidate', CartController.revalidate);
+router.post('/quote', validate(checkoutQuoteSchema), CartController.quote);
 router.post('/checkout', validate(checkoutSchema), CartController.checkout);
 
 // coupons (Phase 3.5)

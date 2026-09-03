@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
   Banknote,
+  Bike,
   BookOpenCheck,
   ClipboardCheck,
   Globe,
@@ -11,6 +12,7 @@ import {
   LayoutDashboard,
   LogOut,
   Package,
+  PackageCheck,
   Palette,
   Receipt,
   ShoppingCart,
@@ -43,6 +45,8 @@ const GROUPS = {
       { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
       { to: '/catalog', label: 'My catalog', icon: Package },
       { to: '/orders', label: 'Orders', icon: ShoppingCart },
+      { to: '/fulfillment', label: 'Fulfillment', icon: Truck },
+      { to: '/returns', label: 'After-sales', icon: PackageCheck },
       { to: '/vendors', label: 'Vendors', icon: Truck },
       { to: '/billing', label: 'Billing', icon: Receipt },
       { to: '/storefront', label: 'Storefront', icon: Palette },
@@ -66,6 +70,12 @@ const GROUPS = {
       { to: '/vendor/payout-account', label: 'Payout account', icon: Landmark },
     ],
   },
+  rider: {
+    label: 'Rider',
+    items: [
+      { to: '/rider', label: 'Deliveries', icon: Bike, end: true },
+    ],
+  },
 };
 
 function SidebarNav() {
@@ -74,6 +84,7 @@ function SidebarNav() {
   if (role === 'super_admin') groups.push('platform', 'store', 'catalog');
   else if (role === 'admin') groups.push('store', 'catalog');
   else if (role === 'vendor') groups.push('vendor');
+  else if (role === 'rider') groups.push('rider');
 
   return (
     <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">

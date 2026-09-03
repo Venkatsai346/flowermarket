@@ -238,7 +238,8 @@ re-confirmed (`confirmPriceChanges: true`).
 | `DELETE /cart/items/:id` | remove line |
 | `DELETE /cart` | clear cart |
 | `POST /cart/revalidate` | refetch live price+stock per line → `{changed, diffs, total}` |
-| `POST /cart/checkout` `{slotReservationId, addressId, paymentMethod, confirmPriceChanges, idempotencyKey}` | **the saga**: charge → hard-commit inventory → confirm slot → queue picking → `CONFIRMED`; returns order + items + timeline |
+| `POST /cart/quote` `{slotReservationId, addressId, confirmPriceChanges}` | exact checkout preflight → `{itemSubtotal, deliveryFee, taxTotal, discountTotal, grandTotal, priceChanged}`; used by the storefront to gate wallet payment on whether the balance covers the true total |
+| `POST /cart/checkout` `{slotReservationId, addressId, paymentMethod, confirmPriceChanges, idempotencyKey}` | **the saga**: charge → hard-commit inventory → confirm slot → queue picking → `CONFIRMED`; returns order + items + timeline. `paymentMethod: 'wallet'` debits `customer_wallet_liability` via the internal provider (no gateway) |
 
 ## Slotted delivery (`/cart/slots` — authenticated)
 
@@ -294,7 +295,7 @@ Two flows (doc §6): `pickup_qc` (pickup → QC → refund) for non-perishables,
 | `GET /wallet/refunds` | my refunds (destination, status) |
 | `GET /fulfillment/refunds` (ADMIN) | all refunds |
 | `POST /fulfillment/refunds` (ADMIN) `{orderId, amount, reason, destination}` | manual refund (idempotencyKey dedupes) |
-| `POST /fulfillment/reconcile/payments` (ADMIN) | sweep stale PENDING payments → FAILED |
+| `POST /fulfillment/reconcile/payments` (ADMIN) | sweep stale PENDING gateway payments → FAILED (order compensated); wallet PENDING payments are first **healed** if their debit already exists, then cancelled only if truly unrecoverable |
 
 ## Phase 3.5 — policies, rider app, forecasting, payments webhooks
 

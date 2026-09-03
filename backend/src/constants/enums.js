@@ -258,6 +258,7 @@ export const PAYMENT_METHOD = Object.freeze({
 export const PAYMENT_PROVIDER = Object.freeze({
   MOCK: 'mock', // dev/test gateway
   RAZORPAY: 'razorpay', // production (adapter-ready)
+  WALLET: 'wallet', // internal — money moves from the customer's wallet liability, no external gateway
 });
 
 export const PAYMENT_TRANSACTION_TYPE = Object.freeze({

@@ -12,6 +12,8 @@ import { generateOpaqueToken } from '../utils/hash.js';
 import {
   REFUND_DESTINATION,
   REFUND_TRANSACTION_STATUS,
+  PAYMENT_METHOD,
+  PAYMENT_PROVIDER,
   PAYMENT_STATUS,
   WALLET_TXN_REASON,
 } from '../constants/enums.js';
@@ -49,7 +51,21 @@ class RefundService {
     const order = await Order.findById(orderId);
     if (!order) throw notFound('Order not found', 'ORDER_NOT_FOUND');
 
-    const dest = destination || (value > GATEWAY_REFUND_THRESHOLD ? REFUND_DESTINATION.ORIGINAL_METHOD : REFUND_DESTINATION.WALLET);
+    // A wallet payment never crossed a gateway, so its money can only come
+    // back through the wallet. The payment row is the source of truth (the
+    // order's `paymentMethod` is only a hint at this point).
+    let isWalletPayment = order.paymentMethod === PAYMENT_METHOD.WALLET;
+    if (paymentId) {
+      const payment = await Payment.findById(paymentId).lean();
+      if (payment) {
+        isWalletPayment = payment.provider === PAYMENT_PROVIDER.WALLET
+          || payment.method === PAYMENT_METHOD.WALLET;
+      }
+    }
+
+    const dest = isWalletPayment
+      ? REFUND_DESTINATION.WALLET
+      : destination || (value > GATEWAY_REFUND_THRESHOLD ? REFUND_DESTINATION.ORIGINAL_METHOD : REFUND_DESTINATION.WALLET);
 
     // Phase 3.5: persist the component breakdown (finance/credit-note ready).
     // amount === refundItemAmount + refundTaxAmount + refundFeeAmount.

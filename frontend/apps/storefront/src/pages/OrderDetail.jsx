@@ -1,25 +1,84 @@
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Circle, MapPin, Receipt, Truck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
+import {
+  ArrowLeft, CheckCircle2, Circle, MapPin, PackageX, Receipt, RotateCcw, Truck,
+} from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
-import { Money, Skeleton, Empty } from '../components/ui.jsx';
+import { useShop } from '../store.js';
+import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
+import ReturnSheet from '../components/ReturnSheet.jsx';
 import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
-import { cn } from '../lib/utils.js';
+import { CANCEL_REASONS, canCancel, canReturn, meta } from '../lib/afterSales.js';
+import { cn, errMsg } from '../lib/utils.js';
 
 export default function OrderDetail() {
   const { id } = useParams();
-  const { data, loading } = useApi(() => api.shop.order(id), [id]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const toast = useShop((s) => s.toast);
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0].code);
+  const [cancelText, setCancelText] = useState('');
+  const [cancelling, setCancelling] = useState(false);
+
+  const { data, loading, refetch } = useApi(() => api.shop.order(id), [id]);
   const { data: timeline } = useApi(() => api.shop.orderTimeline(id), [id]);
+
+  const clearActionParam = () => {
+    if (!searchParams.get('return') && !searchParams.get('cancel')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('return');
+    next.delete('cancel');
+    setSearchParams(next, { replace: true });
+  };
+
+  const order = data?.order || data;
+  const items = data?.items || order?.items || [];
+  const orderMeta = STATUS_META[order?.status] || { label: order?.status, step: 0, tone: 'bg-slate-100 text-slate-700' };
+  const cancelled = order?.status === 'cancelled';
+  const cancelAllowed = canCancel(order?.status);
+  const canRequestReturn = canReturn(order, items);
+
+  // Deep-link support: /orders/:id?return=1 / ?cancel=1 opens the right flow.
+  useEffect(() => {
+    if (searchParams.get('return') === '1' && canRequestReturn) setReturnOpen(true);
+    if (searchParams.get('cancel') === '1' && cancelAllowed) setConfirmCancel(true);
+  }, [searchParams, canRequestReturn, cancelAllowed]);
 
   if (loading && !data) {
     return <div className="wrap space-y-3 py-8"><Skeleton className="h-8 w-48" /><Skeleton className="h-40 w-full rounded-2xl" /></div>;
   }
   if (!data) return <div className="wrap py-16"><Empty icon={Receipt} title="Order not found" /></div>;
 
-  const order = data.order || data;
-  const items = data.items || order.items || [];
-  const meta = STATUS_META[order.status] || { label: order.status, step: 0 };
-  const cancelled = order.status === 'cancelled';
+  const openReturn = () => setReturnOpen(true);
+
+  const toggleCancel = () => {
+    if (confirmCancel) { setConfirmCancel(false); clearActionParam(); }
+    else setConfirmCancel(true);
+  };
+
+  const submitCancel = async () => {
+    setCancelling(true);
+    try {
+      const reason = cancelReason === 'other' ? 'customer_requested' : cancelReason;
+      const reasonText = cancelReason === 'other' ? cancelText.trim() : CANCEL_REASONS.find((r) => r.code === cancelReason)?.label;
+      if (cancelReason === 'other' && !reasonText) {
+        toast('Please describe why you are cancelling', 'error');
+        return;
+      }
+      await api.shop.cancelOrder(order.id, { reason, reasonText });
+      await refetch();
+      setConfirmCancel(false);
+      setCancelText('');
+      clearActionParam();
+      toast('Order cancelled', 'success');
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   return (
     <div className="wrap max-w-3xl py-8">
@@ -32,16 +91,60 @@ export default function OrderDetail() {
           <h1 className="font-mono text-lg font-bold text-slate-900">{order.orderNumber}</h1>
           <p className="text-sm text-slate-500">{order.itemsCount} item{order.itemsCount === 1 ? '' : 's'}</p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-sm font-semibold ${meta.tone}`}>{meta.label}</span>
+        <span className={`rounded-full px-3 py-1 text-sm font-semibold ${orderMeta.tone}`}>{orderMeta.label}</span>
       </div>
+
+      {/* actions */}
+      {(cancelAllowed || canRequestReturn) && !cancelled && (
+        <div className="mb-5 flex flex-wrap gap-2">
+          {canRequestReturn && (
+            <Button variant="soft" size="sm" icon={RotateCcw} onClick={openReturn}>Request a return</Button>
+          )}
+          {cancelAllowed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={PackageX}
+              className="!text-rose-600 hover:!bg-rose-50"
+              onClick={toggleCancel}
+            >
+              {confirmCancel ? 'Close' : 'Cancel order'}
+            </Button>
+          )}
+        </div>
+      )}
+
+      {confirmCancel && (
+        <div className="card mb-5 space-y-3 border-rose-200 p-4">
+          <p className="text-sm font-semibold text-slate-900">Why are you cancelling this order?</p>
+          <select value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} className="input" aria-label="Cancellation reason">
+            {CANCEL_REASONS.map((r) => <option key={r.code} value={r.code}>{r.label}</option>)}
+          </select>
+          {cancelReason === 'other' && (
+            <textarea
+              value={cancelText}
+              onChange={(e) => setCancelText(e.target.value)}
+              placeholder="Tell us why (required)"
+              className="input min-h-[72px] resize-y"
+              maxLength={500}
+            />
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={() => { setConfirmCancel(false); clearActionParam(); }}>Keep order</Button>
+            <Button variant="outline" size="sm" loading={cancelling} className="!border-rose-200 !text-rose-600" onClick={submitCancel}>
+              Cancel this order
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* progress rail */}
       {!cancelled && (
         <div className="card mb-5 p-5">
           <ol className="flex items-center">
             {TRACK_STEPS.map((label, i) => {
-              const done = meta.step >= i;
-              const current = meta.step === i;
+              const done = orderMeta.step >= i;
+              const current = orderMeta.step === i;
               return (
                 <li key={label} className="flex flex-1 items-center last:flex-none">
                   <div className="flex flex-col items-center gap-1.5">
@@ -97,6 +200,9 @@ export default function OrderDetail() {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-slate-800">{it.skuSnapshot?.title}</p>
               <p className="text-xs text-slate-500">{it.qty} × <Money value={it.priceAtOrder?.sellingPrice} /></p>
+              {Boolean(it.returnedQty) && (
+                <p className="text-[11px] font-medium text-emerald-600">{it.returnedQty} returned</p>
+              )}
             </div>
             <Money value={it.lineTotal} className="text-sm font-semibold" />
           </div>
@@ -120,7 +226,7 @@ export default function OrderDetail() {
               <li key={i} className="flex gap-3 text-sm">
                 <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--brand)' }} />
                 <span className="text-slate-600">
-                  {STATUS_META[t.toStatus]?.label || t.toStatus}
+                  {meta(t.toStatus, STATUS_META).label || t.toStatus}
                   {t.note && <span className="block text-xs text-slate-400">{t.note}</span>}
                 </span>
               </li>
@@ -128,6 +234,14 @@ export default function OrderDetail() {
           </ol>
         </div>
       )}
+
+      <ReturnSheet
+        order={order}
+        items={items}
+        open={returnOpen}
+        onClose={() => { setReturnOpen(false); clearActionParam(); }}
+        onCreated={() => refetch()}
+      />
     </div>
   );
 }

@@ -1,7 +1,8 @@
 /**
  * Typed endpoint helpers — one function per API route, 1:1 with
  * `flower-market-backend/src/routes/*` (Phase 5 marketplace + Phase 4 admin + auth).
- * Returns `{ data, meta, message }`.
+ * JSON helpers return `{ data, meta, message }`; download helpers return the
+ * raw API response `{ data: Response, headers, status, raw: true }`.
  */
 export function createEndpoints(client) {
   const c = client;
@@ -63,16 +64,70 @@ export function createEndpoints(client) {
     },
 
     admin: {
+      // product / catalog reads + CSV
       products: (q = {}) => c.get('/admin/products', { query: q }),
       product: (id) => c.get(`/admin/products/${id}`),
-      adjustInventory: (tenantProductId, body) => c.post(`/admin/inventory/${tenantProductId}/adjust`, body),
+      exportProducts: (q = {}) => c.download('/admin/products/export.csv', { query: q }),
+
+      // inventory
       inventorySummary: (q = {}) => c.get('/admin/inventory/summary', { query: q }),
+      inventory: (q = {}) => c.get('/admin/inventory', { query: q }),
+      inventoryLedger: (id) => c.get(`/admin/inventory/ledger/${id}`),
+      exportInventory: (q = {}) => c.download('/admin/inventory/export.csv', { query: q }),
+      adjustInventory: (tenantProductId, body) => c.post(`/admin/inventory/${tenantProductId}/adjust`, body),
+
+      // hubs + slots
       hubs: () => c.get('/admin/hubs'),
+      createHub: (body) => c.post('/admin/hubs', body),
+      updateHub: (id, body) => c.patch(`/admin/hubs/${id}`, body),
+      toggleHub: (id, body) => c.post(`/admin/hubs/${id}/toggle`, body),
+      manageHubPincodes: (id, body) => c.post(`/admin/hubs/${id}/pincodes`, body),
+      slots: (q = {}) => c.get('/admin/slots', { query: q }),
+      overrideSlot: (id, body) => c.post(`/admin/slots/${id}/override`, body),
+      setSlotStatus: (id, body) => c.post(`/admin/slots/${id}/status`, body),
+      slotsUtilization: (q = {}) => c.get('/admin/slots/utilization', { query: q }),
+
+      // orders
       orders: (q = {}) => c.get('/admin/orders', { query: q }),
       order: (id) => c.get(`/admin/orders/${id}`),
+      exportOrders: (q = {}) => c.download('/admin/orders/export.csv', { query: q }),
+
+      // users, staff, riders
+      users: (q = {}) => c.get('/admin/users', { query: q }),
+      user: (id) => c.get(`/admin/users/${id}`),
+      exportUsers: (q = {}) => c.download('/admin/users/export.csv', { query: q }),
+      createStaff: (body) => c.post('/admin/users/staff', body),
+      setUserStatus: (id, body) => c.patch(`/admin/users/${id}/status`, body),
+      setUserRole: (id, body) => c.patch(`/admin/users/${id}/role`, body),
+      riderStats: (q = {}) => c.get('/admin/users/riders/stats', { query: q }),
+
+      // analytics
       analyticsDashboard: (q = {}) => c.get('/admin/analytics/dashboard', { query: q }),
       topProducts: (q = {}) => c.get('/admin/analytics/products', { query: q }),
+      categoryPerformance: (q = {}) => c.get('/admin/analytics/categories', { query: q }),
+      hubPerformance: (q = {}) => c.get('/admin/analytics/hubs', { query: q }),
+      slotPerformance: (q = {}) => c.get('/admin/analytics/slots', { query: q }),
+      exportAnalytics: (q = {}) => c.download('/admin/analytics/export.csv', { query: q }),
       rebuildAnalytics: (body = {}) => c.post('/admin/analytics/rebuild', body),
+
+      // notification templates + jobs
+      notificationTemplates: (q = {}) => c.get('/admin/notifications/templates', { query: q }),
+      createNotificationTemplate: (body) => c.post('/admin/notifications/templates', body),
+      updateNotificationTemplate: (id, body) => c.patch(`/admin/notifications/templates/${id}`, body),
+      deleteNotificationTemplate: (id) => c.del(`/admin/notifications/templates/${id}`),
+      notifications: (q = {}) => c.get('/admin/notifications', { query: q }),
+      sendNotification: (body) => c.post('/admin/notifications/send', body),
+      processNotifications: (body = {}) => c.post('/admin/notifications/process', body),
+
+      // exports
+      exports: (q = {}) => c.get('/admin/exports', { query: q }),
+      createExport: (body) => c.post('/admin/exports', body),
+      exportDetail: (id) => c.get(`/admin/exports/${id}`),
+      runExport: (id) => c.post(`/admin/exports/${id}/run`),
+      downloadExport: (id) => c.download(`/admin/exports/${id}/download`),
+      runDueExports: (body = {}) => c.post('/admin/exports/run', body),
+
+      // maintenance
       nightly: (body = {}) => c.post('/admin/maintenance/nightly', body),
     },
 
@@ -107,6 +162,37 @@ export function createEndpoints(client) {
       addVariant: (id, body) => c.post(`/catalog/admin/masters/${id}/variants`, body),
       addImage: (id, body) => c.post(`/catalog/admin/masters/${id}/images`, body),
       setMasterAttributes: (id, body) => c.put(`/catalog/admin/masters/${id}/attributes`, body),
+
+      // catalog governance
+      changeRequests: (q = {}) => c.get('/catalog/admin/change-requests', { query: q }),
+      reviewChangeRequest: (id, body) => c.post(`/catalog/admin/change-requests/${id}/review`, body),
+      audit: (q = {}) => c.get('/catalog/admin/audit', { query: q }),
+      drainEvents: () => c.post('/catalog/admin/events/drain'),
+      eventStatus: () => c.get('/catalog/admin/events/status'),
+    },
+
+    /** Phase 4/Phase 9 — tenant-scoped listings, stock, change requests and bulk. */
+    catalogTenant: {
+      proposeMaster: (body) => c.post('/catalog/tenant/masters/propose', body),
+      listings: (q = {}) => c.get('/catalog/tenant/listings', { query: q }),
+      listing: (id) => c.get(`/catalog/tenant/listings/${id}`),
+      createListing: (body) => c.post('/catalog/tenant/listings', body),
+      updatePrice: (id, body) => c.patch(`/catalog/tenant/listings/${id}/price`, body),
+      updateStatus: (id, body) => c.patch(`/catalog/tenant/listings/${id}/status`, body),
+      deactivateListing: (id) => c.post(`/catalog/tenant/listings/${id}/deactivate`),
+      stock: (id) => c.get(`/catalog/tenant/listings/${id}/stock`),
+      setStock: (id, body) => c.put(`/catalog/tenant/listings/${id}/stock`, body),
+      adjustStock: (id, body) => c.patch(`/catalog/tenant/listings/${id}/stock`, body),
+      reserveStock: (id, body) => c.post(`/catalog/tenant/listings/${id}/stock/reserve`, body),
+      releaseStock: (id, body) => c.post(`/catalog/tenant/listings/${id}/stock/release`, body),
+      changeRequests: (q = {}) => c.get('/catalog/tenant/change-requests', { query: q }),
+      submitChangeRequest: (body) => c.post('/catalog/tenant/change-requests', body),
+      cancelChangeRequest: (id) => c.post(`/catalog/tenant/change-requests/${id}/cancel`),
+      reviseChangeRequest: (id, body) => c.post(`/catalog/tenant/change-requests/${id}/revise`, body),
+      bulkUpload: (kind, body) => c.post(`/catalog/tenant/bulk/${kind}`, body),
+      bulkJobs: (q = {}) => c.get('/catalog/tenant/bulk/jobs', { query: q }),
+      bulkJob: (id) => c.get(`/catalog/tenant/bulk/jobs/${id}`),
+      bulkTemplate: (kind) => c.download(`/catalog/tenant/bulk/template/${kind}`),
     },
 
     /**
@@ -143,6 +229,74 @@ export function createEndpoints(client) {
         reconcile: (body = {}) => c.post('/payouts/admin/reconcile', body),
         ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
       },
+    },
+
+    /**
+     * Phase 6.x/P1 — warehouse + logistics ops. One namespace per backend
+     * capability so the UI never mixes picking, delivery, slots and payments.
+     */
+    fulfillment: {
+      // order queue
+      listAll: (q = {}) => c.get('/fulfillment/orders', { query: q }),
+      startPicking: (id) => c.post(`/fulfillment/orders/${id}/pick`),
+      markPacked: (id) => c.post(`/fulfillment/orders/${id}/pack`),
+      dispatch: (id) => c.post(`/fulfillment/orders/${id}/dispatch`),
+      deliver: (id, body) => c.post(`/fulfillment/orders/${id}/deliver`, body),
+      deliveryFailed: (id, body = {}) => c.post(`/fulfillment/orders/${id}/delivery-failed`, body),
+      retryDelivery: (id) => c.post(`/fulfillment/orders/${id}/retry-delivery`),
+
+      // slots + forecasting
+      generateSlots: (body) => c.post('/fulfillment/slots/generate', body),
+      slotUtilization: (q = {}) => c.get('/fulfillment/slots/utilization', { query: q }),
+      sweepExpiredHolds: (q = {}) => c.post('/fulfillment/slots/sweep', undefined, { query: q }),
+      forecastHub: (body) => c.post('/fulfillment/forecast', body),
+      forecastUpcoming: (q = {}) => c.get('/fulfillment/forecast/upcoming', { query: q }),
+      forecastHistory: (q = {}) => c.get('/fulfillment/forecast/history', { query: q }),
+      sweepExpiredAssignments: (q = {}) => c.post('/fulfillment/assignments/sweep', undefined, { query: q }),
+
+      // after-sales / refunds
+      returns: (q = {}) => c.get('/fulfillment/returns', { query: q }),
+      refunds: (q = {}) => c.get('/fulfillment/refunds', { query: q }),
+      adminRefund: (body) => c.post('/fulfillment/refunds', body),
+
+      // payments
+      payments: (q = {}) => c.get('/fulfillment/payments', { query: q }),
+      payment: (id) => c.get(`/fulfillment/payments/${id}`),
+      reconcilePayments: (q = {}) => c.post('/fulfillment/reconcile/payments', undefined, { query: q }),
+    },
+
+    /** After-sales state machine used by ops/admin. */
+    returns: {
+      detail: (id) => c.get(`/returns/${id}`),
+      markPickedUp: (id) => c.post(`/returns/${id}/pickup`),
+      qcDecision: (id, body) => c.post(`/returns/${id}/qc`, body),
+    },
+
+    /** Rider mobile/desktop delivery surface. */
+    rider: {
+      deliveries: (q = {}) => c.get('/rider/deliveries', { query: q }),
+      availability: (body) => c.post('/rider/availability', body),
+      accept: (id) => c.post(`/rider/deliveries/${id}/accept`),
+      reject: (id, body) => c.post(`/rider/deliveries/${id}/reject`, body),
+      arriveHub: (id) => c.post(`/rider/deliveries/${id}/arrive-hub`),
+      depart: (id, body = {}) => c.post(`/rider/deliveries/${id}/depart`, body),
+      arrive: (id) => c.post(`/rider/deliveries/${id}/arrive`),
+      complete: (id, body) => c.post(`/rider/deliveries/${id}/complete`, body),
+      fail: (id, body) => c.post(`/rider/deliveries/${id}/fail`, body),
+    },
+
+    /** Pricing, coupon, tax and refund policies (store admin). */
+    policies: {
+      deliveryFees: () => c.get('/policies/delivery-fee'),
+      createDeliveryFee: (body) => c.post('/policies/delivery-fee', body),
+      updateDeliveryFee: (id, body) => c.patch(`/policies/delivery-fee/${id}`, body),
+      taxPolicies: (q = {}) => c.get('/policies/tax', { query: q }),
+      upsertTaxPolicy: (body) => c.post('/policies/tax', body),
+      coupons: () => c.get('/policies/coupons'),
+      createCoupon: (body) => c.post('/policies/coupons', body),
+      refund: () => c.get('/policies/refund'),
+      updateRefund: (body) => c.patch('/policies/refund', body),
+      previewCoupon: (q) => c.get('/policies/coupons/preview', { query: q }),
     },
 
     /** Phase 6.1 — read-only general ledger (super_admin). */
@@ -220,6 +374,7 @@ export function createEndpoints(client) {
 
       // checkout & orders
       checkout: (body) => c.post('/cart/checkout', body),
+      checkoutQuote: (body) => c.post('/cart/quote', body),
       orders: (q = {}) => c.get('/orders', { query: q }),
       order: (id) => c.get(`/orders/${id}`),
       orderTimeline: (id) => c.get(`/orders/${id}/timeline`),
@@ -235,8 +390,10 @@ export function createEndpoints(client) {
       // after-sales
       returns: (q = {}) => c.get('/returns', { query: q }),
       createReturn: (body) => c.post('/returns', body),
+      returnDetail: (id) => c.get(`/returns/${id}`),
       wallet: () => c.get('/wallet'),
       walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
+      walletRefunds: (q = {}) => c.get('/wallet/refunds', { query: q }),
     },
 
     /** Phase 6.5 — search tuning (store admin). */

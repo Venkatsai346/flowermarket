@@ -58,7 +58,7 @@ export function auditPlugin(schema) {
 
 /** Consistent JSON serialization: id string, no __v, no internal _id, no isDeleted leak. */
 export function toJSONPlugin(schema) {
-  const SECRET_FIELDS = ['password', 'passwordHash', 'codeHash', 'tokenHash', 'otpCode'];
+  const SECRET_FIELDS = ['password', 'passwordHash', 'codeHash', 'tokenHash', 'otpCode', 'walletClaimToken', 'walletClaimedAt'];
   const apply = (doc, ret) => {
     if (ret._id && !ret.id) ret.id = ret._id.toString();
     delete ret._id;

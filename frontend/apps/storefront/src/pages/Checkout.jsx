@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  BadgeIndianRupee, Calendar, Check, CreditCard, MapPin, Plus, ShieldCheck, Wallet,
+  BadgeIndianRupee, Banknote, Calendar, Check, CreditCard, MapPin, Plus, ShieldCheck, Wallet,
 } from 'lucide-react';
-import { api } from '../api.js';
+import { api, useShopAuth } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { Button, Money, Empty } from '../components/ui.jsx';
@@ -12,7 +12,7 @@ import { cn, errMsg } from '../lib/utils.js';
 const PAYMENTS = [
   ['upi', 'UPI', BadgeIndianRupee],
   ['card', 'Card', CreditCard],
-  ['cod', 'Cash on delivery', Wallet],
+  ['cod', 'Cash on delivery', Banknote],
 ];
 
 function AddressForm({ onSaved, onCancel }) {
@@ -59,6 +59,7 @@ export default function Checkout() {
   const setCart = useShop((s) => s.setCart);
   const toast = useShop((s) => s.toast);
   const navigate = useNavigate();
+  const isAuth = useShopAuth((s) => s.isAuthenticated());
 
   const [addressId, setAddressId] = useState('');
   const [slotId, setSlotId] = useState('');
@@ -69,12 +70,44 @@ export default function Checkout() {
 
   const { data: addresses, refetch: refetchAddresses } = useApi(() => api.shop.addresses(), []);
   const { data: slots, loading: slotsLoading } = useApi(() => api.shop.slots({ days: 3 }), []);
+  const { data: wallet } = useApi(
+    () => (isAuth ? api.shop.wallet() : Promise.resolve({ data: null })),
+    [isAuth],
+  );
+
+  const reservationId = reservation?.id || reservation?.reservationId || null;
+  const quoteKey = isAuth && addressId && reservationId ? `${addressId}:${reservationId}` : null;
+  const { data: quote } = useApi(
+    () => (quoteKey
+      ? api.shop.checkoutQuote({ slotReservationId: reservationId, addressId, confirmPriceChanges: true })
+      : Promise.resolve({ data: null })),
+    [quoteKey],
+  );
+  const walletBalance = Number(wallet?.balance) || 0;
+  const orderTotal = Number(quote?.grandTotal) || 0;
+  const canWalletPay = Boolean(isAuth && wallet && quote && walletBalance >= orderTotal && quote.grandTotal != null);
 
   useEffect(() => {
     if (!addressId && addresses?.length) {
       setAddressId(String(addresses.find((a) => a.isDefault)?.id || addresses[0].id));
     }
   }, [addresses, addressId]);
+
+  // If the preflight had to snap the cart to live prices, re-read the cart so
+  // the summary line items agree with the quoted totals.
+  useEffect(() => {
+    if (!quote?.priceChanged) return undefined;
+    let alive = true;
+    api.shop.cart().then((r) => { if (alive) setCart(r.data); }).catch(() => {});
+    return () => { alive = false; };
+  }, [quote?.priceChanged, setCart]);
+
+  // If a previously selected wallet option no longer covers the exact order
+  // total (balance dropped / quote changed / cart changed), fall back to UPI
+  // so the customer can never submit a wallet payment the server would reject.
+  useEffect(() => {
+    if (payment === 'wallet' && !canWalletPay) setPayment('upi');
+  }, [payment, canWalletPay]);
 
   /** Slots grouped by day, because "tomorrow 4–6pm" is how people think. */
   const byDay = useMemo(() => {
@@ -243,7 +276,7 @@ export default function Checkout() {
               style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>3</span>
             Payment
           </h2>
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {PAYMENTS.map(([id, label, Icon]) => (
               <button
                 key={id}
@@ -258,6 +291,32 @@ export default function Checkout() {
                 <Icon className="h-4 w-4 text-slate-500" />{label}
               </button>
             ))}
+            {isAuth && (
+              <button
+                key="wallet"
+                type="button"
+                disabled={!canWalletPay}
+                onClick={() => setPayment('wallet')}
+                className={cn(
+                  'flex items-center gap-2 rounded-xl border p-3 text-left text-sm font-medium transition',
+                  !canWalletPay && 'cursor-not-allowed opacity-50',
+                  payment === 'wallet' && canWalletPay ? 'border-transparent' : 'border-slate-200 hover:bg-slate-50'
+                )}
+                style={payment === 'wallet' && canWalletPay ? { background: 'var(--brand-soft)', boxShadow: '0 0 0 2px var(--brand)' } : undefined}
+              >
+                <Wallet className="h-4 w-4 shrink-0 text-slate-500" />
+                <span className="min-w-0">
+                  <span className="block">Pay with wallet</span>
+                  <span className="block text-[11px] normal-case text-slate-400">
+                    {canWalletPay
+                      ? `Balance ₹${walletBalance} covers this order`
+                      : quote
+                        ? `Need ₹${Math.max(0, orderTotal - walletBalance)} more`
+                        : 'Balance check…'}
+                  </span>
+                </span>
+              </button>
+            )}
           </div>
         </section>
       </div>
@@ -278,10 +337,33 @@ export default function Checkout() {
             <div className="flex justify-between text-slate-600">
               <dt>Subtotal</dt><dd><Money value={cart?.subtotal} /></dd>
             </div>
-            <p className="pt-1 text-[11px] leading-relaxed text-slate-400">
-              Delivery fee, GST and any coupon are calculated by the store when the order is placed,
-              and shown in full on your invoice.
-            </p>
+            {quote ? (
+              <>
+                {quote.deliveryFee > 0 && (
+                  <div className="flex justify-between text-slate-600">
+                    <dt>Delivery</dt><dd><Money value={quote.deliveryFee} /></dd>
+                  </div>
+                )}
+                {quote.taxTotal > 0 && (
+                  <div className="flex justify-between text-slate-600">
+                    <dt>GST</dt><dd><Money value={quote.taxTotal} /></dd>
+                  </div>
+                )}
+                {quote.discountTotal > 0 && (
+                  <div className="flex justify-between text-emerald-600">
+                    <dt>Coupon</dt><dd>−<Money value={quote.discountTotal} /></dd>
+                  </div>
+                )}
+                <div className="flex justify-between border-t border-slate-100 pt-1.5 font-semibold text-slate-900">
+                  <dt>Total</dt><dd><Money value={orderTotal} /></dd>
+                </div>
+              </>
+            ) : (
+              <p className="pt-1 text-[11px] leading-relaxed text-slate-400">
+                Delivery fee, GST and any coupon are confirmed with your slot — pick an address and
+                a delivery slot to see the exact total.
+              </p>
+            )}
           </dl>
 
           <Button className="mt-4 w-full" loading={placing} disabled={!canPlace} onClick={place}>

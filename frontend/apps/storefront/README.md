@@ -31,10 +31,17 @@ returns branding, theme tokens and feature flags. Consequently:
 
 Catalog with search, category rail, sort and stock filter · product sheet ·
 server-side cart with inline steppers and coupons · phone-OTP sign-in ·
-checkout (address → held delivery slot → payment) · order list and tracking.
+checkout (address → held delivery slot → payment) · order list and tracking ·
+**after-sales** — cancel an order, request a standard return or an instant
+claim, and see returns, wallet balance, refunds and wallet activity
+(`/returns`, `/wallet`, plus actions on `/orders/:id`). Wallet is also a
+**payment method**: the checkout preflight (`POST /cart/quote`) returns the
+exact server-authored total and "Pay with wallet" is exposed only when the
+wallet balance covers that total.
 
 Every one of these endpoints has existed since Phase 3 and had **no client at
-all** until now.
+all** until now. The after-sales endpoints had been shipped since Phase 3/3.5
+and gained their customer UI here.
 
 ## Running it
 
@@ -51,5 +58,7 @@ custom domains.
 ## Deliberate omissions
 
 Server-side rendering (the catalogue is behind a tenant lookup; SSG per store
-comes with search in S1–S3), wishlists, reviews and returns initiation — the
-returns API exists and the UI is a follow-up.
+comes with search in S1–S3), wishlists and reviews. Returns initiation is now
+shipped; what remains deliberately out of scope is anything that needs a
+customer profile beyond phone-OTP (e.g. profile editing, address management in
+a dedicated settings surface) and the native rider/picker apps.

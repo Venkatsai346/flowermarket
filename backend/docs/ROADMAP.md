@@ -404,8 +404,14 @@ parallel tracks.
   two tabs cannot share a cart. Covers catalog + search + facets, a product sheet, the
   server-side cart with inline steppers and coupons, phone-OTP sign-in, checkout
   (address → held slot → payment) and order tracking — **all endpoints that had existed since
-  Phase 3 with no client whatsoever**. 253 kB / 79 kB gzip (no charting library, unlike the
-  console). Also extended `createAuthStore` to take an injectable persist key.
+  Phase 3 with no client whatsoever**. After-sales is now in the same app: cancel an order,
+  request a standard return or instant claim, and see returns, wallet balance, refunds and
+  wallet activity (`/returns`, `/wallet`, plus deep-linked actions from `/orders/:id`). The
+  shared client gained `returnDetail` + `walletRefunds`. Wallet is now a real payment method:
+  the checkout preflight `POST /cart/quote` returns the exact server-authored total and the
+  app exposes "Pay with wallet" only when the wallet balance covers that total. 283 kB /
+  86 kB gzip (no charting library, unlike the console). Also extended `createAuthStore` to
+  take an injectable persist key.
 - **6.4 Subdomain routing — original plan text (1 w, parallel)** — `{slug}.flowermarket.in` + verified custom
   domains resolve the tenant from `Host` with an LRU cache; the `x-tenant-id` override is
   **tightened** to super_admin/dev only (today any client can name any tenant and only the

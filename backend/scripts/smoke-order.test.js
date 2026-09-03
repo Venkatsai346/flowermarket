@@ -15,6 +15,9 @@
  *   8. Payment fail compensation: no inventory decrement, slot released, CANCELLED
  *   9. Slot atomic lock: capacity 1 -> second reserve 409 SLOT_FULL
  *  10. Payment idempotency: same key -> same payment
+ *  11. Wallet payment: internal debit, provider=wallet, idempotent single
+ *      debit, reconcile crash-heal, insufficient-balance compensation,
+ *      cancel refunds to wallet
  *
  * Run: node scripts/smoke-order.test.js   (requires npm install already done)
  */
@@ -457,6 +460,109 @@ async function main() {
   const payCount = await M.Payment.countDocuments({ idempotencyKey: key });
   assert.equal(payCount, 1, 'exactly one Payment row for the key');
   ok('payment idempotency: same key -> same payment (no double charge)');
+
+  // ================= 11. wallet payment (internal movement) =================
+  const { default: walletService } = await import('../src/services/wallet.service.js');
+  await walletService.credit({
+    tenantId: tenant.id, userId: customer2.id, amount: 500,
+    reason: 'goodwill', note: 'wallet payment smoke seed',
+  });
+  const walletSeed = await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id });
+  assert.ok(walletSeed, 'customer2 wallet seeded');
+
+  // list the rose again at a clean price (scenario 8 left it at ₹251.13)
+  await M.TenantProduct.updateOne({ _id: listing.id }, { $set: { 'price.sellingPrice': 299, version: 1 } });
+  r = await call('/cart/items', { method: 'POST', token: cust2Tok, body: { tenantProductId: listing.id, qty: 1 } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  slotList = await call('/cart/slots?pincode=530013&date=' + today, { token: cust2Tok });
+  const walletSlot = slotList.body.data.slots.find((s) => s.remaining > 0);
+  assert.ok(walletSlot, 'slot available for wallet order');
+  r = await call('/cart/slots/' + walletSlot.id + '/reserve', { method: 'POST', token: cust2Tok });
+  const walletRes = r.body.data.id;
+
+  r = await call('/cart/quote', {
+    method: 'POST', token: cust2Tok,
+    body: { slotReservationId: walletRes, addressId: address.id, confirmPriceChanges: true },
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.grandTotal, 299 + 49, 'quote returns the exact checkout total');
+  assert.equal(r.body.data.priceChanged, false);
+  ok('wallet quote: exact grand total is server-authored before checkout');
+
+  r = await call('/cart/checkout', {
+    method: 'POST', token: cust2Tok,
+    body: { slotReservationId: walletRes, addressId: address.id, paymentMethod: 'wallet', confirmPriceChanges: true },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const walletOrder = r.body.data.order;
+  assert.equal(walletOrder.status, 'confirmed');
+  assert.equal(walletOrder.totalAmount, 299 + 49, 'wallet order total');
+  const walletAfter = await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id });
+  assert.equal(walletAfter.balance, 500 - walletOrder.totalAmount, 'wallet debited at checkout');
+  const walletChargeTxn = await M.WalletTransaction.findOne({
+    tenantId: tenant.id, userId: customer2.id, reason: 'order_payment', refType: 'order_payment',
+  });
+  assert.ok(walletChargeTxn, 'wallet payment transaction recorded');
+  const walletPayment = await M.Payment.findOne({ orderId: walletOrder.id });
+  assert.ok(walletPayment);
+  assert.equal(walletPayment.method, 'wallet');
+  assert.equal(walletPayment.provider, 'wallet', 'internal provider, not a gateway');
+  assert.equal(walletPayment.status, 'success');
+  ok('wallet checkout: debits the wallet, provider=wallet, order CONFIRMED');
+
+  // idempotent retry of the same wallet charge may NOT debit twice
+  const wBeforeRetry = (await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance;
+  const wRetry = await paymentService.charge({
+    tenantId: tenant.id, userId: customer2.id, orderId: walletOrder.id,
+    amount: walletOrder.totalAmount, method: 'wallet', idempotencyKey: walletPayment.idempotencyKey,
+  });
+  assert.equal(wRetry.chargeResult.success, true, 'idempotent wallet retry succeeds');
+  assert.equal(wRetry.chargeResult.idempotent, true, 'retry is a replay, not a new charge');
+  assert.equal((await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance, wBeforeRetry, 'no second debit');
+  assert.equal(await M.WalletTransaction.countDocuments({ refType: 'order_payment', refId: walletPayment.id }), 1, 'exactly one wallet debit row');
+  ok('wallet idempotency: same key -> one debit, never two');
+
+  // crash-safety: a PENDING wallet Payment with an existing debit must HEAL on
+  // the reconciliation sweep (never fail/cancel an order that already paid).
+  await M.Payment.updateOne(
+    { _id: walletPayment.id },
+    { $set: { status: 'pending', walletClaimToken: null, walletClaimedAt: null } },
+  );
+  const reconcile = await paymentService.reconcilePending({ olderThanMinutes: 0, limit: 50 });
+  const healedPayment = await M.Payment.findById(walletPayment.id);
+  assert.equal(healedPayment.status, 'success', 'reconcile heals a half-finished wallet payment');
+  assert.equal((await M.Order.findById(walletOrder.id)).status, 'confirmed', 'reconcile never cancels a healed wallet order');
+  ok('wallet reconcile: pending payment + existing debit -> SUCCESS, order CONFIRMED');
+
+  // insufficient wallet balance must fail cleanly (no order confirm, no debit)
+  r = await call('/cart/items', { method: 'POST', token: cust2Tok, body: { tenantProductId: listing.id, qty: 3 } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  slotList = await call('/cart/slots?pincode=530013&date=' + today, { token: cust2Tok });
+  const poorSlot = slotList.body.data.slots.find((s) => s.remaining > 0);
+  r = await call('/cart/slots/' + poorSlot.id + '/reserve', { method: 'POST', token: cust2Tok });
+  const poorRes = r.body.data.id;
+  const poorBalanceBefore = (await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance;
+  r = await call('/cart/checkout', {
+    method: 'POST', token: cust2Tok,
+    body: { slotReservationId: poorRes, addressId: address.id, paymentMethod: 'wallet', confirmPriceChanges: true },
+  });
+  assert.equal(r.status, 409, 'insufficient wallet must surface as 409');
+  assert.equal(r.body.code, 'PAYMENT_FAILED');
+  assert.equal(r.body.details?.paymentStatus, 'failed');
+  assert.equal((await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance, poorBalanceBefore, 'no debit when balance is insufficient');
+  const poorOrder = await M.Order.findById(r.body.details.orderId);
+  assert.equal(poorOrder.status, 'cancelled', 'insufficient wallet-order is compensated to CANCELLED');
+  ok('insufficient wallet: clean PAYMENT_FAILED compensation, zero debit');
+
+  // cancellation of a wallet-paid order must refund to the WALLET (not the gateway)
+  const wBalanceBeforeCancel = (await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance;
+  r = await call(`/orders/${walletOrder.id}/cancel`, { method: 'POST', token: cust2Tok, body: { reason: 'changed_mind' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const walletRefundTxn = await M.RefundTransaction.findOne({ orderId: walletOrder.id });
+  assert.ok(walletRefundTxn);
+  assert.equal(walletRefundTxn.destination, 'wallet', 'wallet-paid refund stays in the wallet');
+  assert.equal((await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance, wBalanceBeforeCancel + walletOrder.totalAmount, 'wallet refund credited');
+  ok('wallet cancellation: refund returns to the wallet, never the gateway');
 
   // ---------- wrap ----------
   console.log(`\nORDER LIFECYCLE SMOKE: ${passed} assertions passed ✔`);

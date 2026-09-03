@@ -1,35 +1,42 @@
-# Flower Market — Deep Repository Analysis
+# Flower Market — Deep Repository Analysis (Phase 6)
 
-_Analysis date: 2026-09-02 · branch `arena/01a0623c-flowermarket` · base commit `92e19c4` ("first commit")_
+_Analysis date: 2026-09-03 · branch `arena/01a06577-flowermarket` · base commit `a3e65fc`
+(`feat(phase6/S1-S3): search ranking — NDCG@10 0.569 -> 0.996`)_
 
-A single-commit monorepo containing a **BigBasket-style, multi-tenant flower marketplace**:
-a very large Express/Mongoose API (~18.9k LOC, 5 completed phases) and a much smaller
-React/Vite admin console + Expo scaffold (~5.5k LOC). This document is a structural,
-behavioural and risk analysis of both halves, plus what I verified by actually running things.
+This document **supersedes** the earlier Phase-5 analysis in this file. Everything below was
+re-derived from the current tree and, where possible, actually executed in this sandbox
+(dependency install, syntax sweep, module-graph import, DB-free test suites, frontend build).
+The repo has grown past Phase 5 into a **completed Phase 6** (money core, GST invoicing,
+vendor payouts, subdomain routing, storefront, search ranking).
 
 ---
 
-## 0. TL;DR — the ten things that matter
+## 0. TL;DR — what this codebase is now
 
-1. **The backend is the product.** 232 routes, 76 models, 46 services, an explicit order
-   saga, a policy/pricing engine, billing, forecasting, notifications, exports and media.
-   It is unusually disciplined for a first commit.
-2. **The frontend is an admin console only.** It consumes **~80 of 232 endpoints (~35%)**.
-3. **Zero customer-facing UI exists.** `/cart`, `/orders`, `/returns`, `/wallet`, `/rider`,
-   `/fulfillment`, `/policies`, `/catalog/tenant` — 82 endpoints — have **no UI at all**.
-   The mobile app is a login screen, not a shopping app.
-4. **No MongoDB transactions anywhere** (`startSession` = 0 hits). Consistency relies on
-   atomic `findOneAndUpdate` guards + compensating actions (a deliberate, documented choice).
-5. **RBAC hole:** `/catalog/tenant/*` (20 endpoints incl. price/stock writes) is guarded by
-   `authenticate` only — **any customer-role token can mutate the tenant's catalog**.
-6. **Media uploads are open to any authenticated user** with no per-user quota (250 MB video cap).
-7. **CORS is fully open in dev** (`config.isDev` short-circuits the allowlist).
-8. **One frontend→backend contract drift:** `GET /marketplace/admin/billing/invoices/:id`
-   is called by the shared client but does not exist server-side.
-9. **Dead code path:** `tenantContext` reads `req.auth?.tenant`, but it runs *before*
-   `authenticate` and the claim is stored as `req.auth.tenantId` — that branch can never fire.
-10. **Environment blocker:** `mongodb-memory-server` cannot download the mongod binary in
-    this sandbox (`fastdl.mongodb.org` unreachable), so the 10 smoke suites can't run here.
+1. **Backend is the product and it is unusually disciplined.** 79 Mongoose models, 59 services,
+   23 controllers, 20 route modules, **293 endpoints** across 20 mounts, ~29k LOC of `src/`.
+   Layering (routes → controllers → services → models) is consistently maintained; business
+   logic lives in services and the largest file is a service (`payout.service.js`, 1170 LOC).
+2. **Phase 6 is genuinely shipped, not just documented.** I ran the DB-free suites and every
+   one is green: money 56/56, GST 78/78, payout 47/47, payout-provider 52/52, hostname 55/55,
+   ranking 79/79, repo invariants 8/8, and `search-eval` reports **mean NDCG@10 = 0.996**
+   against a 0.85 gate. Frontend builds clean (web 427 kB / 119 kB gzip, storefront 255 kB /
+   79 kB gzip).
+3. **The two biggest Phase-6 architectural wins are the double-entry ledger and an
+   authority-by-Host model.** `ledger.service` enforces balance-or-nothing, idempotent,
+   immutable journals with a recomputable materialized view; `tenantContext` resolves a store
+   from the `Host` (fail-closed, negative-cache) so the new storefront bundle physically
+   contains **no tenant id**.
+4. **What remains "incomplete" is not broken money code — it is shipping seams and customer
+   surfaces.** Real PSP / e-invoice / notification / search-provider credentials, PDF invoices,
+   inclusive-pricing checkout, a real mobile app, and rider/picker tooling are the deliberate
+   deferrals. The storefront **after-sales surface is now shipped** (cancel, returns, wallet,
+   refunds). There is still no CI, no linter, no formatter.
+5. **The earlier security findings are mostly fixed.** `/catalog/tenant/*` is now
+   `authorize(ADMIN, SUPER_ADMIN, VENDOR)`, media writes are role-gated with a per-tenant byte
+   quota, dev CORS is enumerated rather than universal, the client↔route contract drift is
+   gone (invariants prove all 172 shared-client calls hit a route), and the dead
+   `tenantContext` branch is removed.
 
 ---
 
@@ -37,320 +44,377 @@ behavioural and risk analysis of both halves, plus what I verified by actually r
 
 ```
 flowermarket/
-├─ backend/           Node 18+ ESM · Express 4 · Mongoose 8 · JWT · Razorpay      ~18.9k LOC
+├─ backend/                        Node 18+ ESM · Express 4 · Mongoose 8        ~29k LOC src
 │  ├─ src/{config,constants,middleware,models,routes,controllers,services,utils}
-│  ├─ scripts/        dev-server (in-memory mongo), seed, nightly job, 10 smoke suites (3.5k LOC)
-│  ├─ docs/           API.md (590) · DATA_MODELS.md (555) · ROADMAP.md (284) · ARCHITECTURE.md (73)
-│  └─ storage/local/  ⚠ 906 KB of committed uploaded images (12 files, tracked in git)
-├─ frontend/          npm workspaces monorepo                                      ~5.5k LOC
-│  ├─ packages/shared @flower-market/shared — API client, endpoints, zustand auth, utils
-│  ├─ apps/web        React 18 + Vite 6 + Tailwind v4 + Zustand + Recharts admin console
-│  └─ apps/mobile     Expo/RN scaffold (single login screen proving the shared core)
-├─ uploads/           9 phase specification documents (1.8k lines) — the "design bible"
-└─ package-lock.json  ⚠ stray empty lockfile named "bloomy" at repo root
+│  ├─ scripts/                     seed, dev-server, nightly-job + 24 test files (~6.8k LOC)
+│  ├─ docs/                        API.md · DATA_MODELS.md · ROADMAP.md · ARCHITECTURE.md
+│  └─ storage/local/               ⚠ 11 runtime uploads still committed (~906 KB)
+├─ frontend/                       npm-workspaces monorepo (~9.6k LOC app src)
+│  ├─ packages/shared              @flower-market/shared — API client, endpoints, zustand auth
+│  ├─ apps/web                     React 18 + Vite 6 + Tailwind 4 admin console (~7.0k LOC)
+│  ├─ apps/storefront              React 18 + Vite 6 customer storefront (~1.85k LOC)   [NEW P2]
+│  └─ apps/mobile                  Expo/RN scaffold — login screen only (~194 LOC)
+├─ uploads/                        phase specification docs, incl. `phase6_…` (69 kB blueprint)
+└─ package-lock.json               ⚠ stray root lockfile still named "bloomy"
 ```
 
-292 tracked files, one commit, no CI config, no linter config, no test runner (smoke
-scripts are hand-rolled `node` files with their own assert helpers).
+### Current size vs the old Phase-5 snapshot
+
+| Area | Phase-5 analysis | Now |
+|---|---:|---:|
+| Backend `src` LOC | 18,898 | **28,976** |
+| Models | 76 | **79** |
+| Services | 46 | **59** |
+| Controllers | 18 | **23** |
+| Route modules | 16 | **20** |
+| Endpoints | 232 | **293** |
+| Backend test files | 10 smoke | **24** (pure + smoke + invariants) |
+| Web console LOC | 5,523 | **7,012** |
+| Shared client calls | ~81 | **172** |
+| Customer-facing apps | 0 | **1** (storefront) |
 
 ---
 
-## 2. Backend architecture
+## 2. Backend architecture (unchanged discipline, larger surface)
 
-### 2.1 Layering (strictly enforced, verified by inspection)
-
-```
-routes → controllers → services → models
-           ↑ middleware: tenantContext, authenticate, authorize, validate, rateLimiter, errorHandler
-           ↑ utils: ApiError/ApiResponse, jwt, hash, money, csv, orderStateMachine, validators
-```
-
-Controllers are genuinely thin (2.1k LOC across 18 files); business logic lives in services
-(9.3k LOC across 46 files). No service imports a controller; no route touches a model. This
-holds throughout — a rare property at this size.
-
-### 2.2 Request lifecycle
-
-`helmet → cors → raw-body webhook routes → json/urlencoded → compression → morgan → /api/v1
-→ tenantContext → route → validate(Joi) → authenticate → authorize → controller → service →
-model → envelope → errorHandler`
-
-Two deliberate subtleties:
-
-- **Webhooks are mounted before `express.json`** (`/payments/webhook/razorpay|mock` with
-  `express.raw`) because Razorpay HMAC is computed over exact bytes. Correct.
-- **`tenantContext` runs before `authenticate`**, so the tenant is resolved from the
-  `x-tenant-id` header (or default tenant), and `authenticate` then enforces
-  `token.tenant === req.tenantId` (`TENANT_MISMATCH`). This is why the web client must send
-  `x-tenant-id` on *every* request — documented in `apps/web/src/api.js`.
-
-### 2.3 Route surface (232 endpoints, 15 mounts)
-
-| Mount | Endpoints | Guard | UI coverage |
-|---|---:|---|---:|
-| `/auth` | 8 | public + rate limiters | 4 |
-| `/users` | 19 | `authenticate`, admin sub-routes `authorize` ×4 | 1 |
-| `/catalog` (public) | 5 | public | 2 |
-| `/catalog/tenant` | 20 | `authenticate` **only** ⚠ | 0 |
-| `/catalog/admin` | 25 | `authenticate` + `authorize` | 20 |
-| `/cart` | 11 | `authenticate` | 0 |
-| `/orders` | 4 | `authenticate` | 0 |
-| `/returns` | 5 | `authenticate` (+2 ops guards) | 0 |
-| `/wallet` | 3 | `authenticate` | 0 |
-| `/fulfillment` | 20 | `authorize` on all 20 | 0 |
-| `/rider` | 9 | `authorize(RIDER…)` | 0 |
-| `/policies` | 10 | `authorize` ×9 | 0 |
-| `/admin` | 48 | router-level `authorize(ADMIN, SUPER_ADMIN)` | 11 |
-| `/marketplace` | 38 | segmented: `/vendor`, `/store`, `/admin` | 37 |
-| `/media` | 6 | `authenticate` only ⚠ | 5 |
-
-### 2.4 Domain model (76 Mongoose models)
-
-Grouped exactly as the phases built them, all exported from `models/index.js`:
-
-- **Identity/tenancy** — Tenant, TenantAuthConfig, User, AuthToken, OtpVerification, Address,
-  Location, ServiceablePincode, DeliveryZone, Vendor.
-- **Catalog (Phase 2)** — the central pattern: **ProductMaster** (global identity, admin-owned
-  fields) vs **TenantProduct** (per-tenant price/stock/status). Plus Category (with
-  `attributeSchema` gating), Brand, ProductVariant/Image/AttributeValue (EAV, separate
-  collections — no unbounded arrays), Inventory, PriceHistory, ProductChangeRequest
-  (approval workflow), AuditLog, CatalogEvent (outbox).
-- **Orders (Phase 3)** — Hub, Cart/CartItem, DeliverySlot, SlotReservation, Order/OrderItem/
-  OrderStatusHistory, Payment/PaymentTransaction, Wallet/WalletTransaction, ReturnRequest/
-  ReturnItem, RefundTransaction, FulfillmentTask, DeliveryAssignment.
-- **Policies (3.5)** — DeliveryFeePolicy, TaxPolicy (per-category GST/HSN), DiscountPolicy,
-  CouponUsage, OrderChargeBreakdown (immutable), TenantRefundPolicy, FulfillmentTimeLog.
-- **Admin/ops (4/4b)** — InventoryAdjustment (append-only ledger), AnalyticsDaily, Device,
-  NotificationTemplate, Notification, ExportJob, ExportArtifact.
-- **Marketplace (5)** — Plan, Subscription, Invoice, VendorApplication, PlatformDaily, Counter.
-- **Media** — MediaAsset.
-
-Three shared plugins applied to every schema (`models/plugins/index.js`):
-`softDeletePlugin` (adds `isDeleted`, hijacks `pre(/^find/)` and `pre('aggregate')` — nothing
-is ever hard-deleted), `auditPlugin` (createdAt/updatedAt/updatedBy), `toJSONPlugin`
-(`_id → id`, strips `__v`, `isDeleted`, and a secret-field denylist).
-
-Snapshot discipline is consistent and correct: orders carry `addressSnapshot` + `slotSnapshot`,
-cart items snapshot price/title at add-time, `OrderChargeBreakdown` is frozen at order time,
-`orderitems.vendorId` is snapshotted for vendor GMV. History stays truthful when policy changes.
-
-### 2.5 Concurrency model — the interesting part
-
-There are **no MongoDB transactions** (0 `startSession` calls). Instead:
-
-- **Inventory reserve**: `findOneAndUpdate` with `$expr: { $lte: [{$add:['$qtyReserved',qty]}, '$qtyOnHand'] }`.
-- **Inventory commit**: `$expr: { $gte: ['$qtyOnHand', qty] }` + `$inc: -qty`.
-- **Slot reserve**: `$expr: { $lt: ['$reservedCapacity', { $ifNull: ['$manualCapacity','$totalCapacity'] }] }`
-  — so an admin's intraday capacity override can never oversell and never shrink below reserved.
-- **Optimistic locking** via a `version` field on Order, TenantProduct, ProductMaster, Wallet,
-  Inventory (`409 VERSION_CONFLICT`).
-- **Idempotency keys** on every charge and refund; webhook replays are no-ops.
-
-Consistency across services is achieved by the **saga orchestrator** in `order.service.js`
-(702 LOC, the largest file), which is explicit rather than choreographed:
+### 2.1 Request lifecycle
 
 ```
-checkout: revalidate cart → validate slot hold → snapshot address → create order
-        → PAYMENT_PENDING → charge → commit inventory → confirm slot → task → CONFIRMED
-compensations: charge fail → release slot + CANCELLED(payment_failed)
-               inventory race lost → restore committed + refund + release slot + CANCELLED
-               cancel → restore stock → release slot → refund (reverse saga)
+helmet → webhook raw-body routes → CORS (host-aware) → json/urlencoded → compression →
+morgan → /api/v1 → tenantContext → auth routes → validate(Joi) → authenticate → authorize →
+controller → service → model → envelope → errorHandler
 ```
 
-Transitions are validated centrally by `utils/orderStateMachine.js` (a frozen adjacency map,
-`assertTransition` throws `400 INVALID_ORDER_TRANSITION`) and every transition appends an
-`OrderStatusHistory` row. This is the cleanest part of the codebase.
+Two critical details survive and were hardened:
 
-**Caveat:** without transactions, a process crash between two atomic steps leaves a partial
-state that only the sweeps (`/fulfillment/slots/sweep`, `assignments/sweep`,
-`reconcile/payments`) will heal. That's an acceptable, explicitly chosen trade-off for a
-standalone Mongo deployment — but it means those sweeps are load-bearing, not optional.
+- **Raw-body webhooks before `express.json`.** Razorpay payment webhook, mock payment webhook,
+  and now the **payout provider webhook** (`POST /api/v1/payouts/webhook`) are mounted before
+  the JSON parser so HMAC-SHA256 is computed over the exact bytes.
+- **`tenantContext` decides the tenant before auth, and the Host now wins.** Resolution order
+  is Host (`{slug}.{root}` or verified custom domain) → header (only when the Host did not
+  decide) → default → bootstrap fallback. An unknown `*.root` subdomain **404s** rather than
+  falling back to the default tenant (that fallback was the Phase-6 pre-flight leak).
 
-### 2.6 Cross-cutting mechanisms
+### 2.2 Route surface (293 endpoints, 20 mounts)
 
-- **Outbox** (`CatalogEvent` + `catalogEvent.service`) with a drain endpoint; the notification
-  consumer registers on it at `createApp()` (Set-based, idempotent, throw-safe).
-- **Provider abstractions** everywhere — payments (mock/razorpay), notifications
-  (console/mock/fcm/apns/smtp/twilio), storage (local/s3), billing (console/mock/razorpay),
-  SMS. Only the console/mock/local paths are implemented; the rest are declared seams
-  (one `TODO` in the whole repo, in `smsSender.service.js`).
-- **Config** is centralized in `config/index.js` — no `process.env` reads outside it (verified).
-- **Errors**: `AppError` + factories; `errorHandler` normalizes Mongoose ValidationError,
-  duplicate key (11000 → 409), CastError, payload-too-large; stacks only in dev.
-- **Money**: rupees as JS numbers with `roundMoney` (×100/round/÷100) applied at every sum.
-  Not integer paise — acceptable for INR at this scale, but see finding F8.
+| Mount | Endpoints | Guard posture |
+|---|---:|---|
+| `/auth` | 8 | public + rate limiters |
+| `/users` | 19 | `authenticate`; admin sub-routes `authorize` |
+| `/catalog` (public) | 5 | public |
+| `/catalog/tenant` | 20 | `authenticate` + `authorize(ADMIN,SUPER_ADMIN,VENDOR)` ✅ (was F1) |
+| `/catalog/admin` | 25 | `authenticate` + `authorize` |
+| `/cart` | 12 | `authenticate` |
+| `/orders` | 4 | `authenticate` |
+| `/returns` | 5 | `authenticate` (+2 ops guards) |
+| `/wallet` | 3 | `authenticate` |
+| `/fulfillment` | 20 | `authorize` all |
+| `/rider` | 9 | `authorize(RIDER…)` |
+| `/policies` | 10 | `authorize` ×9 |
+| `/admin` | 48 | router-level `authorize(ADMIN,SUPER_ADMIN)` |
+| `/marketplace` | 39 | segmented `/vendor`, `/store`, `/admin` |
+| `/media` | 6 | reads `authenticate`; writes role-gated + quota ✅ (was F2) |
+| `/tax` | 14 | rate policy `SUPER_ADMIN`; store-owned docs `authorize` |
+| `/payouts` | 24 | platform vs vendor hard-separated |
+| `/ledger` | 5 | read-only by construction |
+| `/domains` | 8 | public bootstrap + verified-domain management |
+| `/search` | 9 | public suggest/events; admin profiles/synonyms/reindex |
+
+### 2.3 Domain model (79 collections)
+
+The model barrel is now organized by phase. The **Phase 6 additions** are:
+
+- **6.1 money core (4):** `LedgerAccount`, `LedgerJournal`, `LedgerEntry`, `AccountBalance`.
+- **6.2 GST (4):** `TaxRegistration`, `StatutoryRate`, `TaxDocumentSeries`, `TaxDocument`.
+- **6.3 payouts (6):** `PayoutPolicy`, `VendorPayoutAccount`, `PayoutLineItem`, `PayoutBatch`,
+  `PayoutStatusHistory`, `PayoutAdjustment`.
+- **6.4 domains (1):** `TenantDomain`.
+- **6.5 search (4):** `SearchDocument`, `RankingProfile`, `SearchSynonym`, `SearchQueryLog`.
+
+The three shared plugins (softDelete, audit, toJSON) are still applied everywhere. The
+snapshot discipline is still respected: `orderitem` persists charged tax/discount, invoices
+**reconstruct** rather than recompute, payout lines are snapshots against refunds, and the
+ledger journal is immutable.
+
+### 2.4 Concurrency & consistency model
+
+Still **no Mongo transactions** on a standalone mongod, but Phase 6 raised the bar:
+
+- Atomic guarded `findOneAndUpdate` for inventory and slot capacity (unchanged).
+- **Optimistic locks** on masters, listings, orders, inventory, wallet.
+- **Idempotency keys** on charges, refunds, *and now every ledger journal
+  (`{kind}:{refType}:{refId}`)* and every payout instruction.
+- **New:** `ledgerService.withOptionalTransaction()` probes once whether the deployment is a
+  replica set; when it is, journal + entries + balances commit in **one transaction**. When it
+  isn't, the journal is still the truth and the nightly `verifyBalances({ repair: true })`
+  sweep closes the crash window. The boot log states which mode is active.
+
+The **order saga** and **payout state machine** are the two places where the "missing edge" is
+itself the safety design (see §3.3 and §3.4).
 
 ---
 
-## 3. Frontend architecture
+## 3. Business logic — the six systems that matter
 
-### 3.1 Shared core (`packages/shared`, framework-agnostic ESM)
+### 3.1 Money core (`utils/money.js` + `ledger.service.js` + `ledgerPosting.service.js`)
 
-- **`api/client.js`** — fetch wrapper; envelope parsing; bearer injection; **single-flight
-  refresh on 401** (`refreshing` promise shared across concurrent calls) with one retry;
-  clears session only if the refresh itself fails; throws typed `ApiError`.
-- **`api/endpoints.js`** — 81 typed call helpers in 7 namespaces (auth, marketplace, admin,
-  public, catalogAdmin, media).
-- **`auth/store.js`** — zustand + `persist`, storage adapter injected (localStorage on web,
-  swappable for AsyncStorage on mobile).
-- **`utils/`** — INR formatting (`en-IN`, lakh/crore compaction), dates, and status→tone maps
-  used to keep badges consistent.
+- **Integer paise** with `toPaise`/`fromPaise`/`sumPaise`/`applyBps`; `allocatePaise()`
+  uses largest-remainder so rounding is never stolen from the last line;
+  `splitTaxPaise()` makes `CGST + SGST === tax` structurally impossible to violate.
+- **Double-entry with four enforced rules:** every journal balances (Σ debit = Σ credit) or
+  nothing is written; every journal is idempotent; journals are immutable (correction = a
+  reversing journal); `accountbalances` is a materialized view recomputable from entries.
+- **Posting service maps business events:** `sale_captured` on CONFIRMED splits the customer's
+  money into `vendor_payable`, `gst_output_payable:{vendor}`, platform commission income, etc.;
+  `refund_issued` is a **proportional reversal of the original sale journal** — a refund can
+  never touch an account the order didn't, nor exceed what was captured.
+- `ensureChartOfAccounts()` runs at boot and is idempotent; scoped accounts
+  (`vendor_payable:{id}`, `gst_output_payable:{owner}`, …) are created lazily.
 
-### 3.2 Web console (`apps/web`)
+### 3.2 GST engine (`utils/gst.js`, `tax.service.js`, `taxDocument.service.js`)
 
-- **Routing** — `RequireAuth` (hydrates `/users/me`) → `AppShell` → `RoleGuard` per route.
-  Three lenses: `super_admin` → `/platform/*`, `admin` → store pages, `vendor` → `/vendor*`.
-- **State** — zustand for exactly two things (session, toasts); server data via a 62-line
-  `useApi`/`useAction` hook pair. No react-query. Reasonable at this size; the hook does
-  re-run on every `deps` identity change and has no cache/dedupe.
-- **Feature pages (24)** — dashboard, catalog (listings/masters/categories/brands with a
-  349-line form modal and 365-line detail modal), orders, vendors, billing, storefront
-  branding, and six platform pages.
-- **Media** — `MediaUploader` (drag-drop + XHR progress), `MediaPickerModal`, `ImageField`;
-  `lib/upload.js` implements presign → PUT → confirm and correctly sends app auth headers
-  only for same-origin (local provider) uploads, never to a presigned S3 URL.
-- **Vite** — binds `0.0.0.0`, `allowedHosts: true`, proxies `/api` **and** `/media/local` to
-  `:4000`. Already sandbox/live-preview safe.
+- **Effective-dating is the whole point.** Every rate resolver takes an `at` date; a two-year-old
+  invoice re-renders with the rate in force then, not today's table.
+- No policy is treated as `nil_rated` (a distinction that matters in GSTR-1), not as 0% taxable.
+- **One `TaxDocument` collection, not two.** Invoices and credit notes share numbering and GSTR
+  queries; `docType` discriminates and series are still per-`docType`.
+- **One document per supplier.** A multi-vendor order yields one invoice per vendor plus one for
+  the store's own lines.
+- **Reconstruction over recomputation:** the invoice takes the tax the customer was *actually
+  charged* (persisted on `orderitems`) and only splits it into CGST/SGST/IGST.
+- **Numbering is gapless per financial year** using an atomic `$inc` inside the issuing
+  transaction (when possible); documents that must not exist are **CANCELLED, never deleted**.
+- **TCS u/s 52 and TDS u/s 194-O are effective-dated data**, never code constants; the seed
+  values are explicitly flagged for CA verification before go-live.
+- E-invoicing/IRN is behind `einvoiceProvider` (console/mock/gsp) with a nightly retry queue;
+  **PDF rendering is the one deferred piece** (presentation, not correctness).
 
-### 3.3 Mobile (`apps/mobile`)
+### 3.3 Vendor payouts (`payout.service.js`)
 
-Expo 52 / RN 0.76, a single `App.jsx` login screen using the shared client with an in-memory
-storage shim. It is a proof that the core is portable — nothing more. Hardcoded demo
-credentials (`admin@flowermarket.in` / `Admin@12345`) sit in the source.
+- **`computeLineFinancials()` is pure** and holds the worked example to the paisa:
+  `₹5900 gross → −₹500 commission → −₹90 GST-on-commission → −₹25 TCS → −₹5.90 TDS → ₹5279.10`.
+- **Two eligibility gates:** return risk (deliveredAt + returnWindowDays) and cash-in-hand
+  (`psp_settled` ledger entry). The second gate ships **off by default** and is only manually
+  enabled after settlement ingestion is fully deployed.
+- **Accrual happens at CONFIRMED** (vendors see money "upcoming" in real time), but nothing is
+  payable until the return window closes.
+- **The batch state machine's most important edge is the one that isn't there:**
+  `PROCESSING → QUEUED` does not exist. An in-flight payout is resolved only by reconciliation,
+  never by a retry — that is how marketplaces avoid paying twice.
+- **Ledger posts at submission, not at settlement.** Rejection/reversal posts the exact mirror
+  journal (`payout_reversed`) and returns lines to the eligible pool; a reversal is **not**
+  retryable, a clean failure is.
+- **Three-outcome provider contract:** success / clean-failure / **ambiguous**. Transport errors
+  never throw (a throwing error is indistinguishable from a rejection and invites a retry);
+  `{ ambiguous: true }` forces the caller to do nothing.
+- Bank-detail fingerprint changes re-arm a **24 h freeze** and require penny-drop grade
+  re-verification before release.
+
+### 3.4 Subdomain routing (`tenantContext.js`, `tenantDomain.service.js`, `utils/hostname.js`)
+
+- `Host` is **attacker input**. `utils/hostname.js` rejects userinfo, requires digits as ports,
+  classifies infrastructure hosts, and is fuzzed (55 tests). The fuzz test literally caught a
+  bug during development (`store.root:80@evil.com` was parsing the userinfo as a port).
+- **Fail-closed:** unknown `*.root` subdomain → 404, never default tenant.
+- Custom domains require a **DNS-TXT verification** that gates both resolution and TLS.
+- TTL+LRU cache also caches **negatives** so a flood of unknown hosts is not an unbounded DB load.
+- **Host-aware CORS:** configured allowlist + any subdomain of the root + verified custom domains
+  + an enumerated dev set (localhost, 127.0.0.1, `.localhost`, `.e2b.app`). No "allow everything
+  in dev" rule remains.
+
+### 3.5 Search ranking (`search.service.js`, `searchProvider.service.js`, `utils/ranking.js`)
+
+- **Two-stage retrieval:** bounded candidates from indexed `searchdocuments`, then a pure
+  in-process scorer (2.4 ms per 1,000 candidates). This is deliberately *not* a Mongo
+  aggregation — the scorer can be tested, explained, and retuned from data.
+- The indexer rides the **existing CatalogEvent outbox** (no new event plumbing); upsert on a
+  stable key makes at-least-once delivery harmless.
+- **Out-of-stock is demoted, never filtered.** The floor is unbreakable: 300 randomised weight
+  configurations cannot put a sold-out item above an in-stock one. A safety property depending
+  on the operator choosing sensible weights is not a safety property.
+- Ranking profiles and synonyms are **editable DATA** with deterministic A/B bucketing.
+- **Inferred intent biases, explicit filters constrain.** `white flowers` returns white because
+  the colour is a *reported* inference; only a client-supplied colour narrows.
+- Typo correction is against the **store's own vocabulary**, not a dictionary, and short tokens
+  may only be fixed by insertion/deletion (`rse → rose` works; `pot → hot` cannot).
+- **The measurement gate is the deliverable:** `search-eval.mjs` means NDCG@10 = 0.996, gate
+  0.85, so a future tuning change cannot silently undo this one.
+
+### 3.6 Storefront (`frontend/apps/storefront`)
+
+- **One parameterless call** (`GET /domains/bootstrap`) — no tenant id in config, URL, header,
+  or build output. It is structurally incapable of addressing the wrong store.
+- **Contrast is computed, not assumed** (WCAG luminance from the brand colour).
+- **Cart lives on the server**; the client only keeps a snapshot so badge/drawer render instantly.
+- **Sessions are namespaced per hostname** (`fm-shop:{host}`) so two stores in two tabs cannot
+  share a cart.
+- **Customers see 5 states, not 16** — a status translation map converts the operational state
+  machine into the milestones a person tracks.
 
 ---
 
-## 4. What I verified in this sandbox
+## 4. Verified in this sandbox
 
 | Check | Result |
 |---|---|
-| `npm install` backend / frontend | ✅ clean (0 vulnerabilities reported; 937 FE packages) |
-| `node --check` on all 200+ backend `.js`/`.mjs` | ✅ 0 syntax errors |
-| `import('./src/app.js')` (resolves the full module graph) | ✅ OK — every route/controller/service/model import resolves |
-| `import('./src/routes/index.js')` | ✅ OK — no missing controller methods at wire time |
-| `npm run build` (frontend) | ✅ 2254 modules, 371 KB JS / 105 KB gzip, 4.1 s |
-| Endpoint contract diff (client ↔ routes) | ⚠ 1 drift (F4 below) |
-| Backend smoke suites (10 files, ~3.5k LOC) | ❌ **cannot run here** — `mongodb-memory-server` fails to download mongod (`fastdl.mongodb.org` unreachable: `ECONNRESET`). No local `mongod`, no proxy. Needs a real Mongo URI or a pre-cached binary. |
+| Backend `npm install` | ✅ 229 packages, clean |
+| `node --check` on all src + scripts | ✅ 0 syntax errors |
+| `import('./src/app.js')` + `import('./src/routes/index.js')` | ✅ full module graph resolves |
+| `scripts/money.test.js` | ✅ **56/56** |
+| `scripts/tax-calc.test.js` | ✅ **78/78** |
+| `scripts/payout-calc.test.js` | ✅ **47/47** |
+| `scripts/payout-provider.test.js` | ✅ **52/52** |
+| `scripts/hostname.test.js` | ✅ **55/55** |
+| `scripts/ranking.test.js` | ✅ **79/79** |
+| `scripts/invariants.test.js` | ✅ **8/8** (audit enum, import resolution, client↔route 172/293, ledger types, env docs, role guards) |
+| `scripts/search-eval.mjs` | ✅ **mean NDCG@10 0.996**, gate 0.85 |
+| Frontend `npm install` + `npm run build` | ✅ web 427/119 kB gzip · storefront 280/85 kB gzip (after adding the after-sales surface) |
+| DB-backed smoke suites | ⏭ **skip loudly** — `mongodb-memory-server` cannot reach `fastdl.mongodb.org` (ECONNRESET); no local `mongod` |
 
-Bundle note: the console ships as one 372 KB chunk — Recharts and all 24 pages are eagerly
-imported. Route-level `React.lazy` would cut first paint substantially.
+The DB-backed suites are the one thing not executable here. They are designed to skip
+rather than fail when Mongo is unavailable, so this is an **environment** blocker, not a repo
+defect. To run them in CI you either need a `mongo:7` service container or a cached mongod
+binary.
 
 ---
 
-## 5. Findings, ranked
+## 5. Completed / incomplete phase matrix
+
+### Completed and verified (backend + docs + UI)
+
+| Phase | Status | Highlights |
+|---|---|---|
+| 1 — user domain | ✅ | OTP auth, JWT + rotating refresh, addresses, RBAC, tenant scaffolding |
+| 2a — catalogue | ✅ | ProductMaster/TenantProduct split, approval, optimistic locks, inventory, outbox, bulk import |
+| 2b+3 — order lifecycle | ✅ | cart revalidation, slotted delivery atomic locks, saga orchestrator, fulfillment/POD, returns/refunds |
+| 3.5 — policies/rider/forecast | ✅ | policy engine, rider state machine, forecasting, Razorpay hardening |
+| 4 — admin dashboard | ✅ | products/inventory/slots/orders/users/analytics + CSV exports |
+| 4b — ops tooling | ✅ | notifications outbox, templates-as-data, scheduled exports, nightly pipeline |
+| 5 — marketplace | ✅ | tenant self-service, vendor onboarding, billing/invoices, platform analytics, storefront branding |
+| 6.0 — pre-flight | ✅ | RBAC on catalog tenant + media, media quota, audit-enum gate, CORS fail-closed |
+| 6.1 — money core | ✅ | paise arithmetic, double-entry ledger, posting service, nightly backfill/verify |
+| 6.2 — GST invoicing | ✅ | effective-dated rates, one-doc-per-supplier, gapless FY numbering, IRN provider, TCS/TDS |
+| M3 — GST exports | ✅ | 7 new renderers (GSTR-1 b2b/b2cs/hsn/cdnr, GSTR-8, TDS-194O, sales register) |
+| M4 — payout accrual | ✅ | pure financials, state machine, two gates, refund reversal, carry-forward, dual approval |
+| M5 — disbursement | ✅ | 3-outcome provider contract, HMAC webhook, reconcile-in-flight, settlement ingest, statements |
+| M6 — payout console | ✅ | platform approval queue, batch drawer, ledger explorer; vendor payouts/bank/KYC |
+| P1 — domains | ✅ | Host-based resolution, fail-closed unknown host, DNS-TXT verified custom domains, negative cache, host-aware CORS |
+| P2 — storefront | ✅ | customer app: bootstrap, catalog/search, cart, OTP, checkout, tracking |
+| S1–S3 — search ranking | ✅ | indexed two-stage retrieval, pure scorer, A/B profiles, synonyms/typos, NDCG gate, autocomplete |
+
+This matches the roadmap's `Phase 6 — IN PROGRESS … all ✅` line and the blueprint's execution log.
+
+### Incomplete, deferred, or out-of-scope (and why)
+
+| Item | Type | State / reason |
+|---|---|---|
+| **PDF invoice / credit-note rendering** | deferred in Phase 6 | needs a new dependency; presentation, not correctness (M3 note) |
+| **Inclusive-pricing checkout (M2b)** | deliberately off | `TAX_PRICES_INCLUSIVE` exists and the engine handles both modes, but flipping the pricing pipeline changes what customers are charged; needs its own migration + comms |
+| **PSP settlement gate** | default off | `requirePspSettlement` is implemented and `ingestPspSettlements()` exists, but defaults to `false` so an unmet gate can't silently block every payout |
+| **Live external providers** | seams only | real RazorpayX/Cashfree credentials, e-invoice GSP credentials, FCM/APNs/SMTP/Twilio, SMS/msg91, Atlas/OpenSearch, S3, real billing gateway — interfaces are implemented, live wiring is not |
+| **Legacy money decimalism** | partial | Phase 6 financial docs are **paise-native**, but the Phase 2–5 order/pricing/analytics path still uses rupee numbers with `roundMoney`; a full integer-paise migration of the old pipeline is not done |
+| **Storefront after-sales UI** | ✅ closed | cancel order, standard return / instant claim request, returns list, wallet balance + transaction + refund views, account menu — all driven by the existing shared client and server-authoritative endpoints; shared client also gained `returnDetail` + `walletRefunds` |
+| **Wallet-as-payment-method (R2b)** | ✅ closed | wallet checkout debits `customer_wallet_liability`, `Payment.provider=wallet`, insufficient balance runs the saga's normal `PAYMENT_FAILED` compensation, wallet-funded refunds are always routed to the wallet, concurrent/idempotent retries are locked by a `Payment.walletClaimToken` claim so a half-finished debit heals without double-charging, the reconciliation sweep cancels truly unrecoverable pending orders, and the checkout preflight (`POST /cart/quote`) returns the exact server-authored total the storefront gates on |
+| **Mobile app** | scaffold | Expo login screen with hardcoded demo credentials and an in-memory storage shim; no catalog/cart/orders UI |
+| **Rider / picker tooling** | absent | 9 `/rider` and 20 `/fulfillment` endpoints are fully implemented and smoke-tested, but there is no rider or picker app |
+| **CI / linter / formatter / test runner** | absent | no `.github`, no ESLint, no Prettier, no test-runner config; smoke scripts are hand-rolled `node` files, only some wired into `package.json` |
+| **Validation coverage** | uneven | `validate()` density: `/fulfillment` 3/20, `/returns` 2/5, `/cart` 6/12, `/orders` 2/4; params/bodies reach services unchecked in places |
+| **Repo hygiene** | persists | 11 runtime uploads under `storage/local` are still tracked despite `.env.example` saying "keep OUT of git"; stray root `package-lock.json` named `"bloomy"` |
+
+---
+
+## 6. Findings (current)
 
 ### Security / correctness
 
-**F1 — `/catalog/tenant/*` has no role guard (high).**
-`catalog.tenant.routes.js` applies `router.use(authenticate)` and nothing else; the file
-comments admit "role gating for 'manager' is a future RBAC refinement". Any authenticated
-user of a tenant — including a plain `customer` — can create listings, change prices
-(`PATCH /listings/:id/price`), change stock, and reserve/release inventory.
-_Fix:_ `router.use(authorize(ADMIN, SUPER_ADMIN, VENDOR))` (or a new `store_manager` role).
-
-**F2 — `/media/*` is authenticated but unauthorized and unquotaed (medium).**
-Any logged-in customer can presign and PUT up to 250 MB per video with no per-user/tenant
-cap and no rate limit. Storage-abuse / cost vector.
-_Fix:_ role gate presign, add a per-tenant quota check in `media.service`, add a limiter.
-
-**F3 — CORS allows every origin in development (medium).**
-`app.js`: `if (!origin || config.corsOrigins.includes(origin) || config.isDev) return cb(null, true)`.
-Fine locally, dangerous if anything ships with `NODE_ENV` unset (`env` defaults to
-`'development'`, so a mis-deploy is open by default). Prefer failing closed and listing the
-preview host explicitly.
-
-**F4 — Contract drift: `adminInvoiceDetail` calls a non-existent route (low).**
-`endpoints.js` exposes `GET /marketplace/admin/billing/invoices/:id`; `marketplace.routes.js`
-only has the list route. Currently unused by any page, so it's a latent 404.
-_Fix:_ add the route, or delete the helper.
-
-**F5 — Dead branch in `tenantContext` (low).**
-`if (!tenantId && req.auth?.tenant)` — `tenantContext` runs before `authenticate`, and
-`authenticate` writes `req.auth.tenantId` (not `.tenant`). The branch is unreachable twice
-over. Harmless today, but it misleads: it implies token-based tenant resolution works
-without the header, which is precisely the trap `apps/web/src/api.js` documents at length.
-
-**F6 — Validation coverage is uneven (low-medium).**
-Route-level `validate()` density: `/fulfillment` 3 hits across 20 routes, `/returns` 2/5,
-`/cart` 5/11, `/orders` 2/4. Params/bodies on those paths reach services unchecked (Mongoose
-casting is the only backstop → `CastError` 400s instead of clean `VALIDATION_ERROR` details).
-
-**F7 — `authenticate` hits the DB on every request** (`User.findById`) with no cache. At
-scale this is one extra round trip per call; a short-TTL cache or trusting the JWT claims for
-read-only paths would help.
-
-**F8 — Money as floats.** `roundMoney` is applied consistently, so drift is bounded, but
-commission (`GMV × bps`), pro-rata adjustments and tax splits are exactly where float
-rounding bites. Integer paise would remove the class of bug entirely.
+- **R1 (closed): storefront after-sales UI.** A customer can now cancel an order, request a
+  standard return or instant claim, and see returns, wallet balance, refunds and wallet activity.
+  The UI stays server-authoritative: eligibility is checked on the server, amounts are rendered
+  from the server, and every mutation refetches the order.
+- **R2 (low): legacy money path is still float-based.** The new financial documents are
+  paise-native, but order totals, refunds, taxes, and analytics still travel through rupee-number
+  `roundMoney`. Paise stays consistent *within Phase 6* but the old pipeline and new money core
+  are two different accounts of the same rupee until the migration completes.
+- **R2b (closed): "pay with wallet" is now a real internal payment method.** `paymentMethod:
+  'wallet'` debits `customer_wallet_liability` via `walletService.debit`, records
+  `Payment.provider='wallet'` + a CHARGE transaction, keeps the sale journal source correct, and
+  forces refunds back to the wallet. Insufficient balance surfaces as `PAYMENT_FAILED` through the
+  saga's `compensateFailedCharge()`. A `walletClaimToken` optimistic claim makes concurrent
+  retries run exactly one debiter; a crash between debit and Payment finalisation heals on retry
+  (never double-debits). The reconciliation sweep also closes the saga loop by cancelling truly
+  unrecoverable pending orders, and the storefront exposes wallet at checkout only when the exact
+  server-authored `POST /cart/quote` grand total is covered.
+- **R3 (low): validation density is uneven** (same gap as before) — `/fulfillment`, `/returns`,
+  `/orders`, and parts of `/cart` rely on Mongoose casting as the only backstop.
+- **R4 (info/environment): DB-backed smoke suites cannot run in this sandbox** because the mongod
+  binary download is blocked; they skip loudly. Add a Mongo service container in CI.
+- **R5 (info): external provider failures happen at runtime, not at boot.** `UnimplementedProvider`
+  for Atlas/OpenSearch and the "not configured" checks for real providers fail loudly — good —
+  but there is no boot-time check that flags a production deploy that accidentally points at
+  `console`/`local`/`mock` providers. Worth a `--check-config` assertion.
 
 ### Repository hygiene
 
-**F9 — Uploaded binaries are committed.** `backend/storage/local/**` (12 images, 906 KB) is
-tracked in git; `backend/.gitignore` doesn't exclude `storage/`. Runtime upload output should
-never be in the repo.
-
-**F10 — Stray root `package-lock.json`** named `"bloomy"` with an empty `packages` map — a
-leftover; it makes the root look like a workspace root when it isn't.
-
-**F11 — No CI, no linter, no formatter, no test runner.** The 10 smoke suites are excellent
-in content but are invoked manually, only 3 of them are wired into `package.json` scripts
-(`smoke`, `smoke:catalog`, `smoke:order`), and nothing enforces them. Code references
-`eslint-disable` comments for an ESLint config that doesn't exist.
-
-**F12 — `.env.example` has inline comments after values** (`JWT_ACCESS_TTL_SECONDS=900          # 15 minutes`).
-`dotenv` keeps `#`-comments only when unquoted values are trimmed — it works today, but it's
-fragile; several parsers (and `docker --env-file`) would ingest the comment.
-
-### Product-level gap
-
-**F13 — The customer never sees this system.** 82 endpoints across cart, orders, returns,
-wallet, rider, fulfillment, policies and the tenant catalog portal have no client. The
-backend can run a full grocery-style commerce operation; the shipped UI can only administer
-it. That's the single biggest asymmetry in the repo, and the highest-leverage place to build.
+- **R6:** `backend/storage/local/**` (11 images, ~906 KB) still tracked; `backend/.gitignore`
+  doesn't exclude `storage/` even though `.env.example` says keep it out of git.
+- **R7:** root `package-lock.json` named `"bloomy"` with an empty `packages` map.
+- **R8:** no CI, no lint/format config, and no unified test runner. Backend smoke/invariant suites
+  run manually; the storefront now has a DB-free `npm test` (after-sales helpers), but nothing
+  runs it automatically.
 
 ---
 
-## 6. Recommended next moves
+## 7. Recommended next moves
 
-**Immediate (hours)**
-1. Add `authorize(...)` to `/catalog/tenant/*` and `/media/presign` — F1/F2.
-2. Delete or implement `adminInvoiceDetail`; delete the dead `tenantContext` branch — F4/F5.
-3. `git rm -r --cached backend/storage` + add `storage/` to `backend/.gitignore`; drop the
-   root `bloomy` lockfile — F9/F10.
-4. Fail-closed CORS with an explicit preview-host allowlist — F3.
+**Immediate (one work session)**
+1. **Done — storefront after-sales surface.** Cancel, returns (standard + instant), wallet,
+   refunds and wallet activity are now in the customer app; shared client gained
+   `returnDetail` + `walletRefunds` so the client route table stays aligned.
+2. **Done — wallet-as-payment-method.** Wallet checkout debits the ledger liability, refunds stay
+   in the wallet, retries are idempotent, and the storefront gates wallet on the exact
+   `POST /cart/quote` total; the DB-backed wallet scenario is added to `scripts/smoke-order.test.js`.
+3. **Stop committing runtime uploads** — `git rm -r --cached backend/storage`, add
+   `storage/` to `backend/.gitignore`, delete the stray root lockfile.
+4. **Add CI** with a `mongo:7` service: `node --check` sweep, `vite build`, all pure suites, and
+   all DB-backed smoke suites. That also makes the "can't run tests offline" problem disappear.
 
 **Short (days)**
-5. Add GitHub Actions: `node --check` sweep, `vite build`, and the smoke suites against a
-   `mongo:7` service container (which also fixes the "can't run tests offline" problem).
-6. Fill the `validate()` gaps on `/fulfillment`, `/cart`, `/returns`, `/orders` — F6.
-7. Code-split the console with `React.lazy` per route (372 KB → a fraction on first paint).
+5. **Add a boot/config check** that aborts (or warns loudly) if a production
+   `NODE_ENV=production` deploy uses `console`/`local`/`mock` payment/billing/notification/
+   payout/search providers.
+6. **Close the `validate()` gaps** on `/fulfillment`, `/returns`, `/orders`, `/cart`.
+7. **Migrate the legacy order/pricing/analytics path to paise** now that Phase 6 gave you the
+   helpers — otherwise the ledger can be exact while the rest of the product is a half-paise away.
 
 **Strategic (weeks)**
-8. **Build the customer surface** — the storefront (`GET /marketplace/stores/:slug` already
-   returns branding + products) and the mobile shopping flow: catalog → cart → slot picker →
-   checkout (`confirmPriceChanges` + idempotency key) → track (`/orders/:id/timeline`) →
-   returns/wallet. Every endpoint already exists and is smoke-tested; the shared client makes
-   it a UI-only exercise. `docs/ROADMAP.md` even ships the screen→endpoint mapping.
-9. Build the **rider app** on the 9 `/rider` state-machine endpoints and the **picker** view
-   on `/fulfillment` — currently the two roles with backend support and zero tooling.
-10. Move money to integer paise before real payouts / GST invoicing land — F8.
+8. **Build the real mobile shopping app** on the shared core (canonical roadmap mapping already
+   documents every screen → endpoint).
+9. **Build the rider app and picker view** on `/rider` + `/fulfillment` — both roles have
+   complete backend state machines and zero tooling.
+10. **Deploy the storefront to `{slug}.{root}` / custom domains** behind P1 resolution, then
+    enable the PSP settlement gate and switch on inclusive-pricing checkout (M2b) only after the
+    tax seeds are CA-verified.
+11. **Add the Phase-7 candidates when ready** (multi-currency, e-way bills, vendor credit lines,
+    learning-to-rank from the existing query log, buyer-side ITC, real-time settlement) — all are
+    explicitly non-goals of Phase 6, not regressions.
 
 ---
 
-## 7. Codebase statistics
+## 8. Codebase statistics
 
 | Area | Files | LOC |
 |---|---:|---:|
-| Backend `src/` | 200 | 18,898 |
-| — services | 46 | 9,303 |
-| — models | 76 | 3,702 |
-| — controllers | 18 | 2,106 |
-| — routes | 16 | 806 |
-| Backend `scripts/` (seed, dev-server, 10 smoke suites) | 14 | 3,500 |
-| Backend `docs/` | 5 | 1,693 |
-| Frontend `apps/web/src` | 40 | 5,523 |
-| Frontend `packages/shared` | 7 | ~500 |
-| Spec docs `uploads/` | 9 | 1,789 |
+| Backend `src/` | 226 | 28,976 |
+| — services | 59 | ~12k (largest: `payout.service.js` 1170) |
+| — models | 79 | |
+| — controllers | 23 | |
+| — routes | 20 | |
+| Backend `scripts/` | 24 test/demo files | 6,845 |
+| Frontend web `src/` | 40+ | 7,012 |
+| Frontend storefront `src/` | 18 | 1,849 |
+| Frontend shared `src/` | 8 | 731 |
+| Mobile | 6 | 194 |
+| Spec docs `uploads/` | 10 | ~3.6k lines |
 
-Largest single files: `order.service.js` (702), `productMaster.service.js` (497),
-`fulfillment.service.js` (384), `MasterDetailModal.jsx` (365), `billing.service.js` (357).
+Largest files (excluding `dist/`): `payout.service.js` (1170), `constants/enums.js` (1037),
+`taxDocument.service.js` (765), `order.service.js` (723), `ledger.service.js` (588).

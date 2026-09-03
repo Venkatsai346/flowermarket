@@ -1,6 +1,7 @@
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
 import Vendor from '../models/vendor.model.js';
+import Payment from '../models/payment.model.js';
 import LedgerJournal from '../models/ledgerJournal.model.js';
 import ledgerService, { ledgerAccounts } from './ledger.service.js';
 import config from '../config/index.js';
@@ -9,6 +10,8 @@ import { toPaise, sumPaise, applyBps, fromPaise } from '../utils/money.js';
 import {
   LEDGER_JOURNAL_KIND,
   ORDER_STATUS,
+  PAYMENT_METHOD,
+  PAYMENT_PROVIDER,
   REFUND_DESTINATION,
 } from '../constants/enums.js';
 
@@ -72,7 +75,7 @@ class LedgerPostingService {
    * pass a pre-populated `vendorCache` (Map of vendorId -> commissionRateBps)
    * and no query is issued. `scripts/money.test.js` uses exactly that.
    */
-  async buildSaleLines({ order, items, vendorCache = new Map() }) {
+  async buildSaleLines({ order, items, vendorCache = new Map(), isWalletPayment = false }) {
     const tenantId = order.tenantId;
     const lines = [];
 
@@ -170,12 +173,16 @@ class LedgerPostingService {
       });
     }
 
+    // Where did the customer's money come from? A gateway charge lands in
+    // `gateway_clearing` (we hold it before distributing); a wallet payment
+    // reduces the `customer_wallet_liability` we already owed them. Using the
+    // wrong account would make a wallet refund impossible to reconcile.
     lines.unshift({
-      accountCode: ledgerAccounts.gatewayClearing(),
+      accountCode: isWalletPayment ? ledgerAccounts.walletLiability() : ledgerAccounts.gatewayClearing(),
       debitPaise: totalPaise,
       refType: 'order',
       refId: order._id,
-      memo: `order ${order.orderNumber}`,
+      memo: `order ${order.orderNumber} (${isWalletPayment ? 'wallet' : order.paymentMethod || 'gateway'})`,
     });
 
     return { lines, totalPaise };
@@ -193,7 +200,18 @@ class LedgerPostingService {
       });
     }
 
-    const { lines } = await this.buildSaleLines({ order, items: orderItems });
+    // Decide the source account from the PAYMENT (the money movement truth),
+    // not the order's method hint. A wallet payment debits customer_wallet_
+    // liability; everything else debits gateway_clearing.
+    const payment = order.paymentSummary?.paymentId
+      ? await Payment.findById(order.paymentSummary.paymentId).lean()
+      : null;
+    const isWalletPayment = Boolean(
+      payment
+        && (payment.provider === PAYMENT_PROVIDER.WALLET || payment.method === PAYMENT_METHOD.WALLET)
+    );
+
+    const { lines } = await this.buildSaleLines({ order, items: orderItems, isWalletPayment });
 
     return ledgerService.post({
       kind: LEDGER_JOURNAL_KIND.SALE_CAPTURED,

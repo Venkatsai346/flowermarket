@@ -52,6 +52,20 @@ class CartController {
     }));
   });
 
+  /** Exact checkout preflight for the held slot + address. Drives the
+   *  storefront wallet gate: the client must not guess the final amount. With
+   *  `confirmPriceChanges` it also snaps the cart to live prices, exactly like
+   *  the checkout saga does. */
+  quote = asyncHandler(async (req, res) => {
+    const quote = await orderService.quote({
+      tenantId: req.tenantId, userId: req.auth.userId,
+      slotReservationId: req.body.slotReservationId,
+      addressId: req.body.addressId,
+      confirmPriceChanges: req.body.confirmPriceChanges === true,
+    });
+    res.status(200).json(success(quote, { message: 'Checkout quote fetched' }));
+  });
+
   /** The saga entry: revalidate -> charge -> commit -> confirm slot -> queue picking. */
   checkout = asyncHandler(async (req, res) => {
     const order = await orderService.checkout({
