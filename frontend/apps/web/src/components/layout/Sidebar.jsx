@@ -51,6 +51,7 @@ const GROUPS = {
       { to: '/returns', label: 'After-sales', icon: PackageCheck },
       { to: '/policies', label: 'Policies', icon: Percent },
       { to: '/search', label: 'Search', icon: Search },
+      { to: '/tax', label: 'GST & tax', icon: Landmark },
       { to: '/vendors', label: 'Vendors', icon: Truck },
       { to: '/billing', label: 'Billing', icon: Receipt },
       { to: '/storefront', label: 'Storefront', icon: Palette },
