@@ -1,0 +1,167 @@
+# Flower Market CI
+#
+# Four jobs:
+#   backend      — pure suites + 16 hermetic DB suites (in-memory mongod 6.0.6)
+#   frontend     — per-workspace unit tests + production builds (web + storefront)
+#   live-e2e     — full live stack (mongo rs0 service + API + worker + 2× Vite)
+#                  driven end-to-end: 67 API-level checks
+#   browser-ui   — same stack + real Chromium (@sparticuz/chromium): the two
+#                  browser suites (storefront 27 + admin 36 checks)
+#
+# Local parity: `bash scripts/ci/boot-live-stack.sh` boots the identical stack
+# on a dev machine (expects mongod already running on 127.0.0.1:27017).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  backend:
+    name: Backend — pure + 16 hermetic suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Full hermetic matrix (pure suites + in-memory-mongod suites)
+        # MONGOMS_VERSION pins the in-memory mongod to the same 6.0.6 the
+        # suites are developed against.
+        run: npm run smoke:all
+        env:
+          MONGOMS_VERSION: '6.0.6'
+
+  frontend:
+    name: Frontend — unit tests + production builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: "Install (workspaces: web, storefront, mobile, shared)"
+        run: npm ci
+      - name: Unit tests — web
+        run: npm run test -w @flower-market/web
+      - name: Unit tests — storefront
+        run: npm run test -w @flower-market/storefront
+      - name: Unit tests — shared
+        run: npm run test -w @flower-market/shared
+      - name: Production builds (web + storefront)
+        run: npm run build
+
+  live-e2e:
+    name: Live E2E — full stack (67 checks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mongo:
+        image: mongo:6.0.6
+        args: ['--replSet', 'rs0', '--bind_ip_all']
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install backend
+        working-directory: backend
+        run: npm ci
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Boot live stack (rs0 → seed → API :4000 → worker → Vite :5173/:5174)
+        run: bash scripts/ci/boot-live-stack.sh
+      - name: Live E2E — 67 checks
+        working-directory: backend
+        run: |
+          . /tmp/fm-ci/env.sh
+          node scripts/e2e-live.mjs
+
+  browser-ui:
+    name: Browser UI — real Chromium (storefront 27 + admin 36)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mongo:
+        image: mongo:6.0.6
+        args: ['--replSet', 'rs0', '--bind_ip_all']
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            frontend/e2e/package-lock.json
+      - name: Install backend
+        working-directory: backend
+        run: npm ci
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci
+      - name: Install e2e (skip redundant browser downloads — we provision our own)
+        working-directory: frontend/e2e
+        run: npm ci
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: '1'
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Provision Chromium (binary + NSS/NSPR libs)
+        working-directory: frontend/e2e
+        run: node provision-chromium.mjs
+        env:
+          BROWSER_LIBS_DIR: ${{ runner.temp }}/browser-libs
+      - name: Boot live stack
+        run: bash scripts/ci/boot-live-stack.sh
+      - name: Storefront browser suite (27 checks)
+        working-directory: frontend/e2e
+        run: |
+          . /tmp/fm-ci/env.sh
+          BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-storefront.e2e.mjs
+      - name: Admin browser suite (36 checks)
+        working-directory: frontend/e2e
+        run: |
+          . /tmp/fm-ci/env.sh
+          BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-admin.e2e.mjs

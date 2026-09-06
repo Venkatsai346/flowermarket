@@ -196,9 +196,18 @@ histogram_quantile(0.95, rate(fm_http_request_duration_seconds_bucket[5m])) by (
    endpoint, and the `fm_webhook_*` / `fm_payment_pending_*` metrics. Full
    design + verification evidence: `docs/PAYMENTS_ARCHITECTURE.md`.
    Going live = set the `RAZORPAY_*` env vars — no code path changes.
-2. **CI.** The repo has zero workflows; the whole matrix above
-   (`npm test` + 16 hermetic suites + `e2e-live` against ephemeral mongod)
-   runs in ~10 min and is the natural first pipeline.
+2. ~~**CI.**~~ **DONE (2026-09-06)** — `.github/workflows/ci.yml`, four jobs:
+   `backend` (pure suites + 16 hermetic suites on in-memory mongod 6.0.6),
+   `frontend` (per-workspace unit tests + production builds), `live-e2e`
+   (full stack on a `mongo:6.0.6` replica-set service: API + worker + 2× Vite
+   → the 67-check suite), and `browser-ui` (same stack + real Chromium
+   provisioned from `@sparticuz/chromium` → storefront 27 + admin 36 checks).
+   Shared stack boot: `scripts/ci/boot-live-stack.sh` (idempotent: rs0 ensure
+   → seed → API/worker/Vite → health gates → writes `/tmp/fm-ci/env.sh` with
+   `FM_TENANT_ID`/`API_LOG_FILE` for the suites — the same script boots the
+   identical stack on a dev machine). The e2e harnesses resolve tenant/log
+   paths from env (`FM_TENANT_ID`, `API_LOG_FILE`, `CHROMIUM_BIN`,
+   `BROWSER_LIBS_DIR`) so CI re-seeding a fresh tenant needs zero code edits.
 3. **Scale-out readiness.** The worker is already multi-instance safe; the
    next scale step is horizontal worker replicas behind the same Mongo, then
    Redis caching for the hot catalog read path if NDCG@10 scale demands it.

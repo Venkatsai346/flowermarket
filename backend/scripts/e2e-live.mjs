@@ -13,14 +13,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const BASE = 'http://127.0.0.1:4000/api/v1';
-const TENANT = '6a9d8621360a608803fe1a62';
+// CI re-seeds a fresh tenant per run; scripts/ci/boot-live-stack.sh exports
+// FM_TENANT_ID via /tmp/fm-ci/env.sh.
+const TENANT = process.env.FM_TENANT_ID || '6a9d8621360a608803fe1a62';
 const ADMIN_EMAIL = 'admin@flowermarket.in';
 const ADMIN_PASSWORD = 'Admin@12345';
 const CUST_PHONE = '98' + String(10000000 + Math.floor(Math.random() * 89999999));
 const RIDER_PHONE = '9000000009';
 
 // ---- OTP log discovery (console provider) ----
+// $API_LOG_FILE → /tmp/fm-ci/api.out.log (scripts/ci convention) → newest
+// flower-market-api-* process dir's out.log (sandbox start_process layout).
 function otpLogPath() {
+  if (process.env.API_LOG_FILE) return process.env.API_LOG_FILE;
+  const conventional = '/tmp/fm-ci/api.out.log';
+  if (fs.existsSync(conventional)) return conventional;
   const dir = '/tmp/arena-workspace/procs';
   let chosen = null, mtime = 0;
   for (const e of fs.readdirSync(dir)) {

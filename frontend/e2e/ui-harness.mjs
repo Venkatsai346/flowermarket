@@ -13,31 +13,50 @@ export const SHOT_DIR = path.join(here, 'shots');
 fs.mkdirSync(SHOT_DIR, { recursive: true });
 
 export const API = 'http://127.0.0.1:4000/api/v1';
-export const TENANT = '6a9d8621360a608803fe1a62';
+// CI re-seeds a fresh tenant per run; scripts/ci/boot-live-stack.sh exports
+// FM_TENANT_ID via /tmp/fm-ci/env.sh.
+export const TENANT = process.env.FM_TENANT_ID || '6a9d8621360a608803fe1a62';
 export const ADMIN_EMAIL = 'admin@flowermarket.in';
 export const ADMIN_PASSWORD = 'Admin@12345';
 
 // API stdout log — the OTP console provider prints one-time codes here.
-// Discovered dynamically (newest flower-market-api-* process dir's out.log)
-// so a backend restart doesn't require editing this file.
+// Resolution: $API_LOG_FILE → scripts/ci convention (/tmp/fm-ci/api.out.log,
+// set by scripts/ci/boot-live-stack.sh) → newest flower-market-api-* process
+// dir's out.log (sandbox start_process convention).
 function resolveLogFile() {
+  if (process.env.API_LOG_FILE) return process.env.API_LOG_FILE;
+  const conventional = '/tmp/fm-ci/api.out.log';
+  if (fs.existsSync(conventional)) return conventional;
   const dir = '/tmp/arena-workspace/procs';
   let chosen = null, mtime = 0;
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (!e.name.startsWith('flower-market-api-')) continue;
-    const p = path.join(dir, e.name, 'out.log');
-    if (fs.existsSync(p)) { const m = fs.statSync(p).mtimeMs; if (m >= mtime) { mtime = m; chosen = p; } }
+  if (fs.existsSync(dir)) {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!e.name.startsWith('flower-market-api-')) continue;
+      const p = path.join(dir, e.name, 'out.log');
+      if (fs.existsSync(p)) { const m = fs.statSync(p).mtimeMs; if (m >= mtime) { mtime = m; chosen = p; } }
+    }
   }
   return chosen;
 }
 export const LOG_FILE = resolveLogFile();
 
+// Browser binary + NSS/NSPR lib dir (see scripts/ci — CI provisions its own
+// Chromium via @sparticuz/chromium and points these at it).
+export const CHROMIUM_BIN = process.env.CHROMIUM_BIN || '/tmp/chromium';
+export const BROWSER_LIBS_DIR = process.env.BROWSER_LIBS_DIR || '/home/user/.browser-libs';
+
 // ---------- browser ----------
 
 export async function launchBrowser() {
   return puppeteer.launch({
-    executablePath: '/tmp/chromium',
+    executablePath: CHROMIUM_BIN,
     headless: 'new',
+    // the provisioned libs dir is passed to the child process directly, so
+    // the launching shell does not need LD_LIBRARY_PATH set
+    env: {
+      ...process.env,
+      LD_LIBRARY_PATH: `${BROWSER_LIBS_DIR}${process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : ''}`,
+    },
     args: [
       '--no-sandbox',
       '--disable-gpu',

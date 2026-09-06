@@ -275,6 +275,23 @@ the tenant re-seeded (new id above), and **every layer re-run green**:
 The payment layer design + verification matrix:
 `docs/PAYMENTS_ARCHITECTURE.md`.
 
+## CI (2026-09-06)
+
+The whole matrix is now a GitHub Actions pipeline
+(`.github/workflows/ci.yml`) — runs on push to `main`, every PR, and
+manually:
+
+| Job | Runs |
+|---|---|
+| `backend` | `npm run smoke:all` — pure suites + 16 hermetic DB suites (in-memory mongod pinned to 6.0.6 via `MONGOMS_VERSION`) |
+| `frontend` | unit tests (web, storefront, shared) + production builds |
+| `live-e2e` | full live stack (mongo 6.0.6 rs0 service → `scripts/ci/boot-live-stack.sh` → API + worker + 2× Vite) → `e2e-live.mjs` 67 checks |
+| `browser-ui` | same stack + real Chromium (`frontend/e2e/provision-chromium.mjs` extracts the `@sparticuz/chromium` binary + NSS/NSPR libs) → storefront 27 + admin 36 browser checks |
+
+Local parity for the live jobs: `bash scripts/ci/boot-live-stack.sh`
+(expects mongod on 127.0.0.1:27017), then `. /tmp/fm-ci/env.sh && node
+scripts/e2e-live.mjs` — verified green in this sandbox (67/67 + 27/27).
+
 ## Environment notes
 - MongoDB egress is blocked in this sandbox; mongod 6.0.6 + OpenSSL 1.1.1w were
   provisioned locally (`/home/user/.mongod`). DB suites run with
