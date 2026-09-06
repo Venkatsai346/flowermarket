@@ -186,6 +186,53 @@ class RefundService {
     if (!txn) throw notFound('Refund transaction not found', 'REFUND_NOT_FOUND');
     return txn;
   }
+
+  /**
+   * Reconcile in-flight GATEWAY refunds. Refunds are async on real gateways
+   * (Razorpay processes after the call returns), so a PENDING row with a
+   * gatewayRef asks the gateway for the authoritative outcome:
+   *   processed → SUCCESS + payment state re-synced (wallet/gateway refunds
+   *   above threshold flow back this way even if our process died mid-init)
+   *   failed    → FAILED with the gateway's reason
+   * Wallet refunds are synchronous and never pending — they are skipped.
+   */
+  async reconcileRefunds({ olderThanMinutes = 10, limit = 50 }) {
+    const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
+    const pending = await RefundTransaction.find({
+      status: REFUND_TRANSACTION_STATUS.PENDING,
+      destination: REFUND_DESTINATION.ORIGINAL_METHOD,
+      gatewayRef: { $ne: null },
+      initiatedAt: { $lte: cutoff },
+    }).sort({ initiatedAt: 1 }).limit(limit);
+
+    const resolved = [];
+    for (const txn of pending) {
+      let remote = null;
+      try {
+        remote = await paymentProvider.fetchRefundStatus({ gatewayRef: txn.gatewayRef });
+      } catch (e) {
+        // transient — try again next sweep
+        // eslint-disable-next-line no-console
+        console.error(`[refunds] reconcile fetch failed for ${txn._id}:`, e?.message);
+        continue;
+      }
+      if (remote?.state === 'processed') {
+        txn.status = REFUND_TRANSACTION_STATUS.SUCCESS;
+        txn.completedAt = new Date();
+        txn.rawGatewayResponse = { ...(txn.rawGatewayResponse || {}), reconciled: true, source: remote.raw || null };
+        await txn.save();
+        await this.syncPaymentRefundState({ tenantId: txn.tenantId, orderId: txn.orderId, paymentId: txn.paymentId });
+        resolved.push({ refundId: txn._id, state: 'success' });
+      } else if (remote?.state === 'failed') {
+        txn.status = REFUND_TRANSACTION_STATUS.FAILED;
+        txn.failureReason = 'Gateway reported refund failed (reconciled)';
+        await txn.save();
+        resolved.push({ refundId: txn._id, state: 'failed' });
+      }
+      // pending → leave for the next sweep
+    }
+    return { scanned: pending.length, resolved };
+  }
 }
 
 export default new RefundService();

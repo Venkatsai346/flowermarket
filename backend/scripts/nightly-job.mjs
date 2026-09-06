@@ -14,23 +14,9 @@ import mongoose from 'mongoose';
 import { connectDb, disconnectDb } from '../src/config/db.js';
 import config from '../src/config/index.js';
 import Tenant from '../src/models/tenant.model.js';
+import MODEL_FILES from '../src/config/models.js';
 
-// Phase 4b + dependency models need indexes before queries hit them
-const MODEL_FILES = [
-  'tenant.model.js', 'tenantAuthConfig.model.js', 'user.model.js', 'category.model.js', 'brand.model.js',
-  'productMaster.model.js', 'tenantProduct.model.js', 'inventory.model.js', 'address.model.js', 'hub.model.js',
-  'serviceablePincode.model.js', 'deliverySlot.model.js', 'slotReservation.model.js', 'cart.model.js', 'cartItem.model.js',
-  'order.model.js', 'orderItem.model.js', 'orderStatusHistory.model.js', 'payment.model.js', 'paymentTransaction.model.js',
-  'refundTransaction.model.js', 'wallet.model.js', 'walletTransaction.model.js', 'returnRequest.model.js', 'returnItem.model.js',
-  'fulfillmentTask.model.js', 'deliveryAssignment.model.js', 'deliveryFeePolicy.model.js', 'taxPolicy.model.js',
-  'discountPolicy.model.js', 'couponUsage.model.js', 'orderChargeBreakdown.model.js', 'tenantRefundPolicy.model.js',
-  'fulfillmentTimeLog.model.js', 'auditLog.model.js', 'catalogEvent.model.js',
-  'inventoryAdjustment.model.js', 'analyticsDaily.model.js',
-  'device.model.js', 'notificationTemplate.model.js', 'notification.model.js', 'exportJob.model.js', 'exportArtifact.model.js',
-  // ---- Phase 5 ----
-  'plan.model.js', 'subscription.model.js', 'invoice.model.js', 'vendorApplication.model.js', 'vendor.model.js',
-  'platformDaily.model.js', 'counter.model.js',
-];
+// Models (indexes) initialised via the shared MODEL_FILES list (src/config/models.js).
 
 async function main() {
   await connectDb();

@@ -33,10 +33,22 @@ class CartService {
     return cart;
   }
 
-  async getCart({ tenantId, userId }) {
+  /** Internal view: raw cart doc + items. */
+  async fetchCart({ tenantId, userId }) {
     const cart = await this.getOrCreateActive({ tenantId, userId });
     const items = await CartItem.find({ cartId: cart._id }).sort({ createdAt: 1 }).lean();
     return { cart, items: serializeList(items) };
+  }
+
+  /**
+   * Public cart shape — flat, so clients read `cart.items` / `cart.subtotal`
+   * directly: { id, status, itemCount, distinctItems, subtotal, couponCode, …, items }.
+   */
+  async getCart({ tenantId, userId }) {
+    const { cart, items } = await this.fetchCart({ tenantId, userId });
+    const plain = cart.toObject ? cart.toObject() : { ...cart };
+    const { _id, ...rest } = plain;
+    return { ...rest, id: _id, items };
   }
 
   /** Add or increment an item; snapshots price/stock from the live listing. */
@@ -143,7 +155,7 @@ class CartService {
    * @returns { changed: boolean, diffs: Array, total: number }
    */
   async revalidate({ tenantId, userId }) {
-    const { cart, items } = await this.getCart({ tenantId, userId });
+    const { cart, items } = await this.fetchCart({ tenantId, userId });
     const diffs = [];
     let changed = false;
     let total = 0;
@@ -182,23 +194,24 @@ class CartService {
 
   /** Apply a coupon to the cart (validated against live subtotal). */
   async applyCoupon({ tenantId, userId, code }) {
-    const { cart } = await this.getCart({ tenantId, userId });
+    const { cart } = await this.fetchCart({ tenantId, userId });
     const { coupon, discountAmount } = await pricingPolicyService.applyCoupon({
       tenantId, code, userId, cartSubtotal: cart.subtotal,
     });
     cart.couponCode = coupon.code;
     cart.couponId = coupon._id;
     await cart.save();
-    return { cart, coupon: { id: coupon._id, code: coupon.code, discountType: coupon.discountType, value: coupon.value, discountAmount } };
+    const base = await this.getCart({ tenantId, userId });
+    return { ...base, coupon: { id: coupon._id, code: coupon.code, discountType: coupon.discountType, value: coupon.value, discountAmount } };
   }
 
   /** Remove the coupon from the cart. */
   async removeCoupon({ tenantId, userId }) {
-    const { cart } = await this.getCart({ tenantId, userId });
+    const { cart } = await this.fetchCart({ tenantId, userId });
     cart.couponCode = null;
     cart.couponId = null;
     await cart.save();
-    return { cart };
+    return this.getCart({ tenantId, userId });
   }
 
   /**
@@ -210,7 +223,7 @@ class CartService {
    * @returns { refreshed, dropped: [{listingId, title}] }
    */
   async applyLivePrices({ tenantId, userId }) {
-    const { cart, items } = await this.getCart({ tenantId, userId });
+    const { cart, items } = await this.fetchCart({ tenantId, userId });
     const dropped = [];
     for (const item of items) {
       const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId }).lean();

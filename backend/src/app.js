@@ -6,11 +6,13 @@ import compression from 'compression';
 import morgan from 'morgan';
 import config from './config/index.js';
 import apiRouter from './routes/index.js';
+import opsRoutes from './routes/ops.routes.js';
 import PaymentController from './controllers/payment.controller.js';
 import PayoutController from './controllers/payout.controller.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { metricsMiddleware } from './middleware/metrics.js';
 
 /**
  * App factory — keeps server.js free of middleware wiring and lets tests
@@ -51,6 +53,15 @@ export function createApp() {
 
   // ---- security headers ----
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+  // ---- request metrics (first thing, so every request — including 4xx/5xx —
+  //      is timed; the ops endpoints exclude themselves) ----
+  app.use(metricsMiddleware());
+
+  // ---- ops: /healthz, /readyz, /metrics — mounted before morgan so scrape
+  //      traffic never pollutes the access log, and before auth/tenant so a
+  //      monitor needs no tenant header or token ----
+  app.use(opsRoutes);
 
   // ---- CORS (React Native app / admin web) ----
   app.use(

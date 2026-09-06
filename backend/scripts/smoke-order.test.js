@@ -21,11 +21,14 @@
  *
  * Run: node scripts/smoke-order.test.js   (requires npm install already done)
  */
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
+process.env.DEFAULT_TENANT_ID = ''; // hermetic: never leak the dev .env default tenant into the in-memory DB
+process.env.MONGODB_URI = ''; // hermetic: never leak the dev .env DB into test runs (always use the in-memory mongod)
 process.env.OTP_PROVIDER = 'memory';
 let mongod;
 
@@ -65,6 +68,7 @@ async function main() {
     import('../src/models/deliveryAssignment.model.js'),
     import('../src/models/auditLog.model.js'),
     import('../src/models/catalogEvent.model.js'),
+    import('../src/models/counter.model.js'), // order numbers: unique key index
   ]);
   const M = {};
   for (const m of models) {
@@ -467,6 +471,11 @@ async function main() {
     tenantId: tenant.id, userId: customer2.id, amount: 500,
     reason: 'goodwill', note: 'wallet payment smoke seed',
   });
+  // checkout is ownership-scoped: customer2 needs their own address
+  const address2 = await M.Address.create({
+    tenantId: tenant.id, userId: customer2.id, name: 'C2', phone: '9990002222',
+    line1: '9-B, Lake View', city: 'Vijayawada', state: 'AP', pincode: '530013', isDefault: true,
+  });
   const walletSeed = await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id });
   assert.ok(walletSeed, 'customer2 wallet seeded');
 
@@ -482,7 +491,7 @@ async function main() {
 
   r = await call('/cart/quote', {
     method: 'POST', token: cust2Tok,
-    body: { slotReservationId: walletRes, addressId: address.id, confirmPriceChanges: true },
+    body: { slotReservationId: walletRes, addressId: address2.id, confirmPriceChanges: true },
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.data.grandTotal, 299 + 49, 'quote returns the exact checkout total');
@@ -491,7 +500,7 @@ async function main() {
 
   r = await call('/cart/checkout', {
     method: 'POST', token: cust2Tok,
-    body: { slotReservationId: walletRes, addressId: address.id, paymentMethod: 'wallet', confirmPriceChanges: true },
+    body: { slotReservationId: walletRes, addressId: address2.id, paymentMethod: 'wallet', confirmPriceChanges: true },
   });
   assert.equal(r.status, 201, JSON.stringify(r.body));
   const walletOrder = r.body.data.order;
@@ -544,7 +553,7 @@ async function main() {
   const poorBalanceBefore = (await M.Wallet.findOne({ tenantId: tenant.id, userId: customer2.id })).balance;
   r = await call('/cart/checkout', {
     method: 'POST', token: cust2Tok,
-    body: { slotReservationId: poorRes, addressId: address.id, paymentMethod: 'wallet', confirmPriceChanges: true },
+    body: { slotReservationId: poorRes, addressId: address2.id, paymentMethod: 'wallet', confirmPriceChanges: true },
   });
   assert.equal(r.status, 409, 'insufficient wallet must surface as 409');
   assert.equal(r.body.code, 'PAYMENT_FAILED');

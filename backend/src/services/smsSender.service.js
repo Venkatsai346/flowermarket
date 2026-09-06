@@ -22,7 +22,9 @@ class SmsSender {
       const label = channel === 'phone' ? 'SMS' : 'EMAIL';
       // eslint-disable-next-line no-console
       console.log(`[otp:${provider}] ${label} to ${target} | purpose=${purpose} | code=${code}`);
-      return { provider, sent: true };
+      // dev-only echo so UI flows (storefront OTP sheet) are testable end-to-end;
+      // real providers never return the code.
+      return { provider, sent: true, code };
     }
 
     if (provider === 'memory') {

@@ -8,6 +8,7 @@
  * verification gate, the cache and the TLS hook.
  */
 
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import mongoose from 'mongoose';
 import config from '../src/config/index.js';
 
@@ -49,6 +50,16 @@ async function main() {
   const { default: Tenant } = await import('../src/models/tenant.model.js');
   const { default: TenantDomain } = await import('../src/models/tenantDomain.model.js');
   const { DOMAIN_VERIFICATION_STATUS } = await import('../src/constants/enums.js');
+
+  // Defense in depth: this suite WIPES the tenants collection (it builds the
+  // world from scratch: rosebazaar/lilyco/closedstore). That is only legal
+  // on a disposable database — the in-memory mongod. If an explicit
+  // MONGODB_URI pointed it at a real database, refuse instead of destroying
+  // it (the hermetic guard in test-env-guard.js is the primary protection).
+  if (!mode.includes('memory')) {
+    console.error(`\n❌ smoke-domains: refusing to run against "${mode}" — the suite\n   wipes the tenants collection. Run it hermetically (no MONGODB_URI).\n`);
+    process.exit(1);
+  }
 
   await Promise.all([Tenant.deleteMany({}), TenantDomain.deleteMany({})]);
   svc.invalidate();

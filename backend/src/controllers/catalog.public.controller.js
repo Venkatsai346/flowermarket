@@ -31,6 +31,20 @@ class CatalogPublicController {
           query: req.query,
           sessionKey: req.get('x-session-id') || req.ip || null,
         });
+        // An EMPTY index (fresh store, or the window before the first outbox
+        // drain) must not shadow a live catalogue. The ranked path cannot tell
+        // "no products exist" from "the index has not caught up", so when it
+        // returns nothing we ask the legacy scan; if the legacy scan has rows,
+        // the index is stale and we serve it instead.
+        if (ranked.items.length === 0) {
+          const legacyProbe = await catalogSearchService.search({ tenantId: req.tenantId, query: req.query });
+          if (legacyProbe.items.length > 0) {
+            return res.status(200).json(success(legacyProbe.items, {
+              message: 'Catalog fetched',
+              meta: { ...legacyProbe.meta, indexState: 'stale_fallback' },
+            }));
+          }
+        }
         return res.status(200).json(success(ranked.items, {
           meta: { ...ranked.meta, query: ranked.query, facets: ranked.facets, profile: ranked.profile },
           message: 'Catalog fetched',

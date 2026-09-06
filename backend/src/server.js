@@ -1,6 +1,8 @@
+import mongoose from 'mongoose';
 import config from './config/index.js';
 import { connectDb } from './config/db.js';
 import { createApp } from './app.js';
+import heartbeatService from './services/heartbeat.service.js';
 
 async function bootstrap() {
   await connectDb();
@@ -36,15 +38,33 @@ async function bootstrap() {
     console.error('[search] synonym bootstrap failed:', err.message);
   }
 
+  // DB connectivity visibility — mongoose auto-retries, but an operator
+  // should see the flap in the log (and /readyz will be 503 meanwhile).
+  mongoose.connection.on('disconnected', () => {
+    // eslint-disable-next-line no-console
+    console.warn('[db] connection lost — mongoose is auto-retrying');
+  });
+  mongoose.connection.on('reconnected', () => {
+    // eslint-disable-next-line no-console
+    console.log('[db] reconnected');
+  });
+
   const app = createApp();
   const server = app.listen(config.port, () => {
     // eslint-disable-next-line no-console
     console.log(`[app] ${config.appName} listening on :${config.port} (${config.env})`);
   });
 
+  // liveness beacon: /metrics exposes this beat's age for the API role
+  const apiId = `api-${process.pid}`;
+  heartbeatService.beat('api', apiId);
+  const hbTimer = setInterval(() => heartbeatService.beat('api', apiId), config.observability.heartbeatMs);
+  hbTimer.unref();
+
   const shutdown = async (signal) => {
     // eslint-disable-next-line no-console
     console.log(`[app] ${signal} received, shutting down...`);
+    clearInterval(hbTimer);
     server.close(async () => {
       const { disconnectDb } = await import('./config/db.js');
       await disconnectDb();

@@ -51,6 +51,23 @@ const config = {
     .map((s) => s.trim())
     .filter(Boolean),
 
+  // ---- Razorpay (real gateway) + mock provider behaviour ----
+  payments: {
+    // Mock provider webhook secret — the mock gateway signs exactly like
+    // Razorpay (HMAC-SHA256 of the raw body) so the verification path is
+    // exercised identically in dev/test. Change via env in real deployments.
+    mockWebhookSecret: process.env.MOCK_PAYMENT_WEBHOOK_SECRET || 'mock-webhook-secret-dev',
+    // Set true to make the MOCK provider behave like Razorpay (async capture):
+    // checkout returns a pending payment, order sits in PAYMENT_PENDING until
+    // a signed webhook confirms. Lets the full async flow be exercised live
+    // without real keys.
+    mockPending: process.env.MOCK_PAYMENT_PENDING === 'true',
+    // Reconciliation cadence for the worker's payment-reconcile job
+    reconcileEveryMs: Number(process.env.PAYMENT_RECONCILE_EVERY_MS) || 5 * 60_000,
+    // payments pending longer than this are resolved against the gateway
+    pendingStaleMinutes: Number(process.env.PAYMENT_PENDING_STALE_MINUTES) || 15,
+  },
+
   razorpay: {
     keyId: process.env.RAZORPAY_KEY_ID || '',
     keySecret: process.env.RAZORPAY_KEY_SECRET || '',
@@ -73,6 +90,26 @@ const config = {
   exports: {
     nightlyDays: Number(process.env.EXPORT_NIGHTLY_DAYS) || 30,
     defaultScheduledAtHour: Number(process.env.EXPORT_NIGHTLY_HOUR) || 2, // 2 AM cron
+  },
+
+  // ---- Worker runtime (src/worker.js): outbox consumer + scheduled jobs ----
+  // A separate process from the API. Consumes the catalog outbox with leased,
+  // atomic claims (crash-safe, multi-worker safe) and runs the built-in
+  // scheduled jobs (per-tenant nightly + marketplace nightly).
+  worker: {
+    enabled: process.env.WORKER_ENABLED !== 'false',
+    pollMs: Number(process.env.WORKER_POLL_MS) || 5000, // outbox tick cadence
+    batchSize: Number(process.env.WORKER_BATCH_SIZE) || 20, // events per tick
+    leaseMs: Number(process.env.WORKER_LEASE_MS) || 60_000, // crash-recovery window
+    maxAttempts: Number(process.env.WORKER_MAX_ATTEMPTS) || 5, // then dead-letter
+    nightlyHour: Number(process.env.WORKER_NIGHTLY_HOUR) || 2, // local hour of day
+  },
+
+  // ---- Observability: /healthz, /readyz, /metrics (Prometheus) ----
+  observability: {
+    heartbeatMs: Number(process.env.OBS_HEARTBEAT_MS) || 10_000, // api+worker beat cadence
+    // worker beats every WORKER_POLL_MS (5s default); 30s = 6 missed ticks ⇒ down
+    workerAliveAfterSec: Number(process.env.OBS_WORKER_ALIVE_AFTER_SEC) || 30,
   },
 
   // ---- Phase 5: multi-tenant marketplace ----

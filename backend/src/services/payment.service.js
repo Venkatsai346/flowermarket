@@ -1,6 +1,8 @@
 import Payment from '../models/payment.model.js';
 import PaymentTransaction from '../models/paymentTransaction.model.js';
 import WalletTransaction from '../models/walletTransaction.model.js';
+import PaymentWebhookEvent, { PAYMENT_WEBHOOK_EVENT_STATUS } from '../models/paymentWebhookEvent.model.js';
+import { webhookEvents } from '../observability/registry.js';
 import paymentProvider from './paymentProvider.service.js';
 import walletService from './wallet.service.js';
 import { notFound, badRequest, conflict } from '../utils/ApiError.js';
@@ -378,6 +380,138 @@ class PaymentService {
     return payment;
   }
 
+  /**
+   * Apply a signature-verified gateway webhook event to the payment state
+   * machine. This is the ONLY path from "gateway said something" to "our
+   * money state changed" — both the Razorpay and mock webhooks funnel here.
+   *
+   * Guarantees:
+   *  - EVENT-LEVEL IDEMPOTENCY: unique (provider, eventId) upsert; replays
+   *    are recorded as `duplicate` and never re-enter the state machine
+   *    (gateways retry deliveries — sometimes for days).
+   *  - AMOUNT VERIFICATION: a captured event whose amount (paise) doesn't
+   *    match the recorded Payment is NEVER confirmed — recorded as
+   *    `mismatch` for operator review, and the ack still returns 200 so the
+   *    gateway doesn't storm retries on a money-discrepancy it can't fix.
+   *  - UNKNOWN PAYMENTS: ack'd as `ignored` (could be another tenant, a
+   *    pre-commit arrival, or a stale event) — never 4xx a webhook.
+   *  - AT-LEAST-ONCE RECOVERY: what the webhook misses, reconciliation
+   *    fetches from the gateway (see reconcilePending).
+   *
+   * @returns {{status:'processed'|'duplicate'|'mismatch'|'ignored', payment?:object, order?:object}}
+   */
+  async applyWebhookEvent({
+    provider,
+    eventId,
+    eventType,
+    gatewayPaymentId = null,
+    gatewayOrderId = null,
+    amountPaise = null,
+    currency = null,
+    raw = null,
+  }) {
+    const finish = async (status, note = null, extra = null) => {
+      try {
+        if (firstArrival) {
+          // First-writer-wins: only the FIRST delivery writes the terminal
+          // disposition. A replay must never overwrite 'processed' with
+          // 'duplicate' — that would hide the original outcome from the
+          // operator. (Guarded on RECEIVED so even a race can't clobber it.)
+          await PaymentWebhookEvent.updateOne(
+            { provider, eventId, status: PAYMENT_WEBHOOK_EVENT_STATUS.RECEIVED },
+            { $set: { status, note: note || null, processedAt: new Date(), lastSeenAt: new Date(), ...(extra || {}) } },
+          );
+        } else {
+          // Replay: bookkeep the retry (count + last seen) WITHOUT altering
+          // the audit verdict the first delivery already wrote.
+          await PaymentWebhookEvent.updateOne(
+            { provider, eventId },
+            { $inc: { deliveries: 1 }, $set: { lastSeenAt: new Date() } },
+          );
+        }
+      } catch { /* audit write must not break the webhook ack */ }
+      webhookEvents.inc({ provider, result: status });
+      return { status, ...(extra || {}) };
+    };
+
+    // ---- 1. event-level dedupe (the unique index makes the first win) ----
+    let firstArrival = true;
+    try {
+      const up = await PaymentWebhookEvent.findOneAndUpdate(
+        { provider, eventId },
+        {
+          $setOnInsert: {
+            eventType, tenantId: null, paymentId: null, orderId: null,
+            gatewayPaymentId, gatewayOrderId, amountPaise, currency,
+            status: PAYMENT_WEBHOOK_EVENT_STATUS.RECEIVED, raw,
+          },
+        },
+        { upsert: true, new: true },
+      );
+      if (!up || !up._id || up.status !== PAYMENT_WEBHOOK_EVENT_STATUS.RECEIVED) firstArrival = false;
+    } catch (err) {
+      if (err?.code === 11000) firstArrival = false; // concurrent duplicate
+      else throw err;
+    }
+    if (!firstArrival) return finish('duplicate', 'replayed delivery — state machine not re-entered');
+
+    // ---- 2. resolve our Payment (gatewayPaymentId first, then order ref) ----
+    let payment = gatewayPaymentId
+      ? await Payment.findOne({ gatewayPaymentId }).lean()
+      : null;
+    if (!payment && gatewayOrderId) payment = await Payment.findOne({ gatewayOrderId }).lean();
+    if (!payment) return finish('ignored', 'no payment matches the gateway refs');
+
+    const isCapture = ['payment.captured', 'payment.authorized', 'order.paid'].includes(eventType);
+    const isFailure = eventType === 'payment.failed';
+    if (!isCapture && !isFailure) return finish('ignored', `event type ${eventType} is not actionable`);
+
+    // ---- 3. AMOUNT VERIFICATION (captures only — never confirm on trust) ----
+    if (isCapture && amountPaise != null && Math.round(payment.amount * 100) !== Number(amountPaise)) {
+      return finish(
+        'mismatch',
+        `gateway amount ${amountPaise}p ≠ recorded ${Math.round(payment.amount * 100)}p — payment left untouched for review`,
+        { paymentId: payment._id, orderId: payment.orderId },
+      );
+    }
+    if (isCapture && currency && payment.currency && currency.toUpperCase() !== (payment.currency || 'INR').toUpperCase()) {
+      return finish('mismatch', `gateway currency ${currency} ≠ recorded ${payment.currency}`, { paymentId: payment._id, orderId: payment.orderId });
+    }
+
+    // ---- 4. state transition (each step is itself idempotent) ----
+    const { default: orderService } = await import('./order.service.js');
+    let order = null;
+    if (isCapture) {
+      await this.confirmSuccess({
+        paymentId: payment._id,
+        gatewayPaymentId: gatewayPaymentId || payment.gatewayPaymentId,
+        raw: raw || null,
+      });
+      // record the gateway-side capture so reconciliation can verify later
+      if (provider === 'mock' && gatewayOrderId) {
+        paymentProvider.mockGatewaySet(gatewayOrderId, { captured: true, gatewayPaymentId: gatewayPaymentId || null, amountPaise });
+      }
+      order = await orderService.confirmPayment({ paymentId: payment._id }).catch(() => null);
+    } else {
+      await this.markFailed({
+        paymentId: payment._id,
+        reason: (raw?.payload?.payment?.entity?.error_description) || 'Payment failed at gateway',
+        gatewayPaymentId: gatewayPaymentId || null,
+      });
+      await orderService.cancelOrder({
+        tenantId: payment.tenantId, orderId: payment.orderId,
+        reason: ORDER_CANCELLATION_REASON.PAYMENT_FAILED,
+        actorType: 'system', refund: false,
+      }).catch(() => {}); // already cancelled / not cancel-able — settled
+    }
+
+    return finish(
+      'processed',
+      null,
+      { paymentId: payment._id, orderId: payment.orderId, order: order || null },
+    );
+  }
+
   /** Find the payment for a gateway order id (webhook lookup). */
   async findByGatewayOrderId({ gatewayOrderId, tenantId = null }) {
     const q = { gatewayOrderId };
@@ -422,10 +556,46 @@ class PaymentService {
         if (healed.chargeResult?.success) continue;
         if (payment.status === PAYMENT_STATUS.FAILED) failed.push(payment);
       } else {
-        // in production: poll the gateway for the authoritative state here
+        // ASK THE GATEWAY FIRST — the webhook can be lost (network, downtime,
+        // retry exhaustion) while the money actually moved. The gateway is the
+        // source of truth; only when it confirms "nothing captured" do we fail.
+        let remote = null;
+        try {
+          remote = await paymentProvider.fetchPaymentStatus({
+            gatewayOrderId: payment.gatewayOrderId,
+            gatewayPaymentId: payment.gatewayPaymentId,
+            provider: payment.provider,
+          });
+        } catch (e) {
+          // transient gateway error — leave the payment pending for the next sweep
+          // eslint-disable-next-line no-console
+          console.error(`[payments] reconcile fetch failed for ${payment._id}:`, e?.message);
+          continue;
+        }
+
+        if (remote?.state === 'captured') {
+          // webhook was lost — recover from the gateway's system of record
+          await this.confirmSuccess({
+            paymentId: payment._id,
+            gatewayPaymentId: remote.gatewayPaymentId || payment.gatewayPaymentId,
+            raw: { reconciled: true, source: 'gateway-poll', ...(remote.raw || {}) },
+          });
+          if (payment.provider === 'mock' && payment.gatewayOrderId) {
+            paymentProvider.mockGatewaySet(payment.gatewayOrderId, {
+              captured: true,
+              gatewayPaymentId: remote.gatewayPaymentId || null,
+            });
+          }
+          const { default: orderService } = await import('./order.service.js');
+          await orderService.confirmPayment({ paymentId: payment._id }).catch(() => {});
+          continue; // recovered — not a failure
+        }
+
         payment.status = PAYMENT_STATUS.FAILED;
         payment.failedAt = new Date();
-        payment.failureReason = 'Reconciled: no gateway confirmation within threshold';
+        payment.failureReason = remote
+          ? `Reconciled: gateway reports ${remote.state}, no capture within threshold`
+          : 'Reconciled: no gateway confirmation within threshold';
         await payment.save();
         await PaymentTransaction.updateMany(
           { paymentId: payment._id, status: PAYMENT_TRANSACTION_STATUS.PENDING },

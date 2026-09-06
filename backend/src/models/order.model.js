@@ -123,6 +123,12 @@ const OrderSchema = new Schema(
 
     cancellation: { type: CancellationSchema, default: () => ({}) },
 
+    // Moment of actual delivery. Payout eligibility (deliveredAt + return
+    // window) and the return-time guard read this; it MUST be a top-level
+    // schema path or mongoose strict mode silently drops it and every payout
+    // line's eligibleAt drifts to order.updatedAt. Stamped once by
+    // order.service.transition() when the order first reaches DELIVERED.
+    deliveredAt: { type: Date, default: null },
     deliveryRetryCount: { type: Number, default: 0, min: 0 },
     version: { type: Number, default: 1, min: 1 }, // optimistic lock during saga steps
   },

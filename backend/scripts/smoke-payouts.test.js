@@ -13,6 +13,7 @@
  * through the ugly paths — ambiguity, reversal, clawback.
  */
 
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import mongoose from 'mongoose';
 import config from '../src/config/index.js';
 
@@ -89,7 +90,7 @@ async function main() {
   });
 
   /** Build a confirmed, delivered order with one vendor line. */
-  async function makeOrder({ lineTotal, tax, deliveredDaysAgo = 30 }) {
+  async function makeOrder({ lineTotal, tax, deliveredDaysAgo = 30, vendorId = null }) {
     const deliveredAt = new Date(Date.now() - deliveredDaysAgo * 86400000);
     const order = await Order.create({
       tenantId: tenant._id, userId: oid(), orderNumber: `FM-PO-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -97,11 +98,11 @@ async function main() {
       itemsCount: 1, itemsSubtotal: lineTotal, deliveryFee: 0, discount: 0,
       taxAmount: tax, totalAmount: lineTotal + tax, currency: 'INR',
       paymentMethod: 'upi', paymentSummary: { status: 'success', paidAt: deliveredAt },
-      addressSnapshot: { line1: 'x', city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520001' },
+      addressSnapshot: { addressId: oid(), line1: 'x', city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520001' },
     });
     await OrderItem.create({
       orderId: order._id, tenantId: tenant._id, tenantProductId: oid(), productMasterId: oid(),
-      vendorId: vendor._id, skuSnapshot: { title: 'Red Rose Bouquet' },
+      vendorId: vendorId || vendor._id, skuSnapshot: { title: 'Red Rose Bouquet' },
       priceAtOrder: { sellingPrice: lineTotal }, qty: 1, lineTotal, taxAmount: tax, discountAllocated: 0,
     });
     await ledgerPosting.postSaleCaptured({ order });
@@ -130,7 +131,14 @@ async function main() {
   // -------------------------------------------------------------------------
   section('2. eligibility gate — the return window');
   // -------------------------------------------------------------------------
-  const fresh = await makeOrder({ lineTotal: 1000, tax: 0, deliveredDaysAgo: 1 });
+  // A different vendor: its sale journal must not add to the main vendor's
+  // payable, or the section-6 ledger assertions (exact payable of the batched
+  // order) would see ₹900 that never belongs to that batch.
+  const vendor2 = await Vendor.create({
+    userId: oid(), businessName: 'Jasmine Co', slug: `jc-${Date.now()}`,
+    commissionRateBps: 1000, status: 'active',
+  });
+  const fresh = await makeOrder({ lineTotal: 1000, tax: 0, deliveredDaysAgo: 1, vendorId: vendor2._id });
   await payoutService.accrueForOrder({ orderId: fresh._id });
 
   const sweep = await payoutService.markEligible({});
@@ -250,7 +258,7 @@ async function main() {
   section('7. ★ the ambiguous submission — no double payment');
   // -------------------------------------------------------------------------
   // craft a batch whose net ends in 99 paise → the mock provider "times out"
-  const ambOrder = await makeOrder({ lineTotal: 2000, tax: 0 });
+  const ambOrder = await makeOrder({ lineTotal: 2000, tax: 0, deliveredDaysAgo: 8 }); // eligibleAt = now − 1d, inside the ±2d cycle window
   await payoutService.accrueForOrder({ orderId: ambOrder._id });
   await payoutService.markEligible({});
   const ambLine = await PayoutLineItem.findOne({ orderId: ambOrder._id });

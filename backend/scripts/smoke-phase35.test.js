@@ -13,11 +13,14 @@
  *
  * Run: node scripts/smoke-phase35.test.js   (requires npm install already done)
  */
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
+process.env.DEFAULT_TENANT_ID = ''; // hermetic: never leak the dev .env default tenant into the in-memory DB
+process.env.MONGODB_URI = ''; // hermetic: never leak the dev .env DB into test runs (always use the in-memory mongod)
 process.env.OTP_PROVIDER = 'memory';
 let mongod;
 
@@ -237,11 +240,14 @@ async function main() {
     assert.equal(pendingOrder.status, 'payment_pending', 'order waits in PAYMENT_PENDING');
     ok('async checkout: order PAYMENT_PENDING with gateway order id');
 
-    // simulate the gateway webhook (raw route mounted in app.js)
+    // simulate the gateway webhook (raw route mounted in app.js).
+    // Mock webhooks are HMAC-signed exactly like Razorpay's (x-mock-signature)
+    // — the signature is over the EXACT raw bytes we send.
+    const webhookRaw = JSON.stringify({ gatewayOrderId });
     const webhookRes = await fetch(`http://127.0.0.1:${port}/api/v1/payments/webhook/mock`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ gatewayOrderId }),
+      headers: { 'content-type': 'application/json', 'x-mock-signature': paymentProvider.signMockWebhook(webhookRaw) },
+      body: webhookRaw,
     });
     assert.equal(webhookRes.status, 200, await webhookRes.text());
     const orderDoc = await M.Order.findById(pendingOrder.id);

@@ -9,11 +9,14 @@
  *
  * Run: node scripts/smoke-catalog.test.js   (requires npm install already done)
  */
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
+process.env.DEFAULT_TENANT_ID = ''; // hermetic: never leak the dev .env default tenant into the in-memory DB
+process.env.MONGODB_URI = ''; // hermetic: never leak the dev .env DB into test runs (always use the in-memory mongod)
 let mongod;
 
 process.env.OTP_PROVIDER = 'memory';
@@ -60,9 +63,15 @@ async function main() {
   const customer = await User.create({
     tenantId: tenant.id, phone: { number: '9876500001', verified: true }, status: 'active',
   });
+  // Phase 6.0: /catalog/tenant/* is role-gated (ADMIN, SUPER_ADMIN, VENDOR) —
+  // a customer token must 403. Vendors are the product's tenant-listing actors.
+  const vendor = await User.create({
+    tenantId: tenant.id, phone: { number: '9876500002', verified: true }, status: 'active', role: 'vendor',
+  });
   const { default: AuthService } = await import('../src/services/auth.service.js');
   const adminTok = (await AuthService.issueTokens(admin)).accessToken;
   const custTok = (await AuthService.issueTokens(customer)).accessToken;
+  const vendTok = (await AuthService.issueTokens(vendor)).accessToken;
 
   const { createApp } = await import('../src/app.js');
   const app = createApp();
@@ -111,8 +120,16 @@ async function main() {
   const brandId = r.body.data.id;
 
   // ================= 2. tenant proposes a new global SKU =================
+  // a CUSTOMER must not be able to propose (Phase 6.0 RBAC fix)
   r = await call('/catalog/tenant/masters/propose', {
     method: 'POST', token: custTok,
+    body: { skuGlobal: 'HACK-1', type: 'fresh_flower', title: 'Hacked', categoryId: catId, brandId },
+  });
+  assert.equal(r.status, 403, 'customer must not propose masters');
+  assert.equal(r.body.code, 'FORBIDDEN');
+
+  r = await call('/catalog/tenant/masters/propose', {
+    method: 'POST', token: vendTok,
     body: {
       skuGlobal: 'ROS-RED-10', type: 'fresh_flower', title: 'Red Roses 10 Stems',
       categoryId: catId, brandId,
@@ -130,7 +147,7 @@ async function main() {
 
   // duplicate detection: same title -> 409
   r = await call('/catalog/tenant/masters/propose', {
-    method: 'POST', token: custTok,
+    method: 'POST', token: vendTok,
     body: {
       skuGlobal: 'ROS-RED-10', type: 'fresh_flower', title: 'Red Roses 10 Stems',
       categoryId: catId, brandId,
@@ -149,7 +166,7 @@ async function main() {
 
   // ================= 4. tenant creates a listing =================
   r = await call('/catalog/tenant/listings', {
-    method: 'POST', token: custTok,
+    method: 'POST', token: vendTok,
     body: { productMasterId: masterId, price: { mrp: 499, sellingPrice: 399 }, stockQty: 50, status: 'active' },
   });
   assert.equal(r.status, 201, JSON.stringify(r.body));
@@ -158,29 +175,38 @@ async function main() {
   assert.equal(r.body.data.availability.status, 'in_stock');
 
   // ================= 5. customer merged-view search =================
+  // the search index is fed by the catalog-event outbox — drain it the way
+  // production does (nightly pipeline / event console) before asserting
+  const { default: catalogEvents } = await import('../src/services/catalogEvent.service.js');
+  const drainResult = await catalogEvents.drain({ limit: 50 });
+  assert.equal(drainResult.failed, 0, 'outbox drain must not fail');
+
   r = await call('/catalog?search=roses');
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.data.length, 1, 'customer must see exactly 1 product');
   assert.equal(r.body.data[0].product.title, 'Red Roses 10 Stems');
   assert.equal(r.body.data[0].price.sellingPrice, 399);
 
-  // inactive listing must NOT surface
+  // inactive listing must NOT surface (drain the outbox first — the search
+  // index catches up through the same path production uses)
   r = await call(`/catalog/tenant/listings/${listingId}/status`, {
-    method: 'PATCH', token: custTok, body: { status: 'inactive', expectedVersion: 1 },
+    method: 'PATCH', token: vendTok, body: { status: 'inactive', expectedVersion: 1 },
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal((await catalogEvents.drain({ limit: 50 })).failed, 0, 'status-change drain must not fail');
   r = await call('/catalog?search=roses');
   assert.equal(r.body.data.length, 0, 'inactive listing must be hidden from customers');
 
   // reactivate
   r = await call(`/catalog/tenant/listings/${listingId}/status`, {
-    method: 'PATCH', token: custTok, body: { status: 'active', expectedVersion: 2 },
+    method: 'PATCH', token: vendTok, body: { status: 'active', expectedVersion: 2 },
   });
   assert.equal(r.status, 200);
+  assert.equal((await catalogEvents.drain({ limit: 50 })).failed, 0, 'reactivation drain must not fail');
 
   // ================= 6. optimistic lock conflict =================
   r = await call(`/catalog/tenant/listings/${listingId}/price`, {
-    method: 'PATCH', token: custTok,
+    method: 'PATCH', token: vendTok,
     body: { price: { mrp: 499, sellingPrice: 349 }, expectedVersion: 2 }, // stale version
   });
   assert.equal(r.status, 409, 'stale version must 409');
@@ -188,7 +214,7 @@ async function main() {
 
   // correct version works + price history recorded
   r = await call(`/catalog/tenant/listings/${listingId}/price`, {
-    method: 'PATCH', token: custTok,
+    method: 'PATCH', token: vendTok,
     body: { price: { mrp: 499, sellingPrice: 349 }, expectedVersion: 3, reason: 'promotion' },
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -202,20 +228,20 @@ async function main() {
 
   // reserve 10 -> available 40
   r = await call(`/catalog/tenant/listings/${listingId}/stock/reserve`, {
-    method: 'POST', token: custTok, body: { qty: 10, orderRef: 'TEST-ORDER-1' },
+    method: 'POST', token: vendTok, body: { qty: 10, orderRef: 'TEST-ORDER-1' },
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
 
   // over-reserve must fail atomically
   r = await call(`/catalog/tenant/listings/${listingId}/stock/reserve`, {
-    method: 'POST', token: custTok, body: { qty: 999, orderRef: 'TEST-ORDER-2' },
+    method: 'POST', token: vendTok, body: { qty: 999, orderRef: 'TEST-ORDER-2' },
   });
   assert.equal(r.status, 409, 'over-reservation must fail');
   assert.equal(r.body.code, 'INSUFFICIENT_STOCK');
 
   // release 10 -> available back to 50
   r = await call(`/catalog/tenant/listings/${listingId}/stock/release`, {
-    method: 'POST', token: custTok, body: { qty: 10, orderRef: 'TEST-ORDER-1' },
+    method: 'POST', token: vendTok, body: { qty: 10, orderRef: 'TEST-ORDER-1' },
   });
   assert.equal(r.status, 200, JSON.stringify(r.body));
 
@@ -226,7 +252,7 @@ async function main() {
   // ================= 8. global-field change request flow =================
   // tenant cannot edit title directly (not in the listing update schema) — via CR:
   r = await call('/catalog/tenant/change-requests', {
-    method: 'POST', token: custTok,
+    method: 'POST', token: vendTok,
     body: {
       type: 'update_global_fields', productMasterId: masterId,
       diff: { after: { title: 'Red Roses 10 Stems Premium' } },
@@ -246,7 +272,7 @@ async function main() {
 
   // submit again + approve -> applied
   r = await call('/catalog/tenant/change-requests', {
-    method: 'POST', token: custTok,
+    method: 'POST', token: vendTok,
     body: {
       type: 'update_global_fields', productMasterId: masterId,
       diff: { after: { title: 'Red Roses Premium 10 Stems' } },
@@ -261,7 +287,9 @@ async function main() {
   assert.equal(masterAfterApprove.title, 'Red Roses Premium 10 Stems', 'approved request must apply to master');
   assert.equal(masterAfterApprove.version, 3, 'master version must bump on approved change');
 
-  // customer search reflects the new title
+  // customer search reflects the new title (the master-update event feeds
+  // the search index through the outbox — drain it, as production does)
+  assert.equal((await catalogEvents.drain({ limit: 50 })).failed, 0, 'master-update drain must not fail');
   r = await call('/catalog?search=premium');
   assert.equal(r.status, 200);
   assert.equal(r.body.data[0].product.title, 'Red Roses Premium 10 Stems');
@@ -272,11 +300,13 @@ async function main() {
   const audits = await AuditLog.countDocuments({});
   assert.ok(audits >= 10, `expected >= 10 audit entries, got ${audits}`);
 
-  // drain handlers run without throwing
+  // drain handlers run without throwing; after the final drain every event
+  // must be in `published` state (earlier drains already published some)
   const catalogEventService = (await import('../src/services/catalogEvent.service.js')).default;
-  const drain = await catalogEventService.drain({ limit: 100 });
+  const drain = await catalogEventService.drain({ limit: 500 });
   assert.equal(drain.failed, 0, 'no events should fail draining');
-  assert.ok(drain.published >= events, 'all events should be published');
+  const unsettled = await CatalogEvent.countDocuments({ status: { $ne: 'published' } });
+  assert.equal(unsettled, 0, `all events should be published, ${unsettled} unsettled`);
 
   // ================= 10. admin audit view is cross-tenant; tenant sees own only =================
   r = await call('/catalog/admin/audit?limit=5', { token: adminTok });
@@ -289,6 +319,8 @@ async function main() {
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const listingAfterDeprecate = await TenantProduct.findById(listingId);
   assert.equal(listingAfterDeprecate.status, 'inactive', 'deprecating master must cascade listings to INACTIVE');
+  // the deprecation event feeds the index via the outbox — drain before asserting
+  assert.equal((await catalogEventService.drain({ limit: 500 })).failed, 0, 'deprecate drain must not fail');
   r = await call('/catalog?search=roses');
   assert.equal(r.body.data.length, 0, 'deprecated master products must vanish from customer view');
 

@@ -51,9 +51,15 @@ class OtpService {
       resendCooldownUntil: new Date(now.getTime() + config.otp.resendCooldownSeconds * 1000),
     });
 
-    await smsSender.sendOtp({ channel, target, code, purpose });
+    const sendResult = await smsSender.sendOtp({ channel, target, code, purpose });
 
-    return { otpId: doc.id, expiresInSeconds: ttl, masked: doc.codePrefix };
+    return {
+      otpId: doc.id,
+      expiresInSeconds: ttl,
+      masked: doc.codePrefix,
+      // present only when the dev/console provider echoes the code
+      ...(sendResult?.code ? { devCode: sendResult.code } : {}),
+    };
   }
 
   /**

@@ -158,6 +158,11 @@ class CatalogAdminController {
     res.status(200).json(success(result, { message: 'Events drained' }));
   });
 
+  retryFailedEvents = asyncHandler(async (req, res) => {
+    const result = await catalogEventService.retryFailed();
+    res.status(200).json(success(result, { message: 'Dead-lettered events re-queued' }));
+  });
+
   eventStatus = asyncHandler(async (req, res) => {
     const status = await catalogEventService.status();
     res.status(200).json(success(status, { message: 'Event outbox status' }));

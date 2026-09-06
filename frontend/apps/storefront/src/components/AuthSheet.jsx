@@ -24,12 +24,16 @@ export default function AuthSheet() {
   const reset = () => { setStep('phone'); setCode(''); setDevCode(null); };
 
   const request = async () => {
-    if (phone.replace(/\D/g, '').length !== 10) { toast('Enter a 10-digit mobile number', 'error'); return; }
+    const number = phone.replace(/\D/g, '');
+    if (number.length !== 10) { toast('Enter a 10-digit mobile number', 'error'); return; }
     setBusy(true);
     try {
-      const r = await api.shop.requestOtp({ channel: 'sms', target: phone.replace(/\D/g, ''), purpose: 'login' });
+      // backend contract: channel 'phone' + phone {countryCode, number}
+      const r = await api.shop.requestOtp({
+        purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number },
+      });
       // the console/dev OTP provider echoes the code so the flow is testable
-      if (r.data?.code || r.data?.otp) setDevCode(r.data.code || r.data.otp);
+      if (r.data?.devCode || r.data?.code || r.data?.otp) setDevCode(r.data.devCode || r.data.code || r.data.otp);
       setStep('code');
       toast('Code sent');
     } catch (e) {
@@ -40,10 +44,11 @@ export default function AuthSheet() {
   };
 
   const verify = async () => {
+    const number = phone.replace(/\D/g, '');
     setBusy(true);
     try {
       const r = await api.shop.verifyOtp({
-        channel: 'sms', target: phone.replace(/\D/g, ''), purpose: 'login', code: code.trim(),
+        purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number }, code: code.trim(),
       });
       setSession(r.data);
       toast('Signed in', 'success');

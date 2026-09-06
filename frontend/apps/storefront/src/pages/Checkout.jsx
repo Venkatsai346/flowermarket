@@ -69,7 +69,17 @@ export default function Checkout() {
   const [placing, setPlacing] = useState(false);
 
   const { data: addresses, refetch: refetchAddresses } = useApi(() => api.shop.addresses(), []);
-  const { data: slots, loading: slotsLoading } = useApi(() => api.shop.slots({ days: 3 }), []);
+  // /cart/slots serves one day at a time ({hub, slots}) — fetch the next three
+  // days in parallel and flatten; the day grouping below renders the rest.
+  const { data: slots, loading: slotsLoading } = useApi(async () => {
+    const dates = [0, 1, 2].map((i) => {
+      const d = new Date();
+      d.setDate(d.getDate() + i);
+      return d.toISOString().slice(0, 10);
+    });
+    const res = await Promise.all(dates.map((date) => api.shop.slots({ date })));
+    return { data: res.flatMap((r) => r.data?.slots || []) };
+  }, []);
   const { data: wallet } = useApi(
     () => (isAuth ? api.shop.wallet() : Promise.resolve({ data: null })),
     [isAuth],

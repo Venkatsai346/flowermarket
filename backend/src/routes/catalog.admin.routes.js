@@ -63,6 +63,7 @@ router.post('/change-requests/:id/review', validate(idParamSchema, 'params'), va
 // ---- audit + events ----
 router.get('/audit', validate(auditQuerySchema, 'query'), CatalogAdminController.listAudit);
 router.post('/events/drain', CatalogAdminController.drainEvents);
+router.post('/events/retry-failed', CatalogAdminController.retryFailedEvents);
 router.get('/events/status', CatalogAdminController.eventStatus);
 
 export default router;

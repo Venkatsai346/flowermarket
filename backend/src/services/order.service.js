@@ -1,5 +1,6 @@
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
+import Payment from '../models/payment.model.js';
 import OrderStatusHistory from '../models/orderStatusHistory.model.js';
 import CartItem from '../models/cartItem.model.js';
 import Address from '../models/address.model.js';
@@ -71,7 +72,7 @@ class OrderService {
     if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
 
     // ---- 4. create order + items ----
-    const { cart, items } = await cartService.getCart({ tenantId, userId });
+    const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     const order = await this.createOrderDoc({
       tenantId, userId, cart, items, hold, address, paymentMethod, source,
     });
@@ -250,6 +251,43 @@ class OrderService {
       OrderStatusHistory.find({ orderId: order._id }).sort({ createdAt: 1 }).lean(),
     ]);
     return { order, items: serializeList(items), timeline: serializeList(timeline) };
+  }
+
+  /**
+   * Payment state for one order (customer-scoped). For ASYNC gateway flows
+   * (Razorpay), the client polls this after completing payment on the
+   * gateway side. The webhook is the source of truth; polling is fast UX —
+   * so this returns only safe, non-sensitive fields (no gateway tokens, no
+   * raw gateway payloads).
+   */
+  async paymentStatus({ tenantId, orderId, userId = null, isAdmin = false }) {
+    const order = await this.getOrder({ tenantId, orderId, userId: isAdmin ? null : userId });
+    const payments = await Payment.find({ orderId: order._id }).sort({ createdAt: -1 }).lean();
+    const latest = payments[0] || null;
+    const safe = latest
+      ? {
+          id: latest.id || String(latest._id),
+          status: latest.status,
+          method: latest.method,
+          provider: latest.provider,
+          amount: latest.amount,
+          currency: latest.currency,
+          gatewayOrderId: latest.gatewayOrderId || null,
+          paidAt: latest.paidAt || null,
+          failedAt: latest.failedAt || null,
+          failureReason: latest.status === 'failed' ? (latest.failureReason || null) : null,
+          attempts: payments.length,
+        }
+      : null;
+    return {
+      order: {
+        id: order.id || String(order._id),
+        orderNumber: order.orderNumber,
+        status: order.status,
+        totalAmount: order.totalAmount,
+      },
+      payment: safe,
+    };
   }
 
   async listMine({ tenantId, userId, query = {} }) {
@@ -619,7 +657,7 @@ class OrderService {
     const address = await Address.findOne({ _id: addressId, tenantId, userId });
     if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
 
-    const { cart, items } = await cartService.getCart({ tenantId, userId });
+    const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
     const { charges, slotDoc } = await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
 
@@ -764,6 +802,12 @@ class OrderService {
     const from = order.status;
     order.status = toStatus;
     order.version += 1;
+    // Stamp the actual delivery moment (payout eligibility and the return
+    // window are computed from this, not from updatedAt which drifts on any
+    // later save). Stamped once — never overwritten by re-transitions.
+    if (toStatus === ORDER_STATUS.DELIVERED && !order.deliveredAt) {
+      order.deliveredAt = new Date();
+    }
     await order.save();
     if (!skipHistory) {
       await OrderStatusHistory.create({

@@ -604,13 +604,18 @@ class PayoutService {
    */
   async approve({ batchId, actorId, note = null, req = null }) {
     const batch = await this.getBatch(batchId);
+
+    // The no-double-approval-by-same-person guard MUST come before the state
+    // guard: in single-approval flow the first approval already moves the
+    // batch out of PENDING_APPROVAL, so a state-first order makes this check
+    // unreachable exactly when it matters (a repeat click by the approver).
+    const already = batch.approvals.some((a) => String(a.userId) === String(actorId));
+    if (already) throw conflict('You have already approved this batch', 'PAYOUT_ALREADY_APPROVED_BY_YOU');
+
     if (batch.state !== PAYOUT_STATE.PENDING_APPROVAL) {
       throw conflict(`Batch is ${batch.state} — only a pending batch can be approved`, 'PAYOUT_NOT_PENDING');
     }
     await this.assertPayable(batch);
-
-    const already = batch.approvals.some((a) => String(a.userId) === String(actorId));
-    if (already) throw conflict('You have already approved this batch', 'PAYOUT_ALREADY_APPROVED_BY_YOU');
 
     batch.approvals.push({ userId: toId(actorId), at: new Date(), note });
     await batch.save();
