@@ -829,3 +829,47 @@ the wallet and vendor backfills. The integrity report gained `checks.statutory`,
 and the platform Ledger page gained a **Statutory payable (TCS/TDS)** row
 (drift to the paise + per-statute backfill action; A38 now requires all
 10 subsystems).
+
+## Phase 19 — GST output payable integrity (seller + platform GST accounts are real accounts)
+
+A vendor sale's GST is the *seller's* output liability: `buildSaleLines`
+credits `gst_output_payable:{vendor}` the item's `taxAmount`, a SUCCESS refund
+debits back the refunded slice, and a submitted payout batch drains the
+batch's aggregated `sellerGstPaise` (the GST leaves the seller's obligation
+when the platform remits it on their behalf). The platform itself also owes
+GST on its commission — `gst_output_payable:platform` is credited the batch's
+`gstOnCommissionPaise` when the payout journal posts. Phase 19 reconciles
+every one of those accounts to the paise against the domain facts that
+created them:
+
+```
+gst_output_payable:{vendor}  =  sale credits − refund debits − live payout drains
+    sale credits     =  Σ item.taxAmount (paise) over the vendor's items on
+                        PAID orders (the books were credited at sale time)
+    refund debits    =  per SUCCESS refund, the vendor's share of
+                        allocatePaise(toPaise(refund.amount), credit lines) —
+                        the exact same allocation the refund journal used
+    live drains      =  Σ max(0, batch.sellerGstPaise) over batches in
+                        PROCESSING / PAID (the payout journal is live)
+
+gst_output_payable:platform  =  Σ batch.gstOnCommissionPaise over the same
+                        live batches (commission GST leaves with the payout)
+```
+
+A REVERSED batch is not live: its payout journal was unwound by the reversal
+journal, so it drains nothing — the same subtlety as Phases 17 and 18. A
+partial refund marks the whole original line reversed in the *view* but the
+journal debited only the proportional slice; the invariant is on the journal
+basis, which is what the books actually moved.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/gst-reconcile` | SUPER_ADMIN | all owners → `{ vendors[{vendorId, accountCode, saleCreditsPaise, refundDebitsPaise, payoutDrainsPaise, expectedPaise, booksPaise, differencePaise, balanced}], platform{…}, checked, drifted, driftedSample[≤5], totalDifferencePaise, ok }`; `?vendor=<id>` → the single vendor row |
+| `POST` | `/payouts/admin/gst-reconcile/repair` | SUPER_ADMIN | body `{ owner }` (vendor id or `"platform"`; repair is per-owner by design): posts **one** signed `gst_backfill` journal for the difference (under-stated → DR `gateway_clearing` / CR `gst_output_payable:{owner}`; over-stated → the mirror) + a `gst_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null, balanced:true}`) when balanced. Without `owner` while something is drifted → 400 `GST_RECONCILE_NEEDS_OWNER`. Zero-difference backfills are refused (`GST_BACKFILL_EMPTY`) |
+
+The backfill amount is the measured *difference* — not re-derivable — so
+`replay` refuses it with `GST_BACKFILL_NOT_REPLAYABLE`, exactly like the
+wallet, vendor, and statutory backfills. The integrity report gained
+`checks.gst`, and the platform Ledger page gained a **GST output payable**
+row (drift to the paise + per-owner backfill action; A38 now requires all
+11 subsystems).

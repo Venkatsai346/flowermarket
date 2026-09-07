@@ -252,6 +252,10 @@ export function createEndpoints(client) {
         // Phase 18 — statutory payable integrity (TCS/TDS are real accounts)
         statutoryReconcile: (q = {}) => c.get('/payouts/admin/statutory-reconcile', { query: q }),
         statutoryReconcileRepair: (body = {}) => c.post('/payouts/admin/statutory-reconcile/repair', body),
+
+        // Phase 19 — GST output payable integrity (the seller's GST is a ledger)
+        gstReconcile: (q = {}) => c.get('/payouts/admin/gst-reconcile', { query: q }),
+        gstReconcileRepair: (body = {}) => c.post('/payouts/admin/gst-reconcile/repair', body),
       },
     },
 

@@ -486,6 +486,10 @@ class DomainEventService {
         // same design: the measured TCS/TDS difference is not re-derivable —
         // refuse loudly instead of guessing an amount
         throw Object.assign(new Error('statutory backfill journal not re-derivable — restore manually'), { code: 'STATUTORY_BACKFILL_NOT_REPLAYABLE' });
+      case DOMAIN_EVENT_TYPE.GST_BACKFILL:
+        // same design: the measured GST difference is not re-derivable —
+        // refuse loudly instead of guessing an amount
+        throw Object.assign(new Error('gst backfill journal not re-derivable — restore manually'), { code: 'GST_BACKFILL_NOT_REPLAYABLE' });
       case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT:
       case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED: {
         // the StatutoryDeposit doc is the aggregate of record (findDrift does

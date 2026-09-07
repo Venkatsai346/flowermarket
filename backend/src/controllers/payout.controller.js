@@ -315,6 +315,47 @@ class PayoutController {
     res.status(200).json(success(result, { message: result.repaired ? 'Vendor payable backfilled' : 'Vendor payable already balanced' }));
   });
 
+  // ---- Phase 19: GST output payable integrity (the seller's GST is a ledger) ----
+
+  gstReconcile = asyncHandler(async (req, res) => {
+    const result = await payoutService.reconcileGst({ vendorId: req.query.vendor || null });
+    res.status(200).json(success(result, { message: 'GST output payable reconciliation' }));
+  });
+
+  gstReconcileRepair = asyncHandler(async (req, res) => {
+    const owner = req.body?.owner || null;
+    const all = await payoutService.reconcileGst({});
+    if (!owner) {
+      if (all.drifted === 0) {
+        res.status(200).json(success({ repaired: null, balanced: true }, { message: 'Already balanced' }));
+        return;
+      }
+      const err = badRequest('Pass {"owner": vendorId | "platform"} to repair a specific payable — repair is per-owner by design', 'GST_RECONCILE_NEEDS_OWNER');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    const row = owner === 'platform'
+      ? all.platform
+      : all.vendors.find((v) => v.vendorId === String(owner));
+    if (!row) {
+      const err = notFound('No GST footprint for that owner — nothing to reconcile', 'GST_OWNER_NOT_FOUND');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    if (row.balanced) {
+      res.status(200).json(success({ ...row, repaired: null }, { message: 'GST payable already balanced' }));
+      return;
+    }
+    const isPlatform = owner === 'platform';
+    const repaired = await payoutService.postGstBackfill({
+      scope: isPlatform ? 'platform' : 'vendor',
+      vendorId: isPlatform ? null : owner,
+      differencePaise: row.differencePaise,
+    });
+    const after = isPlatform ? await payoutService.reconcilePlatformGst() : await payoutService.reconcileGst({ vendorId: owner });
+    res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: row.differencePaise, posted: repaired.posted } }, { message: 'GST payable backfilled' }));
+  });
+
   // ---- Phase 18: statutory payable integrity (TCS/TDS are real accounts) ----
 
   statutoryReconcile = asyncHandler(async (req, res) => {

@@ -40,7 +40,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory, gst,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -55,6 +55,7 @@ class IntegrityService {
       this._walletCheck(scope),
       this._vendorCheck(),
       this._statutoryCheck(),
+      this._gstCheck(),
     ]);
 
     const ledger = {
@@ -96,6 +97,7 @@ class IntegrityService {
       // equal withheld (live payout journals) − net deposits. Platform-scoped
       // (the payable accounts carry no tenant).
       statutory,
+      gst,
       // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
       // deleted or re-ordered rows) are a DRIFT — the strongest signal in
       // the report. Unanchored rows are normal while repairChain catches up.
@@ -149,6 +151,16 @@ class IntegrityService {
   async _statutoryCheck() {
     try {
       const r = await statutoryService.reconcile({});
+      return { ...r, ok: r.ok };
+    } catch (e) {
+      return { error: e?.message || String(e), ok: false };
+    }
+  }
+
+  /** Seller GST output payable must equal sale credits − refund debits − live payout drains. */
+  async _gstCheck() {
+    try {
+      const r = await payoutService.reconcileGst({});
       return { ...r, ok: r.ok };
     } catch (e) {
       return { error: e?.message || String(e), ok: false };

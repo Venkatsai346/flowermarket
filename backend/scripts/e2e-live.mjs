@@ -480,6 +480,25 @@ section('17. statutory payable integrity (Phase 18)');
   check('17.5', 'no-op repair: already balanced, nothing posted', srepair.status === 200 && srepair.data?.data?.balanced === true && srepair.data?.data?.repaired === null, j(srepair.data?.data).slice(0, 160));
 }
 
+section('18. GST output payable integrity (Phase 19)');
+{
+  const grec = await api('/payouts/admin/gst-reconcile', { token: adminTok });
+  check('18.1', 'platform GST reconcile: seller GST = sale − refund − live drains, no drift', grec.status === 200 && grec.data?.data?.ok === true && grec.data?.data?.drifted === 0 && Array.isArray(grec.data?.data?.vendors), j(grec.data?.data).slice(0, 160));
+
+  const gp = grec.data?.data?.platform;
+  check('18.2', 'platform commission GST: books = live payout credits', grec.status === 200 && !!gp && gp.balanced === true && gp.expectedPaise === gp.booksPaise, j(gp).slice(0, 160));
+
+  const ginteg = await api('/ledger/integrity', { token: adminTok });
+  check('18.3', 'integrity report: gst check present and ok', ginteg.status === 200 && ginteg.data?.data?.checks?.gst?.ok === true, j(ginteg.data?.data?.checks?.gst).slice(0, 160));
+
+  const grbac1 = await api('/payouts/admin/gst-reconcile', { token: custTok });
+  const grbac2 = await api('/payouts/admin/gst-reconcile/repair', { method: 'POST', token: custTok });
+  check('18.4', 'GST reconcile endpoints are platform-admin only', grbac1.status === 403 && grbac2.status === 403, `reconcile=${grbac1.status} repair=${grbac2.status}`);
+
+  const grepair = await api('/payouts/admin/gst-reconcile/repair', { method: 'POST', token: adminTok });
+  check('18.5', 'no-op repair: already balanced, nothing posted', grepair.status === 200 && grepair.data?.data?.balanced === true && grepair.data?.data?.repaired === null, j(grepair.data?.data).slice(0, 160));
+}
+
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);
 console.log(`E2E-LIVE: ${passed}/${results.length} cases passed`);

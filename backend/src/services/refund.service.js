@@ -117,7 +117,8 @@ class RefundService {
 
       // ---- Phase 10: record the refund FACT in the audit backbone first ----
       //      (event before journal, so a crash-window is visible + replayable)
-      domainEventService.append({
+      //      Awaits: the journal below must land on the chain AFTER this fact.
+      await domainEventService.append({
         tenantId, traceId: txn.traceId, kind: DOMAIN_EVENT_TYPE.REFUND_ISSUED,
         aggregateType: 'refund', aggregateId: txn._id,
         idempotencyKey: `${LEDGER_JOURNAL_KIND.REFUND_ISSUED}:refund:${txn._id}`,
@@ -246,7 +247,9 @@ class RefundService {
         //      posted here — if it is missing, the nightly integrity report
         //      sees the event without its journal and the replay re-derives
         //      it (postRefund, which only runs for SUCCESS refunds).
-        domainEventService.append({
+        // Awaits: without it the reconcile report could claim a resolution
+        // whose fact is still in flight (idempotent under the same key).
+        await domainEventService.append({
           tenantId: txn.tenantId, traceId: txn.traceId, kind: DOMAIN_EVENT_TYPE.REFUND_ISSUED,
           aggregateType: 'refund', aggregateId: txn._id,
           idempotencyKey: `${LEDGER_JOURNAL_KIND.REFUND_ISSUED}:refund:${txn._id}`,

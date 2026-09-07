@@ -52,6 +52,7 @@ updated, and log/tenant discovery in the e2e scripts is now dynamic.)
 | smoke-wallet (Phase 16) | 57/57 |
 | smoke-vendors (Phase 17) | 90/90 |
 | smoke-statutory (Phase 18) | 49/49 |
+| smoke-gstpayable (Phase 19) | 56/56 |
 | smoke-worker (leased claims, reaper, backoff/DLQ, single-flight) | 6/6 |
 | smoke-observability (healthz/readyz/metrics, outbox lag, heartbeat, jobs) | 7/7 |
 | smoke-payments (webhook idempotency, amount verify, reconciliation, metrics) | 13/13 |
@@ -495,3 +496,24 @@ scripts' preview mode) was documented in `.env.example` to keep the
 env-var invariant green.
 
 CI counts synced in `.github/workflows/ci.yml`: live 109 checks, admin browser 44.
+
+## Phase 19 re-verification — GST output payable integrity (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-gstpayable` (NEW) | **56/56** — `gst_output_payable:{vendor}` + `gst_output_payable:platform` treated as real ledger accounts: `books == sale credits − refund debits − live payout drains` to the paise after every movement (sale, PAID payout drain, full + 50% refunds, clawback of a paid order absorbed by a larger in-window order, bank reversal of the batch); white-box drift → exact paise detected → signed backfill (under-stated: DR gateway_clearing / CR gst payable) with event key == journal key → balanced → zero-difference refused; backfill journal loss → `findDrift` flags `GST_BACKFILL` → replay refused with `GST_BACKFILL_NOT_REPLAYABLE` (never guesses) → re-post under the event's own key restores the pair with zero residual drift; trial balance + audit chain hold with GST backfills mixed in |
+| `smoke:all` (26 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **114/114** (+§18: platform GST reconcile `ok` with per-vendor detail to the paise; platform commission GST row balanced; integrity `checks.gst.ok`; 403s for customer on both admin endpoints; no-op repair posts nothing) |
+| Admin browser UI | **44/44** (A38 now requires the **GST output payable** row: "all 11 subsystems reported") |
+
+The first live run of the new reconcile caught a **real** drift: a vendor
+item (₹9.95 GST) whose sale journal had been booked on the *tenant's* GST
+account (legacy seed data — the item's vendor attribution postdated the
+journal). The books showed 0 against an expected 995 paise; the per-owner
+backfill posted one signed `gst_backfill` journal (DR clearing / CR vendor
+GST payable) and the platform picture came back clean. Every layer —
+hermetic smoke, live API, browser UI, and the integrity report — agreed to
+the paise afterward.
+
+CI counts synced in `.github/workflows/ci.yml`: live 114 checks, admin
+browser 44.

@@ -808,3 +808,84 @@ journals at once.
   refused, backfill journal loss → findDrift → replay refused → re-post under
   the event's own key restores the pair with no residual drift, trial
   balance + audit chain with statutory journals mixed in.
+
+## Part 10 — Phase 19: GST output payable integrity (seller + platform GST are real accounts)
+
+Phase 6.1 booked the seller's GST at sale time: `buildSaleLines` credits
+`gst_output_payable:{vendor}` the item's tax, and from Phase 13 the payout
+journal drains the batch's aggregated `sellerGstPaise` when it posts — the
+platform remits the seller's output GST on their behalf, so the obligation
+leaves the books with the payout. The platform's own commission GST
+(`gstOnCommissionPaise`) sits in `gst_output_payable:platform`. But like the
+wallet before Phase 16, the vendor payables before Phase 17, and the
+statutory payables before Phase 18, nothing ever asked *do those accounts
+match the facts that created them?* A lost sale journal, a refund posted
+with the wrong allocation, or a payout whose GST drain vanished would leave
+the seller's GSTR-8 obligation overstated or understated — a compliance gap
+discovered (if at all) by a tax officer, not by the system.
+
+### The invariant
+
+For every vendor and the platform, to the paise, at all times:
+
+```
+gst_output_payable:{owner}  =  sale credits − refund debits − live payout drains
+```
+
+- **sale credits** — Σ `item.taxAmount` (paise) over the owner's items on PAID
+  orders. This is exactly what the sale journal credited, so a vendor whose
+  items carry tax always shows a live obligation.
+- **refund debits** — per SUCCESS refund, the owner's share of
+  `allocatePaise(toPaise(refund.amount), creditLines)` where creditLines are
+  the sale's non-zero-credit lines — the *same* allocation
+  `reverseProportional` used when the refund journal posted, so books and
+  facts move by the same paise.
+- **live payout drains** — Σ `max(0, batch.sellerGstPaise)` over batches in
+  PROCESSING / PAID. A REVERSED or FAILED batch posted its drain AND its
+  unwind, so it nets to zero and is excluded — counting it would
+  double-count the unwind.
+
+The one honest caveat: `buildSaleLines` prices commission from the vendor's
+*current* rate, so a post-facto rate change shifts the derived basis. The
+drift flag is the alarm for exactly that; the repair moves the books to the
+derived truth.
+
+### Where the money is, and the sign of the repair
+
+The GST liability is funded out of the customer's payment (the sale journal
+debited `gateway_clearing` the total and split it), so the backfill's
+counter is **gateway_clearing**:
+
+- under-stated (books owe less GST than the facts say) —
+  **DR gateway_clearing / CR gst_output_payable:{owner}**: the obligation is
+  restored and the clearing account corrected to what it actually retained;
+- over-stated — the mirror.
+
+Signed by the direction of the difference, posted as **one** `gst_backfill`
+journal with the `gst_backfill` domain event appended first under the **same
+idempotency key** — one fact, not two. The amount is the measured difference,
+not re-derivable from any aggregate, so `replay` refuses it with
+`GST_BACKFILL_NOT_REPLAYABLE`. Repair is **per-owner by design**
+(`GST_RECONCILE_NEEDS_OWNER` otherwise): a blind platform-wide GST repair
+would post one journal per drifted owner.
+
+### Where it shows up
+
+- `GET /payouts/admin/gst-reconcile` (SUPER_ADMIN) — platform picture
+  (per-vendor + platform detail) or `?vendor=` single-vendor report.
+- `POST /payouts/admin/gst-reconcile/repair` (SUPER_ADMIN) — the
+  one-journal, per-owner repair.
+- Integrity report `checks.gst` → the ledger page's **GST output payable**
+  row (A38 now requires all 11 subsystems), with drift to the paise and a
+  per-owner backfill action.
+- `smoke-gstpayable` (56 checks): a paid sale books the vendor's GST with the
+  platform at zero; a PAID payout drains exactly the batch's seller GST to
+  the platform account; full and 50% refunds debit back the proportional
+  slice; a clawback (full refund of a paid order) pulls the books negative
+  and a larger delivered order in the window absorbs it; a bank reversal of
+  the batch restores the drain; white-box drift → exact paise detected →
+  signed backfill (DR clearing / CR payable) with event key == journal key →
+  balanced → zero-difference refused; backfill journal loss → findDrift →
+  replay refused → re-post under the event's own key restores the pair with
+  no residual drift; trial balance + audit chain hold with GST backfills
+  mixed in.

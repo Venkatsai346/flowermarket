@@ -1608,6 +1608,178 @@ class PayoutService {
     const { default: ledgerPosting } = await import('./ledgerPosting.service.js');
     return ledgerPosting.postVendorBackfill({ vendorId, differencePaise, note, idempotencyKey });
   }
+
+  // -------------------------------------------------------------------------
+  // Phase 19 — GST output payable integrity (the seller's GST is a ledger)
+  // -------------------------------------------------------------------------
+  //
+  //   gst_output_payable:{v}  =  Σ sale credits   (item tax, paid orders)
+  //                            − Σ refund debits  (the journal's proportional
+  //                                                reversal of the sale credit)
+  //                            − Σ payout drains  (batch.sellerGstPaise of
+  //                                                batches whose journal is
+  //                                                LIVE — PROCESSING/PAID)
+  //
+  // The refund debit is computed exactly the way the journal computed it —
+  // allocatePaise over the sale's credit lines — so the fact-side number
+  // agrees with the books to the paise. A reversed/failed batch unwound via
+  // the mirror, so it nets to zero and is not "live".
+  //
+  // gst_output_payable:platform  =  Σ batch.gstOnCommissionPaise (live
+  // batches) — the platform's GST on commission is booked ONLY by the payout
+  // journal, so there is no sale/refund side to it.
+  //
+  // Caveat: the sale-credit basis is rebuilt with the vendor's CURRENT
+  // commission rate. If the rate changes after the fact for a vendor with
+  // unsettled orders, the allocation basis shifts — the reconcile surfaces
+  // that as drift and the operator backfills it (an honest alarm, not a
+  // silent mismatch).
+
+  async reconcileVendorGst({ vendorId }) {
+    const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
+    const { default: ledgerPosting } = await import('./ledgerPosting.service.js');
+    const { default: OrderItem } = await import('../models/orderItem.model.js');
+    const { default: RefundTransaction } = await import('../models/refundTransaction.model.js');
+    const { toPaise, sumPaise, allocatePaise } = await import('../utils/money.js');
+
+    const vCode = ledgerAccounts.gstOutputPayable(vendorId);
+    const row = (saleCreditsPaise, refundDebitsPaise, payoutDrainsPaise) => {
+      const expectedPaise = saleCreditsPaise - refundDebitsPaise - payoutDrainsPaise;
+      return { vendorId: String(vendorId), accountCode: vCode, saleCreditsPaise, refundDebitsPaise, payoutDrainsPaise, expectedPaise };
+    };
+    const booksPaise = (await ledgerService.balance(vCode)).balancePaise;
+
+    const items = await OrderItem.find({ vendorId }).lean();
+    const orderIds = [...new Set(items.map((i) => String(i.orderId)))];
+    if (!orderIds.length) {
+      const r = row(0, 0, 0);
+      return { ...r, booksPaise, differencePaise: r.expectedPaise - booksPaise, balanced: r.expectedPaise === booksPaise };
+    }
+
+    const [orders, refunds] = await Promise.all([
+      Order.find({ _id: { $in: orderIds }, 'paymentSummary.status': 'success' }).lean(),
+      RefundTransaction.find({ orderId: { $in: orderIds }, status: 'success' }).lean(),
+    ]);
+
+    let saleCreditsPaise = 0;
+    let refundDebitsPaise = 0;
+    const vendorItemsByOrder = new Map();
+    for (const i of items) {
+      const k = String(i.orderId);
+      if (!vendorItemsByOrder.has(k)) vendorItemsByOrder.set(k, []);
+      vendorItemsByOrder.get(k).push(i);
+    }
+
+    for (const o of orders) {
+      const oItems = vendorItemsByOrder.get(String(o._id)) || [];
+      for (const i of oItems) saleCreditsPaise += toPaise(i.taxAmount || 0);
+
+      const oRefunds = refunds.filter((r) => String(r.orderId) === String(o._id));
+      if (!oRefunds.length) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const allItems = await OrderItem.find({ orderId: o._id }).lean();
+      // eslint-disable-next-line no-await-in-loop
+      const { lines } = await ledgerPosting.buildSaleLines({ order: o, items: allItems });
+      const creditLines = lines.filter((l) => l.creditPaise > 0);
+      for (const rt of oRefunds) {
+        const shares = allocatePaise(toPaise(rt.amount), creditLines.map((c) => c.creditPaise));
+        refundDebitsPaise += sumPaise(...creditLines.map((l, i) => (l.accountCode === vCode ? shares[i] : 0)));
+      }
+    }
+
+    const live = await PayoutBatch.find({ vendorId, state: { $in: [PAYOUT_STATE.PROCESSING, PAYOUT_STATE.PAID] } }).lean();
+    const payoutDrainsPaise = sumPaise(...live.map((b) => Math.max(0, b.sellerGstPaise || 0)));
+
+    const r = row(saleCreditsPaise, refundDebitsPaise, payoutDrainsPaise);
+    return { ...r, booksPaise, differencePaise: r.expectedPaise - booksPaise, balanced: r.expectedPaise === booksPaise };
+  }
+
+  async reconcilePlatformGst() {
+    const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
+    const { sumPaise } = await import('../utils/money.js');
+    const pCode = ledgerAccounts.gstOutputPayable('platform');
+    const live = await PayoutBatch.find({ state: { $in: [PAYOUT_STATE.PROCESSING, PAYOUT_STATE.PAID] } }).lean();
+    const expectedPaise = sumPaise(...live.map((b) => b.gstOnCommissionPaise || 0));
+    const booksPaise = (await ledgerService.balance(pCode)).balancePaise;
+    return {
+      owner: 'platform', accountCode: pCode, payoutCreditsPaise: expectedPaise, expectedPaise, booksPaise,
+      differencePaise: expectedPaise - booksPaise, balanced: expectedPaise === booksPaise,
+    };
+  }
+
+  /** Platform-wide GST picture: every seller with a GST footprint + the platform. */
+  async reconcileGst({ vendorId = null } = {}) {
+    if (vendorId) return this.reconcileVendorGst({ vendorId });
+    const [lineVendors, itemVendors] = await Promise.all([
+      PayoutBatch.distinct('vendorId'),
+      (await import('../models/orderItem.model.js')).default.distinct('vendorId'),
+    ]);
+    // dedupe by STRING — ObjectId instances from two collections are not
+    // reference-equal in a Set
+    const vendors = [...new Set([...lineVendors, ...itemVendors].filter(Boolean).map(String))];
+    const rows = [];
+    for (const v of vendors) {
+      // eslint-disable-next-line no-await-in-loop
+      rows.push(await this.reconcileVendorGst({ vendorId: v }));
+    }
+    const platform = await this.reconcilePlatformGst();
+    const all = [...rows, platform];
+    return {
+      vendors: rows,
+      platform,
+      checked: all.length,
+      drifted: all.filter((r) => !r.balanced).length,
+      driftedSample: all.filter((r) => !r.balanced).slice(0, 5).map((r) => ({ owner: r.owner || r.vendorId, accountCode: r.accountCode, expectedPaise: r.expectedPaise, booksPaise: r.booksPaise, differencePaise: r.differencePaise })),
+      totalDifferencePaise: all.reduce((a, r) => a + Math.abs(r.differencePaise), 0),
+      ok: all.every((r) => r.balanced),
+    };
+  }
+
+  /**
+   * Post ONE signed gst_backfill journal for a drifted owner (repair).
+   * scope 'vendor' (vendorId required) or 'platform'. Under-stated:
+   * DR gateway_clearing / CR gst_output_payable; over-stated: the mirror.
+   */
+  async postGstBackfill({ scope, vendorId = null, differencePaise, note = null, idempotencyKey = null }) {
+    const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
+    if (!['vendor', 'platform'].includes(scope)) throw Object.assign(new Error('scope must be vendor or platform'), { status: 400, code: 'GST_BAD_SCOPE' });
+    if (scope === 'vendor' && !vendorId) throw Object.assign(new Error('vendorId is required for a vendor backfill'), { status: 400, code: 'GST_VENDOR_REQUIRED' });
+    const diff = Math.round(Number(differencePaise) || 0);
+    if (diff === 0) throw Object.assign(new Error('Backfill difference must be non-zero'), { status: 422, code: 'GST_BACKFILL_EMPTY' });
+
+    const owner = scope === 'platform' ? 'platform' : String(vendorId);
+    const code = ledgerAccounts.gstOutputPayable(owner);
+    const clearing = ledgerAccounts.gatewayClearing();
+    const key = idempotencyKey || `gst_backfill:${owner}:${new Date().toISOString()}`;
+    const lines = diff > 0
+      ? [{ accountCode: clearing, debitPaise: diff }, { accountCode: code, creditPaise: diff }]
+      : [{ accountCode: code, debitPaise: -diff }, { accountCode: clearing, creditPaise: -diff }];
+
+    const { default: domainEventService } = await import('./domainEvent.service.js');
+    const event = await domainEventService.append({
+      tenantId: null,
+      kind: DOMAIN_EVENT_TYPE.GST_BACKFILL,
+      aggregateType: 'gst_payable',
+      aggregateId: code,
+      idempotencyKey: key,
+      occurredAt: new Date(),
+      refType: 'gst_payable',
+      refId: code,
+      payload: { scope, vendorId: scope === 'vendor' ? owner : null, differencePaise: diff, note: note || null },
+    });
+
+    const posted = await ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.GST_BACKFILL,
+      idempotencyKey: key,
+      lines,
+      refType: 'gst_payable',
+      refId: null, // owner codes are not ObjectIds — they live in meta
+      tenantId: null,
+      occurredAt: event?.occurredAt || new Date(),
+      meta: { scope, vendorId: scope === 'vendor' ? owner : null, note: note || null },
+    });
+    return { posted: posted.created, idempotencyKey: key, journal: posted.journal || null };
+  }
 }
 
 export default new PayoutService();

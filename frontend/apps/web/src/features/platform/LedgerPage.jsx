@@ -173,6 +173,7 @@ function IntegrityCard() {
             <CheckRow name="Wallet ledger" check={c.wallet} detail={c.wallet ? `${c.wallet.wallets} wallet(s) · balances ${inr(c.wallet.walletTotalPaise)} vs liability ${inr(c.wallet.ledgerPaise)} · difference ${inr(Math.abs(c.wallet.differencePaise))}` : ''} />
             <CheckRow name="Vendor ledger" check={c.vendors} detail={c.vendors ? `${c.vendors.vendorsChecked} vendor(s) checked · ${c.vendors.drifted} drifted · total difference ${inr(c.vendors.totalDifferencePaise)}` : ''} />
             <CheckRow name="Statutory payable (TCS/TDS)" check={c.statutory} detail={c.statutory ? `${c.statutory.statutes?.length ?? 0} payable(s) checked · ${c.statutory.drifted ?? 0} drifted · total difference ${inr(c.statutory.totalDifferencePaise ?? 0)}` : ''} />
+            <CheckRow name="GST output payable" check={c.gst} detail={c.gst ? `${c.gst.checked ?? 0} payable(s) checked · ${c.gst.drifted ?? 0} drifted · total difference ${inr(c.gst.totalDifferencePaise ?? 0)}` : ''} />
             <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
             <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
             <CheckRow name="Audit chain (tamper-evidence)" check={c.auditChain} detail={c.auditChain ? `${c.auditChain.eventsVerified} event(s) re-hashed · ${c.auditChain.unanchored} unanchored · ${c.auditChain.breaks.length} break(s)` : ''} />
@@ -253,6 +254,37 @@ function IntegrityCard() {
                       }}
                     >
                       Backfill {d.statute.toUpperCase()}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {c.gst && !c.gst.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  {c.gst.drifted} GST output payable account(s) disagree with the sale / refund / payout facts that
+                  created them (total {inr(c.gst.totalDifferencePaise)}). A backfill posts one signed `gst_backfill`
+                  journal per drifted owner — it is recorded in the audit store and cannot be replayed (the amount is
+                  not re-derivable), so pick the owner deliberately.
+                </p>
+                <div className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                  {(c.gst.driftedSample || []).slice(0, 5).map((d) => (
+                    <li key={d.accountCode}>{d.owner === 'platform' ? 'platform (commission GST)' : `${d.owner} (seller GST)`}: books {inr(d.booksPaise)} vs owed {inr(d.expectedPaise)} (diff {inr(d.differencePaise)})</li>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(c.gst.driftedSample || []).slice(0, 5).map((d) => (
+                    <Button
+                      key={d.accountCode}
+                      variant="secondary"
+                      icon={Wrench}
+                      loading={busy}
+                      onClick={async () => {
+                        const r = await run(() => api.payouts.admin.gstReconcileRepair({ owner: d.owner === 'platform' ? 'platform' : d.owner }));
+                        if (r?.data) { toast.success('GST payable backfilled'); refetch(); }
+                      }}
+                    >
+                      Backfill {d.owner === 'platform' ? 'platform' : d.owner.slice(0, 8) + '…'}
                     </Button>
                   ))}
                 </div>
