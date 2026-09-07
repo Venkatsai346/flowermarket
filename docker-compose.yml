@@ -1,0 +1,120 @@
+# Flower Market — local / staging stack
+#
+#   docker compose up --build
+#
+# Brings up a Mongo 6 replica set (rs0, transactions on), the API, the
+# worker, the admin console and the customer storefront.
+#
+# This file is the DEVELOPMENT happy path: mock payments, console OTP.
+# Production refuses those — use docker-compose.prod.yml plus a filled
+# `.env.production` (see docs/PRODUCTION.md).
+#
+# Frontends proxy `/api` → `http://api:4000` on the compose network so
+# the browser never has to know about localhost.
+
+name: flowermarket
+
+services:
+  mongo:
+    image: mongo:6.0
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mongo-init:
+    image: mongo:6.0
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - |
+        for i in $$(seq 1 30); do
+          mongosh --host mongo:27017 --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"mongo:27017"}]})' && exit 0
+          sleep 2
+        done
+        exit 1
+
+  api:
+    image: node:20-bookworm
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+      - api_node_modules:/app/node_modules
+    command: bash -c "npm ci && node src/server.js"
+    env_file:
+      - ./backend/.env.example
+    environment:
+      NODE_ENV: development
+      PORT: "4000"
+      MONGODB_URI: mongodb://mongo:27017/flower_market?replicaSet=rs0
+      OTP_PROVIDER: console
+      PAYMENT_PROVIDER: mock
+      PAYOUT_PROVIDER: console
+      ALLOW_TENANT_HEADER_OVERRIDE: "true"
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+    ports:
+      - "4000:4000"
+
+  worker:
+    image: node:20-bookworm
+    working_dir: /app
+    volumes:
+      - ./backend:/app
+      - api_node_modules:/app/node_modules
+    command: bash -c "npm ci && node src/worker.js"
+    env_file:
+      - ./backend/.env.example
+    environment:
+      NODE_ENV: development
+      MONGODB_URI: mongodb://mongo:27017/flower_market?replicaSet=rs0
+      OTP_PROVIDER: console
+      PAYMENT_PROVIDER: mock
+      PAYOUT_PROVIDER: console
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+
+  web:
+    image: node:20-bookworm
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - fe_node_modules:/app/node_modules
+    command: bash -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_API_TARGET: http://api:4000
+    depends_on:
+      - api
+    ports:
+      - "5173:5173"
+
+  storefront:
+    image: node:20-bookworm
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - fe_node_modules:/app/node_modules
+    command: bash -c "npm ci && npm run storefront -- --host 0.0.0.0 --port 5174"
+    environment:
+      VITE_API_TARGET: http://api:4000
+    depends_on:
+      - api
+    ports:
+      - "5174:5174"
+
+volumes:
+  mongo_data:
+  api_node_modules:
+  fe_node_modules:

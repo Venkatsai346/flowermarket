@@ -47,6 +47,28 @@ export const deliverSchema = Joi.object({
   podValue: Joi.string().max(512).allow(null, '').optional(),
 });
 
+/** Mutating ops with no required body — strip unknowns, never 400 on `{}` or a missing body. */
+export const emptyMutationSchema = Joi.object({
+  note: Joi.string().max(300).allow(null, '').optional(),
+}).unknown(true).optional();
+
+export const deliveryFailedSchema = Joi.object({
+  reason: Joi.string().max(300).allow(null, '').optional(),
+}).optional();
+
+export const generateSlotsSchema = Joi.object({
+  hubId: objectId.allow(null, '').optional(),
+  fromDate: Joi.string().regex(/^\d{4}-\d{2}-\d{2}$/).required(),
+  toDate: Joi.string().regex(/^\d{4}-\d{2}-\d{2}$/).required(),
+  capacity: Joi.number().integer().min(1).max(10000).allow(null).optional(),
+  overwrite: Joi.boolean().optional(),
+  forecast: Joi.boolean().optional(),
+});
+
+export const mockForcePendingSchema = Joi.object({
+  enabled: Joi.boolean().required(),
+});
+
 export const podVerifySchema = Joi.object({
   otp: Joi.string().regex(/^\d{4}$/).message('OTP must be 4 digits').required(),
 });

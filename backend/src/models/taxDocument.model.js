@@ -189,6 +189,7 @@ const TaxDocumentSchema = new Schema(
     pdf: {
       mediaAssetId: { type: Types.ObjectId, ref: 'MediaAsset', default: null },
       generatedAt: { type: Date, default: null },
+      byteLength: { type: Number, default: null, min: 0 },
     },
 
     issuedBy: { type: Types.ObjectId, ref: 'User', default: null },

@@ -381,6 +381,21 @@ export default function OrderDetail() {
                 const r = await api.shop.orderInvoice(id);
                 const list = Array.isArray(r.data) ? r.data : r.data?.items || [];
                 const doc = list[0];
+                if (doc?.pdfBase64) {
+                  const bin = atob(doc.pdfBase64);
+                  const bytes = new Uint8Array(bin.length);
+                  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+                  const blob = new Blob([bytes], { type: doc.pdfMime || 'application/pdf' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `${doc.number || 'invoice'}.pdf`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  URL.revokeObjectURL(url);
+                  return;
+                }
                 if (!doc?.html) {
                   toast('Invoice will appear once the order is confirmed');
                   return;

@@ -20,7 +20,7 @@ import ledgerPostingService from './ledgerPosting.service.js';
 import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
-import { roundMoney, moneySum, toPaise } from '../utils/money.js';
+import { roundMoney, moneySum, toPaise, attachPaise, QUOTE_MONEY_KEYS, ORDER_MONEY_KEYS } from '../utils/money.js';
 import { notFound, badRequest, conflict, unauthorized } from '../utils/ApiError.js';
 import User from '../models/user.model.js';
 import config from '../config/index.js';
@@ -276,7 +276,14 @@ class OrderService {
       OrderItem.find({ orderId: order._id }).lean(),
       OrderStatusHistory.find({ orderId: order._id }).sort({ createdAt: 1 }).lean(),
     ]);
-    return { order, items: serializeList(items), timeline: serializeList(timeline) };
+    const enabled = config.money.dualWritePaise !== false;
+    const plain = typeof order.toJSON === 'function' ? order.toJSON() : order;
+    const itemPaise = serializeList(items).map((it) => attachPaise(it, ['lineTotal', 'taxAmount', 'discountAllocated'], { enabled }));
+    return {
+      order: attachPaise(plain, ORDER_MONEY_KEYS, { enabled }),
+      items: itemPaise,
+      timeline: serializeList(timeline),
+    };
   }
 
   /**

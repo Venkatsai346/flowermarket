@@ -24,6 +24,7 @@ import {
 } from '../constants/enums.js';
 import OrderChargeBreakdown from '../models/orderChargeBreakdown.model.js';
 import { renderInvoiceHtml } from '../utils/invoiceHtml.js';
+import { renderInvoicePdf } from '../utils/invoicePdf.js';
 
 /**
  * TaxDocumentService — issues legally valid invoices and credit notes.
@@ -451,6 +452,9 @@ class TaxDocumentService {
       await this.requestIrn(doc).catch(() => {});
     }
 
+    // PDF is evidence, not the legal event. Never block issuance.
+    await this.attachPdf(doc).catch(() => {});
+
     return doc;
   }
 
@@ -626,6 +630,8 @@ class TaxDocumentService {
       await this.requestIrn(doc).catch(() => {});
     }
 
+    await this.attachPdf(doc).catch(() => {});
+
     return doc;
   }
 
@@ -768,8 +774,29 @@ class TaxDocumentService {
     return this.withRupeeView({ ...doc, id: String(doc._id) });
   }
 
+  /**
+   * Best-effort PDF stamp. The numbered document is already the legal
+   * invoice; a renderer crash must not un-issue it. Bytes are produced on
+   * demand by `withRupeeView({ pdf: true })` — we only record that a
+   * generation succeeded so ops can see the slot is no longer empty.
+   */
+  async attachPdf(doc) {
+    if (!doc?._id) return doc;
+    const plain = typeof doc.toObject === 'function' ? doc.toObject() : doc;
+    const view = this.withRupeeView({ ...plain, id: String(plain._id || doc._id) });
+    const buf = renderInvoicePdf(view);
+    const stamp = { generatedAt: new Date(), byteLength: buf.length };
+    if (typeof doc.save === 'function') {
+      doc.pdf = { ...(doc.pdf || {}), ...stamp };
+      await doc.save();
+      return doc;
+    }
+    await TaxDocument.updateOne({ _id: doc._id }, { $set: { pdf: stamp } });
+    return doc;
+  }
+
   /** Attach rupee values alongside paise so clients never divide by 100. */
-  withRupeeView(doc, { html = false } = {}) {
+  withRupeeView(doc, { html = false, pdf = false } = {}) {
     const view = {
       ...doc,
       totalsRupees: {
@@ -783,7 +810,17 @@ class TaxDocumentService {
         grandTotal: fromPaise(doc.totals?.grandTotalPaise || 0),
       },
     };
-    if (html) view.html = renderInvoiceHtml(view);
+    if (html) {
+      try { view.html = renderInvoiceHtml(view); } catch { /* never block a fetch */ }
+    }
+    if (pdf) {
+      try {
+        const buf = renderInvoicePdf(view);
+        view.pdfBase64 = buf.toString('base64');
+        view.pdfMime = 'application/pdf';
+        view.pdfByteLength = buf.length;
+      } catch { /* never block a fetch */ }
+    }
     return view;
   }
 }

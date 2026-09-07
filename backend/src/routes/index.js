@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { tenantContext } from '../middleware/tenantContext.js';
+import rateLimiters from '../middleware/rateLimiter.js';
 import authRoutes from './auth.routes.js';
 import userRoutes from './user.routes.js';
 import catalogAdminRoutes from './catalog.admin.routes.js';
@@ -28,6 +29,7 @@ import searchRoutes from './search.routes.js';
 const apiRouter = Router();
 
 apiRouter.use(tenantContext);
+apiRouter.use(rateLimiters.api);
 
 apiRouter.get('/health', (req, res) =>
   res.status(200).json({ success: true, message: 'OK', data: { service: 'flower-market-api', tenantId: req.tenantId || null } })

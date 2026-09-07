@@ -25,6 +25,13 @@ const OrderChargeBreakdownSchema = new Schema(
     taxTotal: { type: Number, required: true, min: 0 },
     discountTotal: { type: Number, required: true, min: 0 },
     grandTotal: { type: Number, required: true, min: 0 },
+    // Wave 2 dual-write: integer paise siblings of the rupee totals. Source
+    // of truth for new financial reads; rupee columns stay for the legacy API.
+    itemSubtotalPaise: { type: Number, default: null, min: 0 },
+    deliveryFeePaise: { type: Number, default: null, min: 0 },
+    taxTotalPaise: { type: Number, default: null, min: 0 },
+    discountTotalPaise: { type: Number, default: null, min: 0 },
+    grandTotalPaise: { type: Number, default: null, min: 0 },
     currency: { type: String, default: 'INR', maxlength: 8 },
     // Indian MRP is GST-inclusive. Snapshot so a later flag flip cannot
     // re-interpret a historical invoice.

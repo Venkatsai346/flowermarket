@@ -154,6 +154,26 @@ export function applyBps(basePaise, bps) {
   return sign * Math.round((Math.abs(base) * rate) / 10000);
 }
 
+/**
+ * Dual-write helper (Wave 2 / B3). Copies selected rupee keys onto `*Paise`
+ * siblings via `toPaise`. The rupee field is UNCHANGED — this is not a second
+ * money architecture, it is the same number in the integer form the ledger
+ * already uses. Feature-flagged by the caller (`enabled`).
+ */
+export const ORDER_MONEY_KEYS = ['itemsSubtotal', 'deliveryFee', 'discount', 'taxAmount', 'totalAmount'];
+export const QUOTE_MONEY_KEYS = ['itemSubtotal', 'deliveryFee', 'taxTotal', 'discountTotal', 'grandTotal'];
+export const BREAKDOWN_MONEY_KEYS = ['itemSubtotal', 'deliveryFee', 'taxTotal', 'discountTotal', 'grandTotal'];
+
+export function attachPaise(obj, keys, { enabled = true } = {}) {
+  if (!obj || enabled === false) return obj;
+  const out = { ...obj };
+  for (const k of keys) {
+    if (out[k] == null || out[k] === '') continue;
+    out[`${k}Paise`] = toPaise(out[k]);
+  }
+  return out;
+}
+
 export default {
   roundMoney,
   moneySum,
@@ -166,4 +186,8 @@ export default {
   allocatePaise,
   splitTaxPaise,
   applyBps,
+  attachPaise,
+  ORDER_MONEY_KEYS,
+  QUOTE_MONEY_KEYS,
+  BREAKDOWN_MONEY_KEYS,
 };

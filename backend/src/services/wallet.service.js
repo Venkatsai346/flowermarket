@@ -3,7 +3,7 @@ import Wallet from '../models/wallet.model.js';
 import LedgerEntry from '../models/ledgerEntry.model.js';
 import WalletTransaction from '../models/walletTransaction.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
-import { roundMoney } from '../utils/money.js';
+import { roundMoney, toPaise } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
 import { generateOpaqueToken } from '../utils/hash.js';
 import { WALLET_TXN_TYPE, WALLET_TXN_REASON, DOMAIN_EVENT_TYPE, LEDGER_JOURNAL_KIND } from '../constants/enums.js';

@@ -3,7 +3,7 @@
 **Audience:** anyone finishing this platform for real customers, real rupees, and a brand people remember.  
 **Surfaces in scope:** backend API · admin console (`apps/web`) · customer storefront (`apps/storefront`).  
 **Out of scope for “100% of this product” but named:** Expo mobile (login-only scaffold), Phase-7 ideas.  
-**As of:** 2026-09-07 · branch `arena/01a07c11-flowermarket` · live stack proven on **real mongod 6.0.7 replica-set** (`rs0`, transactions on).
+**As of:** 2026-09-07 · branch `arena/01a07c11-flowermarket` · Wave 1 live e2e **127/127** · Wave 2 (India-correct money in production) shipped on this branch.
 
 This document **does not** re-plan Phases 1–6. Those are shipped. It answers one question:
 
@@ -292,10 +292,10 @@ P0-1 Razorpay widget · P0-2 pincode door · P0-3 inclusive pricing · P0-5 tena
 - Suspended tenant’s Host 404s.
 - e2e-live 121 + async-payment-live 14 + storefront UI 29 still green, plus new pin/payment cases.
 
-### Wave 2 — 1.5 weeks · India-correct money in production
-B3 paise migration of cart/order/wallet (feature-flagged) · B6 settlement gate on · B4 PDF invoices that look like invoices · S3/FCM or MSG91 OTP in staging · S3 storage · payout RazorpayX in **payout-test** mode (floor, dual-approve unchanged).
+### Wave 2 — India-correct money in production · **SHIPPED**
+B3 paise dual-write on cart/quote/order/wallet (`*Paise` siblings, rupee API unchanged, `MONEY_DUAL_WRITE_PAISE`) · B6 `requirePspSettlement` default **true in production** · B4 GST invoice **PDF 1.4** (never blocks issue) · B10 production provider guard (mock/console OTP/payments/payouts → exit 1) · MSG91 + Twilio OTP adapters (real HTTP) · RazorpayX payout-test mode documented · compose `mongo rs0 + api + worker + web + storefront` · `smoke:all` widened (guard, PDF, refund-calc, slot-forecast, worker, observability) · global API + checkout rate limits · fulfillment/returns/rider Joi on mutations · untracked `storage/local`, dropped `"bloomy"` lockfile.
 
-**Exit:** one full day of staging traffic with `rounding_difference = 0`, settlement ingest matching Razorpay, a vendor payout batch that stops in PROCESSING on a timeout (no retry button — already true in UI).
+**Exit still needing live keys:** one full day of staging traffic with `rounding_difference = 0`, settlement ingest matching Razorpay, a vendor payout batch that stops in PROCESSING on a timeout (no retry button — already true in UI). Live S3/MSG91/RazorpayX cannot be proven without credentials — seams refuse to mock-succeed.
 
 ### Wave 3 — 1 week · operator completeness
 A-LIFE buttons · A-VEDIT · A-CHUNK · notification bell (storefront + a tiny console view) · guest cart merge · `/p/:slug` PDP (functional, not yet “stunning”) · `/search?q=` · global rate limit.

@@ -39,6 +39,11 @@ const config = {
     ttlSeconds: Number(process.env.OTP_TTL_SECONDS) || 300,
     maxAttempts: Number(process.env.OTP_MAX_ATTEMPTS) || 5,
     resendCooldownSeconds: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS) || 60,
+    msg91AuthKey: process.env.MSG91_AUTH_KEY || '',
+    msg91TemplateId: process.env.MSG91_TEMPLATE_ID || '',
+    twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || '',
+    twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || '',
+    twilioFrom: process.env.TWILIO_FROM || '',
   },
 
   tenant: {
@@ -51,8 +56,19 @@ const config = {
     .map((s) => s.trim())
     .filter(Boolean),
 
+  // ---- Wave 2: dual-write rupee totals as integer paise on API views ----
+  // Off (`MONEY_DUAL_WRITE_PAISE=false`) restores the pre-Wave-2 payload
+  // shape. On (default) adds `*Paise` siblings next to existing rupee fields
+  // — never a second arithmetic path, never a stored-column rewrite.
+  money: {
+    dualWritePaise: process.env.MONEY_DUAL_WRITE_PAISE !== 'false',
+  },
+
   // ---- Razorpay (real gateway) + mock provider behaviour ----
   payments: {
+    // Explicit provider. Default: razorpay when keys exist, else the
+    // deterministic mock. Production boot refuses mock (see assertProductionProviders).
+    provider: process.env.PAYMENT_PROVIDER || (process.env.RAZORPAY_KEY_ID ? 'razorpay' : 'mock'),
     // Mock provider webhook secret — the mock gateway signs exactly like
     // Razorpay (HMAC-SHA256 of the raw body) so the verification path is
     // exercised identically in dev/test. Change via env in real deployments.

@@ -51,6 +51,13 @@ export function createApp() {
   const app = express();
 
   app.disable('x-powered-by');
+  // Rate-limit keys use req.ip. Behind a reverse proxy that is the
+  // forwarded address only when we trust the hop. Production (and any
+  // deploy that already trusts x-forwarded-host) must set this or every
+  // customer shares one bucket.
+  if (config.isProd || config.domains.trustForwardedHost) {
+    app.set('trust proxy', 1);
+  }
 
   // ---- end-to-end correlation (Phase 10) — first, so every request, the
   //      access log and every aggregate it creates share one traceId ----

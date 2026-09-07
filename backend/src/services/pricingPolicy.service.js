@@ -193,6 +193,7 @@ class PricingPolicyService {
 
   /** Persist the immutable charge breakdown for an order. */
   async persistChargeBreakdown({ orderId, tenantId, charges, createdBy = null }) {
+    const dual = config.money.dualWritePaise !== false;
     return OrderChargeBreakdown.create({
       orderId, tenantId,
       itemSubtotal: charges.itemSubtotal,
@@ -200,6 +201,13 @@ class PricingPolicyService {
       taxTotal: charges.taxTotal,
       discountTotal: charges.discountTotal,
       grandTotal: charges.grandTotal,
+      ...(dual ? {
+        itemSubtotalPaise: toPaise(charges.itemSubtotal),
+        deliveryFeePaise: toPaise(charges.deliveryFee),
+        taxTotalPaise: toPaise(charges.taxTotal),
+        discountTotalPaise: toPaise(charges.discountTotal),
+        grandTotalPaise: toPaise(charges.grandTotal),
+      } : {}),
       currency: 'INR',
       deliveryFeePolicyId: charges.deliveryFeePolicyId || null,
       discountPolicyId: charges.discountPolicyId || null,

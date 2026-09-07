@@ -23,3 +23,6 @@ build/
 
 # OS
 .DS_Store
+
+# runtime uploads (never commit customer images)
+storage/

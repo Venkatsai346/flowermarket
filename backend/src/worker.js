@@ -23,6 +23,7 @@
 import crypto from 'node:crypto';
 import config from './config/index.js';
 import { connectDb, disconnectDb } from './config/db.js';
+import { assertProductionProviders } from './utils/assertProductionProviders.js';
 import MODEL_FILES from './config/models.js';
 import catalogEventService from './services/catalogEvent.service.js';
 import notificationService from './services/notification.service.js';
@@ -47,6 +48,7 @@ async function main() {
     console.log('[worker] WORKER_ENABLED=false — not starting');
     return;
   }
+  assertProductionProviders(config);
   await connectDb();
   for (const f of MODEL_FILES) {
     await (await import(`./models/${f}`)).default.init();

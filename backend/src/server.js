@@ -3,8 +3,13 @@ import config from './config/index.js';
 import { connectDb } from './config/db.js';
 import { createApp } from './app.js';
 import heartbeatService from './services/heartbeat.service.js';
+import { assertProductionProviders } from './utils/assertProductionProviders.js';
 
 async function bootstrap() {
+  // B10: refuse mock money / console OTP / default JWT in production BEFORE
+  // we open a port or touch Mongo. Fail loud, never listen half-configured.
+  assertProductionProviders(config);
+
   await connectDb();
 
   // Phase 6.1: seed the global chart of accounts (idempotent upserts).

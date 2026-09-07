@@ -118,7 +118,7 @@ class TaxController {
       tenantId: req.tenantId,
       query: { orderId: String(order._id), docType: TAX_DOC_TYPE.INVOICE },
     });
-    const items = result.items.map((d) => taxDocumentService.withRupeeView(d, { html: true }));
+    const items = result.items.map((d) => taxDocumentService.withRupeeView(d, { html: true, pdf: true }));
     res.status(200).json(success(items, { message: items.length ? 'Invoice(s) fetched' : 'Invoice not issued yet' }));
   });
 

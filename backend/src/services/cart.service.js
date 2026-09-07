@@ -6,7 +6,8 @@ import inventoryService from './inventory.service.js';
 import pricingPolicyService from './pricingPolicy.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
-import { roundMoney, moneySum } from '../utils/money.js';
+import { roundMoney, moneySum, toPaise } from '../utils/money.js';
+import config from '../config/index.js';
 import {
   CART_STATUS,
   CART_ITEM_LIMIT,
@@ -48,7 +49,16 @@ class CartService {
     const { cart, items } = await this.fetchCart({ tenantId, userId });
     const plain = cart.toObject ? cart.toObject() : { ...cart };
     const { _id, ...rest } = plain;
-    return { ...rest, id: _id, items };
+    const dual = config.money.dualWritePaise !== false;
+    const withPaise = dual
+      ? items.map((it) => ({ ...it, lineTotalPaise: toPaise(it.lineTotal || 0) }))
+      : items;
+    return {
+      ...rest,
+      id: _id,
+      items: withPaise,
+      ...(dual ? { subtotalPaise: toPaise(rest.subtotal || 0) } : {}),
+    };
   }
 
   /** Add or increment an item; snapshots price/stock from the live listing. */

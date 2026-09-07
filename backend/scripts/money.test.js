@@ -13,6 +13,7 @@
 
 import {
   toPaise, fromPaise, sumPaise, allocatePaise, splitTaxPaise, applyBps, roundMoney,
+  attachPaise, QUOTE_MONEY_KEYS,
 } from '../src/utils/money.js';
 import ledgerPostingService from '../src/services/ledgerPosting.service.js';
 import { ledgerAccounts } from '../src/services/ledger.service.js';
@@ -60,6 +61,17 @@ const floatSum = roundMoney(0.1 + 0.2 + 0.3 - 0.6);
 const paiseSum = sumPaise(toPaise(0.1), toPaise(0.2), toPaise(0.3), -toPaise(0.6));
 eq('float pipeline rounds 0.1+0.2+0.3−0.6 to 0', floatSum, 0);
 eq('paise pipeline is exactly 0', paiseSum, 0);
+
+{
+  const quote = attachPaise({
+    itemSubtotal: 199, deliveryFee: 49, taxTotal: 9.48, discountTotal: 0, grandTotal: 248,
+  }, QUOTE_MONEY_KEYS);
+  eq('dual-write: rupee field unchanged', quote.grandTotal, 248);
+  eq('dual-write: grandTotalPaise is toPaise(grandTotal)', quote.grandTotalPaise, toPaise(248));
+  eq('dual-write identity: fromPaise(paise) === rupee', fromPaise(quote.itemSubtotalPaise), 199);
+  const off = attachPaise({ grandTotal: 248 }, ['grandTotal'], { enabled: false });
+  check('dual-write flag off adds no Paise sibling', off.grandTotalPaise === undefined);
+}
 
 // ---------------------------------------------------------------------------
 section('2. allocatePaise — the invariant that protects every split');

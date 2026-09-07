@@ -32,8 +32,11 @@ const PayoutPolicySchema = new Schema(
     /**
      * GATE 2 — cash in hand. When true a line is only eligible once the PSP has
      * actually settled the money to us (a `psp_settled` ledger entry exists).
-     * Paying before that is lending the vendor our own money. Defaults to false
-     * until settlement-report ingestion lands in M5.
+     * Paying before that is lending the vendor our own money.
+     *
+     * Schema default stays false so a test that inserts a row without the
+     * field does not inherit production. The SERVICE default (`DEFAULT_POLICY`)
+     * is true in production when no row exists — that is the launch gate.
      */
     requirePspSettlement: { type: Boolean, default: false },
 

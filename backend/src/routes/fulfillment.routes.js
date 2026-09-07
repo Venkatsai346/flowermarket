@@ -6,6 +6,11 @@ import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import {
   deliverSchema,
+  deliveryFailedSchema,
+  emptyMutationSchema,
+  forecastBodySchema,
+  generateSlotsSchema,
+  mockForcePendingSchema,
   orderListQuerySchema,
   refundInitiateSchema,
 } from '../utils/validators/order.validators.js';
@@ -28,17 +33,17 @@ const RIDER_ROLES = [USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN, USER_ROLES.RIDER]
 router.get('/orders', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(orderListQuerySchema, 'query'), OpsController.listAll);
 
 // ---- picking ----
-router.post('/orders/:id/pick', authorize(...PICK_ROLES), OpsController.startPicking);
-router.post('/orders/:id/pack', authorize(...PICK_ROLES), OpsController.markPacked);
+router.post('/orders/:id/pick', authorize(...PICK_ROLES), validate(emptyMutationSchema), OpsController.startPicking);
+router.post('/orders/:id/pack', authorize(...PICK_ROLES), validate(emptyMutationSchema), OpsController.markPacked);
 
 // ---- delivery ----
-router.post('/orders/:id/dispatch', authorize(...RIDER_ROLES), OpsController.dispatch);
+router.post('/orders/:id/dispatch', authorize(...RIDER_ROLES), validate(emptyMutationSchema), OpsController.dispatch);
 router.post('/orders/:id/deliver', authorize(...RIDER_ROLES), validate(deliverSchema), OpsController.deliver);
-router.post('/orders/:id/delivery-failed', authorize(...RIDER_ROLES), OpsController.deliveryFailed);
-router.post('/orders/:id/retry-delivery', authorize(...RIDER_ROLES), OpsController.retryDelivery);
+router.post('/orders/:id/delivery-failed', authorize(...RIDER_ROLES), validate(deliveryFailedSchema), OpsController.deliveryFailed);
+router.post('/orders/:id/retry-delivery', authorize(...RIDER_ROLES), validate(emptyMutationSchema), OpsController.retryDelivery);
 
 // ---- slots ops ----
-router.post('/slots/generate', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.generateSlots);
+router.post('/slots/generate', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(generateSlotsSchema), OpsController.generateSlots);
 router.get('/slots/utilization', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.slotUtilization);
 router.post('/slots/sweep', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.sweepExpiredHolds);
 
@@ -48,7 +53,7 @@ router.get('/refunds', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsC
 router.post('/refunds', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(refundInitiateSchema), OpsController.adminRefund);
 
 // ---- slot forecasting (admin) ----
-router.post('/forecast', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.forecastHub);
+router.post('/forecast', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(forecastBodySchema), OpsController.forecastHub);
 router.get('/forecast/upcoming', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.forecastUpcoming);
 router.get('/forecast/history', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.fulfillmentHistory);
 router.post('/assignments/sweep', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), OpsController.sweepExpiredAssignments);
@@ -61,7 +66,7 @@ router.get('/payments', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), Pay
 // NOTE: must be declared BEFORE /payments/:id or 'webhook-events' matches :id
 router.get('/payments/webhook-events', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.listWebhookEvents);
 // dev-only: mock gateway sync/async toggle for exercising the pending flow
-router.post('/payments/mock/force-pending', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.mockForcePending);
+router.post('/payments/mock/force-pending', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(mockForcePendingSchema), PaymentController.mockForcePending);
 router.get('/payments/:id', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.getPayment);
 
 export default router;

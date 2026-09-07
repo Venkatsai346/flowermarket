@@ -77,7 +77,9 @@ export const DEFAULT_POLICY = Object.freeze({
   minPayoutPaise: 50000,
   returnWindowDays: 7,
   perishableReturnWindowDays: 1,
-  requirePspSettlement: false,
+  // B6: production defaults ON so a missing PayoutPolicy row cannot pay a
+  // vendor before PSP cash arrives. Tests / laptops stay off (config.isProd).
+  requirePspSettlement: Boolean(config.payouts.requirePspSettlement),
   commissionGstBps: 1800,
   deductions: { commission: true, gstOnCommission: true, tcs: true, tds: true },
   holdOnDispute: true,

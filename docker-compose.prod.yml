@@ -1,0 +1,31 @@
+# Production overlay — never start this with mock money.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up
+#
+# Requires a filled `backend/.env.production` with live Razorpay,
+# RazorpayX (or Cashfree), MSG91/Twilio, JWT secrets that are not
+# `change-me`, and PAYOUT_WEBHOOK_SECRET. The API process WILL exit 1
+# if any of those are still console/mock — that is the point.
+#
+# RazorpayX payout-test (staging, no live rupees):
+#   PAYOUT_PROVIDER=razorpayx
+#   PAYOUT_TEST_MODE=true
+#   RAZORPAYX_KEY_ID=rzp_test_…
+# Settlement gate stays ON unless you explicitly set
+# PAYOUT_REQUIRE_PSP_SETTLEMENT=false (don't).
+
+services:
+  api:
+    env_file:
+      - ./backend/.env.production
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/flower_market?replicaSet=rs0
+      ALLOW_TENANT_HEADER_OVERRIDE: "false"
+
+  worker:
+    env_file:
+      - ./backend/.env.production
+    environment:
+      NODE_ENV: production
+      MONGODB_URI: mongodb://mongo:27017/flower_market?replicaSet=rs0

@@ -41,4 +41,27 @@ const loginLimiter = rateLimit({
   message: { success: false, message: 'Too many login attempts. Try again later.', code: 'LOGIN_RATE_LIMITED' },
 });
 
-export default { standard, otpSendLimiter, otpVerifyLimiter, loginLimiter };
+/**
+ * Global API limiter. Tests skip (a suite can issue hundreds of calls from
+ * one IP). Production: 300 / 15 min per IP. Health is cheap and skipped.
+ */
+const api = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: config.isDev ? 2000 : 300,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => config.isTest || req.path === '/health',
+  message: { success: false, message: 'Too many requests, please slow down', code: 'RATE_LIMITED' },
+});
+
+/** Checkout is the money moment — tighter than the rest of the API. */
+const checkoutLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: config.isDev ? 120 : 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: () => config.isTest,
+  message: { success: false, message: 'Too many checkout attempts. Wait a moment.', code: 'CHECKOUT_RATE_LIMITED' },
+});
+
+export default { standard, otpSendLimiter, otpVerifyLimiter, loginLimiter, api, checkoutLimiter };

@@ -7,6 +7,7 @@ import {
   riderActionSchema,
   riderAvailabilitySchema,
   deliveryListQuerySchema,
+  emptyMutationSchema,
 } from '../utils/validators/order.validators.js';
 import { USER_ROLES } from '../constants/enums.js';
 
@@ -21,11 +22,11 @@ router.use(authenticate, authorize(USER_ROLES.RIDER, USER_ROLES.ADMIN, USER_ROLE
 router.get('/deliveries', validate(deliveryListQuerySchema, 'query'), RiderController.list);
 router.post('/availability', validate(riderAvailabilitySchema), RiderController.setAvailability);
 
-router.post('/deliveries/:id/accept', RiderController.accept);
+router.post('/deliveries/:id/accept', validate(emptyMutationSchema), RiderController.accept);
 router.post('/deliveries/:id/reject', validate(riderActionSchema, 'body'), RiderController.reject);
-router.post('/deliveries/:id/arrive-hub', RiderController.arriveHub);
+router.post('/deliveries/:id/arrive-hub', validate(emptyMutationSchema), RiderController.arriveHub);
 router.post('/deliveries/:id/depart', validate(riderActionSchema, 'body'), RiderController.depart);
-router.post('/deliveries/:id/arrive', RiderController.arrive);
+router.post('/deliveries/:id/arrive', validate(emptyMutationSchema), RiderController.arrive);
 router.post('/deliveries/:id/complete', validate(riderActionSchema, 'body'), RiderController.complete);
 router.post('/deliveries/:id/fail', validate(riderActionSchema, 'body'), RiderController.fail);
 
