@@ -708,3 +708,28 @@ chained `bank_statement_ingested` fact (not a journal kind). Full design:
 `STATEMENT_LINE_BAD` (missing UTR or zero amount). A line whose match throws
 (locked batch, unexpected state) is kept `unmatched` with `matchError` set and
 reported in `failed` — the ingest itself still succeeds for the other lines.
+
+## Phase 15 — clawback settlement (refund debts recovered through the cycle)
+
+A refund after a payout leaves the vendor in debt to the platform. The
+refund journal already debits `vendor_payable` by the vendor's drained share;
+the payout side carries the debt as a **negative line** (clawback) that
+offsets the vendor's next cycle:
+
+- `computeCycleForVendor` — when the cycle's raw net is negative (or below
+  the payout floor) it creates a zero-net batch and records the residual as
+  `carryForwardPaise`. **The carried debt moves into the new batch's opening
+  and is cleared on the old batch** — a later cycle can never take the same
+  debt a second time. `submitForApproval` refuses zero-net batches
+  (`PAYOUT_NOTHING_TO_PAY`); with `negativeBalanceCarryForward: false` a
+  negative cycle is refused outright (`PAYOUT_NEGATIVE_BALANCE`).
+- `cancel` / `markFailed` release a batch's lines under one rule:
+  - `carryForwardPaise !== 0` → the batch's net was recorded as carry-forward,
+    so its lines are **consumed** (PAID, nothing moved for them) — releasing
+    them back would double-charge (or double-pay) the same amounts.
+  - `carryForwardPaise === 0` → nothing was carried, every line returns to
+    the eligible pool (including negative clawback lines, whose offset is
+    still pending — the refund journal already holds the debt).
+- `markFailed` now releases its lines (a rejected payout moved no money — the
+  next cycle pays the lines again; previously they were pinned to the failed
+  batch until an operator cancelled it).

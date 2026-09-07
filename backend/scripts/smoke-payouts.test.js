@@ -640,7 +640,157 @@ async function main() {
   check('★ trial balance still balances after confirm + return + settle', tbB.balanced, `diff ${tbB.differencePaise}`);
 
   // -------------------------------------------------------------------------
-  section('16. final integrity');
+    section('16. clawback settlement — a refund debt is recovered through the cycle (Phase 15)');
+  // -------------------------------------------------------------------------
+  const d = (days) => new Date(Date.now() - days * 86400000);
+  const vendor3 = await Vendor.create({
+    userId: oid(), businessName: 'Clawback Greens', slug: `clawback-greens-${Date.now()}`, status: 'active', commissionRateBps: 1000,
+  });
+  const acct3 = await VendorPayoutAccount.create({
+    vendorId: vendor3._id, method: 'bank', accountHolderName: 'Clawback Greens',
+    accountNumberEnc: Buffer.from('33445566778').toString('base64'),
+    ifsc: 'SBIN0001234', maskedAccount: '****6778', fingerprint: 'fp-cg', isDefault: true, status: 'active',
+  });
+  acct3.kyc.status = 'approved';
+  acct3.verification.status = 'verified';
+  await acct3.save();
+
+  // 1) a normal sale (eligible ≈ d(23)), paid out in full
+  const cbOrder1 = await makeOrder({ lineTotal: 2000, tax: 0, deliveredDaysAgo: 30, vendorId: vendor3._id });
+  await payoutService.accrueForOrder({ orderId: cbOrder1._id });
+  await payoutService.markEligible({});
+  const cbCyc1 = await payoutService.computeCycleForVendor({ vendorId: vendor3._id, from: d(26), to: d(18) });
+  await payoutService.submitForApproval({ batchId: cbCyc1.batch._id });
+  await payoutService.approve({ batchId: cbCyc1.batch._id, actorId: approver1 });
+  await payoutService.submit({ batchId: cbCyc1.batch._id, actorId: approver1 });
+  eq('vendor3 paid out for the first order', (await PayoutBatch.findById(cbCyc1.batch._id)).state, PAYOUT_STATE.PAID);
+  const cbLine1 = await PayoutLineItem.findOne({ orderId: cbOrder1._id });
+  eq('its line is PAID', cbLine1.state, PAYOUT_LINE_STATE.PAID);
+
+  // 2) the customer gets a FULL refund after the payout — the vendor must repay
+  const cbRefund = await RefundTransaction.create({
+    tenantId: tenant._id, orderId: cbOrder1._id, userId: oid(),
+    amount: cbOrder1.totalAmount, reason: REFUND_REASON.RETURN_QC_PASSED, destination: 'wallet',
+    idempotencyKey: `refund_cb_${Date.now()}`, status: 'success', completedAt: new Date(),
+  });
+  await ledgerPosting.postRefund({ refundTransaction: cbRefund }); // the ledger side of the refund
+  const cbClaw = await payoutService.reverseForRefund({ refundTransaction: cbRefund });
+  eq('the paid line is clawed back (negative line)', cbClaw.clawedBack, 1);
+  const cbNegLine = await PayoutLineItem.findOne({ refundTransactionId: cbRefund._id, reversalOfLineId: { $ne: null } });
+  check('the negative line is eligible to offset the next cycle', cbNegLine.state === PAYOUT_LINE_STATE.ELIGIBLE && cbNegLine.netPayablePaise < 0, String(cbNegLine.netPayablePaise));
+  const drain1 = cbLine1.grossPaise - cbLine1.sellerGstPaise - cbLine1.commissionPaise;
+  const payableAfterRefund = (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor3._id))).balancePaise;
+  eq('★ the refund already debited the vendor payable by the drained share', payableAfterRefund, -drain1);
+
+  // 3) the negative-only cycle (eligible ≈ now): net zero, the debt becomes carry-forward
+  const cbCyc2 = await payoutService.computeCycleForVendor({ vendorId: vendor3._id, from: d(2), to: new Date(Date.now() + 86400000) });
+  const cbNegBatch = cbCyc2.batch;
+  eq('the cycle nets to zero', cbNegBatch.netPaise, 0);
+  eq('★ the debt is recorded as negative carry-forward', cbNegBatch.carryForwardPaise, cbNegLine.netPayablePaise);
+  eq('the negative line is pinned to the carry batch', (await PayoutLineItem.findById(cbNegLine._id)).state, PAYOUT_LINE_STATE.BATCHED);
+  let noPay = null;
+  try { await payoutService.submitForApproval({ batchId: cbNegBatch._id }); } catch (e) { noPay = e; }
+  eq('★ a zero-net batch cannot be submitted', noPay?.code, 'PAYOUT_NOTHING_TO_PAY');
+
+  // 4) cancelling the carry batch CONSUMES its lines — releasing them back
+  //    would double-charge the debt in the next cycle
+  await payoutService.cancel({ batchId: cbNegBatch._id, reason: 'debt carried forward, nothing to pay', actorId: approver1 });
+  const cbConsumed = await PayoutLineItem.findById(cbNegLine._id);
+  eq('★ the consumed negative line is PAID (not re-eligible)', cbConsumed.state, PAYOUT_LINE_STATE.PAID);
+  const cbCarried = await PayoutBatch.findById(cbNegBatch._id);
+  eq('the batch is cancelled', cbCarried.state, PAYOUT_STATE.CANCELLED);
+  eq('…and the carry-forward survives the cancel', cbCarried.carryForwardPaise, cbNegBatch.carryForwardPaise);
+
+  // 5) the vendor earns again (eligible ≈ d(13)) — the debt reduces the next payout
+  const cbOrder2 = await makeOrder({ lineTotal: 3000, tax: 0, deliveredDaysAgo: 20, vendorId: vendor3._id });
+  await payoutService.accrueForOrder({ orderId: cbOrder2._id });
+  await payoutService.markEligible({});
+  const cbCyc3 = await payoutService.computeCycleForVendor({ vendorId: vendor3._id, from: d(16), to: d(10) });
+  const cbBatch3 = cbCyc3.batch;
+  eq('the opening balance is the carried debt', cbBatch3.openingBalancePaise, cbNegBatch.carryForwardPaise);
+  const cbLine2 = await PayoutLineItem.findOne({ orderId: cbOrder2._id });
+  const drain2 = cbLine2.grossPaise - cbLine2.sellerGstPaise - cbLine2.commissionPaise;
+  eq('★ the payout is reduced by the debt', cbBatch3.netPaise, cbLine2.netPayablePaise + cbBatch3.openingBalancePaise);
+  const bankBefore3 = (await ledgerService.balance(ledgerAccounts.bank())).balancePaise;
+  const payableBefore3 = payableAfterRefund + drain2; // sale 2 accrues its drained share
+  await payoutService.submitForApproval({ batchId: cbBatch3._id });
+  await payoutService.approve({ batchId: cbBatch3._id, actorId: approver1 });
+  await payoutService.submit({ batchId: cbBatch3._id, actorId: approver1 });
+  eq('the reduced payout is paid', (await PayoutBatch.findById(cbBatch3._id)).state, PAYOUT_STATE.PAID);
+  eq('★ the bank is debited by exactly the reduced net', (await ledgerService.balance(ledgerAccounts.bank())).balancePaise, bankBefore3 - cbBatch3.netPaise);
+  const drain3 = cbBatch3.grossPaise - cbBatch3.sellerGstPaise - cbBatch3.commissionPaise + cbBatch3.openingBalancePaise;
+  eq('the journal drains the payable by (new sale − debt)', (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor3._id))).balancePaise, payableBefore3 - drain3);
+  eq('each line is settled exactly once (3 PAID lines: 2 payouts + the consumed clawback)',
+    await PayoutLineItem.countDocuments({ vendorId: vendor3._id, state: PAYOUT_LINE_STATE.PAID }), 3);
+
+  const tbCb = await ledgerService.trialBalance();
+  check('★ trial balance still balances through the clawback settlement', tbCb.balanced, `diff ${tbCb.differencePaise}`);
+
+  // 6) with carry-forward DISABLED, a negative cycle is refused, not zeroed
+  const vendor4 = await Vendor.create({
+    userId: oid(), businessName: 'NoCarry Nursery', slug: `nocarry-${Date.now()}`, status: 'active', commissionRateBps: 1000,
+  });
+  await payoutService.upsertPolicy({ scope: 'vendor', vendorId: vendor4._id, payload: { negativeBalanceCarryForward: false } });
+  const acct4 = await VendorPayoutAccount.create({
+    vendorId: vendor4._id, method: 'bank', accountHolderName: 'NoCarry Nursery',
+    accountNumberEnc: Buffer.from('44556677889').toString('base64'),
+    ifsc: 'SBIN0009876', maskedAccount: '****8889', fingerprint: 'fp-nc', isDefault: true, status: 'active',
+  });
+  acct4.kyc.status = 'approved';
+  acct4.verification.status = 'verified';
+  await acct4.save();
+  const ncOrder = await makeOrder({ lineTotal: 1000, tax: 0, deliveredDaysAgo: 30, vendorId: vendor4._id });
+  await payoutService.accrueForOrder({ orderId: ncOrder._id });
+  await payoutService.markEligible({});
+  const ncLine = await PayoutLineItem.findOne({ orderId: ncOrder._id });
+  ncLine.state = PAYOUT_LINE_STATE.PAID; // white-box: pretend the money went out
+  await ncLine.save();
+  const ncRefund = await RefundTransaction.create({
+    tenantId: tenant._id, orderId: ncOrder._id, userId: oid(),
+    amount: ncOrder.totalAmount, reason: REFUND_REASON.RETURN_QC_PASSED, destination: 'wallet',
+    idempotencyKey: `refund_nc_${Date.now()}`, status: 'success', completedAt: new Date(),
+  });
+  await ledgerPosting.postRefund({ refundTransaction: ncRefund });
+  await payoutService.reverseForRefund({ refundTransaction: ncRefund });
+  let negBal = null;
+  try { await payoutService.computeCycleForVendor({ vendorId: vendor4._id, from: d(2), to: new Date(Date.now() + 86400000) }); } catch (e) { negBal = e; }
+  eq('★ negative balance with carry-forward disabled is refused', negBal?.code, 'PAYOUT_NEGATIVE_BALANCE');
+
+  // 7) a refund on an UNPAID line just cancels the entitlement — no negative line
+  const cbOrder3 = await makeOrder({ lineTotal: 1500, tax: 0, deliveredDaysAgo: 15, vendorId: vendor3._id });
+  await payoutService.accrueForOrder({ orderId: cbOrder3._id });
+  await payoutService.markEligible({});
+  const cbRefund3 = await RefundTransaction.create({
+    tenantId: tenant._id, orderId: cbOrder3._id, userId: oid(),
+    amount: cbOrder3.totalAmount, reason: REFUND_REASON.RETURN_QC_PASSED, destination: 'wallet',
+    idempotencyKey: `refund_cb3_${Date.now()}`, status: 'success', completedAt: new Date(),
+  });
+  const cbClaw3 = await payoutService.reverseForRefund({ refundTransaction: cbRefund3 });
+  check('an unpaid line is reversed, not clawed', cbClaw3.reversed === 1 && cbClaw3.clawedBack === 0, JSON.stringify(cbClaw3));
+  eq('no negative line exists for it', await PayoutLineItem.countDocuments({ refundTransactionId: cbRefund3._id, reversalOfLineId: { $ne: null } }), 0);
+
+  // 8) a FAILED batch releases its lines (retry by the next cycle) — no leak
+  const failOrder3 = await makeOrder({ lineTotal: 500.13, tax: 0, deliveredDaysAgo: 10, vendorId: vendor3._id });
+  await payoutService.accrueForOrder({ orderId: failOrder3._id });
+  await payoutService.markEligible({});
+  const fl = await PayoutLineItem.findOne({ orderId: failOrder3._id });
+  fl.netPayablePaise = toPaise(1000.13); // …13 → provider rejection
+  fl.state = PAYOUT_LINE_STATE.ELIGIBLE;
+  await fl.save();
+  const fCyc = await payoutService.computeCycleForVendor({ vendorId: vendor3._id, from: d(5), to: d(1) });
+  if (fCyc.batch) {
+    await payoutService.submitForApproval({ batchId: fCyc.batch._id });
+    await payoutService.approve({ batchId: fCyc.batch._id, actorId: approver1 });
+    await payoutService.submit({ batchId: fCyc.batch._id, actorId: approver1 });
+    const fB = await PayoutBatch.findById(fCyc.batch._id);
+    eq('the failed batch', fB.state, PAYOUT_STATE.FAILED);
+    eq('★ its lines are released for the next cycle (no leak)',
+      await PayoutLineItem.countDocuments({ orderId: failOrder3._id, state: PAYOUT_LINE_STATE.ELIGIBLE }), 1);
+  } else {
+    check('failed-batch scenario created a batch', false, 'NOTHING_TO_PAY');
+  }
+
+  section('17. final integrity');
   // -------------------------------------------------------------------------
   const finalTb = await ledgerService.trialBalance();
   check('★ trial balance across every journal', finalTb.balanced, `diff ${finalTb.differencePaise} paise`);

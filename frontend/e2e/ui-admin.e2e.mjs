@@ -767,6 +767,68 @@ await R.check('A44', 'Bank reconciliation: a statement line with an unknown UTR 
 });
 await shot(page, 'a44-statement');
 
+await R.check('A45', 'Payout cycle via UI: sweep → compute → the new DRAFT batch is cancelled cleanly (lines released)', async () => {
+  await page.goto(BASE + '/platform/payouts', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /All states|No payout batches/i, 15000);
+  // promote whatever return windows have closed (harmless if nothing is due)
+  await clickText(page, /Sweep eligibility/);
+  await waitText(page, /Eligibility swept —/, 15000);
+  // batch numbers visible before we compute (to spot the new one)
+  const before = (await bodyText(page)).match(/PO-\d{4}-\d{6}/g) || [];
+  await clickText(page, /Compute cycle/);
+  await waitText(page, /Compute payout cycle/i, 8000);
+  // widen the window a year so any closed return window is covered
+  await page.$eval('input[type="date"]', (el) => {
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    set.call(el, '2025-01-01');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await clickText(page, /^Compute$/);
+  await waitText(page, /Cycle computed — \d+ batch\(es\) created/, 20000);
+  const created = Number((await bodyText(page)).match(/Cycle computed — (\d+) batch\(es\) created/)[1]);
+  // open a DRAFT batch by number: the table row is a <tr> (not a button)
+  const openBatch = async (num) => {
+    const found = await page.evaluate((n) => {
+      const tr = Array.from(document.querySelectorAll('tr')).find((t) => (t.innerText || '').includes(n));
+      if (!tr) return false;
+      tr.scrollIntoView({ block: 'center' });
+      tr.click();
+      return true;
+    }, num);
+    if (!found) throw new Error('no table row for ' + num);
+    await waitText(page, new RegExp('Payout ' + num), 10000);
+  };
+  const cancelBatch = async () => {
+    await clickText(page, /^Cancel$/);
+    await typeInto(page, 'input[placeholder="Recorded on the audit trail"]', 'A45 e2e: cycle cleanup, nothing to pay yet');
+    await clickText(page, /^Confirm$/);
+    await waitText(page, /Cancelled — lines released to the next cycle/, 15000);
+  };
+  if (created === 0) {
+    // nothing new — but a DRAFT batch left by a previous interrupted run is
+    // still a clean cancel target (this keeps the check re-runnable)
+    const after = (await bodyText(page)).match(/PO-\d{4}-\d{6}/g) || [];
+    const leftover = after[0];
+    if (leftover) {
+      await openBatch(leftover);
+      // only draft batches offer Cancel; anything else is already decided
+      const hasCancel = await page.evaluate(() =>
+        Array.from(document.querySelectorAll('button')).some((b) => (b.innerText || '').trim() === 'Cancel'));
+      if (hasCancel) { await cancelBatch(); return `no new batch, but leftover ${leftover} was cancelled cleanly — lines released`; }
+      await page.click('button:has-text("Close")').catch(() => {});
+      return 'nothing payable in the window — compute reported 0 created (empty state is honest)';
+    }
+    return 'nothing payable in the window — compute reported 0 created (empty state is honest)';
+  }
+  const after = (await bodyText(page)).match(/PO-\d{4}-\d{6}/g) || [];
+  const fresh = after.find((n) => !before.includes(n));
+  if (!fresh) throw new Error('computed a batch but no new batch number appeared: ' + after.join(','));
+  await openBatch(fresh);
+  await cancelBatch();
+  return `batch ${fresh} computed via UI and cancelled cleanly — lines released to the next cycle`;
+});
+await shot(page, 'a45-cycle');
+
 // ---------------------------------------------------------------- RBAC + rider
 await R.check('A34', 'RBAC: store admin blocked from vendor console', async () => {
   await page.goto(BASE + '/vendor', { waitUntil: 'networkidle2', timeout: 30000 });

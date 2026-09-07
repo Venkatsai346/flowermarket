@@ -515,6 +515,16 @@ class PayoutService {
       initiatedBy: actorId,
     });
 
+    // A carried debt moves INTO this batch's opening the moment the batch
+    // is created — clear it on the old batch so a later cycle cannot take
+    // the same debt a second time. (If we crash in the tiny window between
+    // the two writes, the operator can cancel the new DRAFT batch, which
+    // releases its lines and leaves the old carry intact — the debt stays
+    // counted exactly once either way it is recovered.)
+    if (carried && openingBalancePaise !== 0) {
+      await PayoutBatch.updateOne({ _id: carried._id }, { $set: { carryForwardPaise: 0 } });
+    }
+
     // pin the lines and adjustments to this batch so nothing is ever counted twice
     if (lines.length) {
       await PayoutLineItem.updateMany(
@@ -662,10 +672,30 @@ class PayoutService {
     return batch;
   }
 
+  /**
+   * Release a batch's lines — the ONLY rule that decides this:
+   *
+   *   carryForwardPaise !== 0  →  the batch's net (whatever sign) was recorded
+   *   as carry-forward, i.e. the lines were ALREADY COUNTED (they pushed the
+   *   cycle to zero — negative debt, or below the payout floor). They must be
+   *   CONSUMED (PAID, nothing moved for them) or the next cycle would pay the
+   *   same amounts twice (once from the carry, once from the re-eligible lines).
+   *
+   *   carryForwardPaise === 0  →  the batch carried nothing forward, so every
+   *   line is un-settled and returns to the eligible pool. This is also the
+   *   only case for negative (clawback) lines: the refund journal already did
+   *   the accounting, the line is just a pending offset — release it and the
+   *   next cycle applies the offset exactly once.
+   */
   async releaseBatchLines(batch) {
+    const consumed = (batch.carryForwardPaise || 0) !== 0;
     await PayoutLineItem.updateMany(
       { payoutBatchId: batch._id, state: PAYOUT_LINE_STATE.BATCHED },
-      { $set: { state: PAYOUT_LINE_STATE.ELIGIBLE, payoutBatchId: null } }
+      {
+        $set: consumed
+          ? { state: PAYOUT_LINE_STATE.PAID, paidAt: new Date() }
+          : { state: PAYOUT_LINE_STATE.ELIGIBLE, payoutBatchId: null },
+      }
     );
     await PayoutAdjustment.updateMany(
       { appliedInBatchId: batch._id },
@@ -907,6 +937,11 @@ class PayoutService {
     batch.providerStatus = 'failed';
     await batch.save();
     await this.unwindPayoutJournal(batch, 'payout rejected by provider');
+    // No money moved, so nothing was settled: the lines return to the pool
+    // and a later cycle pays them again. (A failed batch always has
+    // carryForward 0 — only zero-net batches carry, and those cannot be
+    // submitted — so every line is released, negative offsets included.)
+    await this.releaseBatchLines(batch);
     return batch;
   }
 

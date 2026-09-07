@@ -117,7 +117,7 @@ jobs:
           node scripts/async-payment-live.test.mjs
 
   browser-ui:
-    name: Browser UI — real Chromium (storefront 29 + admin 43 + async-pay 7)
+    name: Browser UI — real Chromium (storefront 29 + admin 44 + async-pay 7)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -170,7 +170,7 @@ jobs:
         run: |
           . /tmp/fm-ci/env.sh
           BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-async-payment.e2e.mjs
-      - name: Admin browser suite (43 checks)
+      - name: Admin browser suite (44 checks)
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh

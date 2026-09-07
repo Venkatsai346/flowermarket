@@ -142,10 +142,10 @@ check('3.3', 'wallet balance = 0 initially', r.status === 200 && (r.data?.data?.
 section('4. cart → quote → checkout (UPI mock)');
 // The main order is the one that later goes through delivery + return (QC
 // returns require a RETURNABLE product). Rank order varies with order
-// history, so pick the first non-perishable listing explicitly instead of
+// history, so pick the first NON-PERISHABLE listing explicitly instead of
 // trusting data[0] (a fresh flower is perishable → isReturnable=false).
 const allListings = (await api('/catalog?limit=10')).data?.data || [];
-const listing = allListings.find((l) => ['flower_bouquet', 'plant'].includes(l?.product?.type)) || allListings[0];
+const listing = allListings.find((l) => l?.product?.isPerishable === false) || allListings[0];
 const tpId = listing?.listingId; // cart is keyed by the LISTING (tenant product) id
 r = await api('/cart/items', { method: 'POST', token: custTok, body: { tenantProductId: tpId, qty: 1 } });
 check('4.1', 'cart add item', r.status === 200, j(r.data).slice(0, 160));
@@ -387,10 +387,13 @@ section('13. statutory deposits (Phase 13)');
 // =====================================================================
 section('14. bank statement — the egress truth (Phase 14)');
 {
-  const stmtRef = 'BS-E2E-2026-09-' + Math.floor(Math.random() * 900 + 100);
+  // unique per run — re-ingesting the SAME {statementRef, lineNo} is a
+  // deliberate no-op, so a ref collision with a previous run must not happen
+  const stmtRun = Date.now().toString(36).toUpperCase();
+  const stmtRef = 'BS-E2E-' + stmtRun;
   const stmtLines = [
-    { utr: 'E2E-STMT-NOMATCH-1', amount: 100, description: 'live: unknown credit' },
-    { utr: 'E2E-STMT-NOMATCH-2', amount: -50, description: 'live: unknown debit' },
+    { utr: 'E2E-STMT-' + stmtRun + '-1', amount: 100, description: 'live: unknown credit' },
+    { utr: 'E2E-STMT-' + stmtRun + '-2', amount: -50, description: 'live: unknown debit' },
   ];
 
   const stmtBefore = await api('/payouts/admin/statement', { token: adminTok });

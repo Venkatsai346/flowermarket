@@ -517,3 +517,65 @@ never say so. The bank's own statement is the only record that knows.
   the batch's full history in hand.
 - The queue is a worklist, not a state: lines are immutable once recorded;
   the batch's state (and its events) is the resolution.
+
+# Part 6 — Phase 15: clawback settlement (the refund debt is money, too)
+
+## The problem
+
+The payout side knew how to *accrue* and *pay* — and Phase 12+ closed every
+edge of the outflow loop. But the loop had a hole in the middle: a refund
+after a payout. The refund journal (Phase 6) debits `vendor_payable` by the
+vendor's share at refund time, and `reverseForRefund` creates a negative
+line that offsets the vendor's next cycle. Neither half had ever been
+proven end-to-end, and neither was safe on its own:
+
+- the negative line and the carried debt are **two representations of the
+  same obligation** — if both survive, the debt is collected twice;
+- a cancelled/failed batch releases its lines back to the pool — for
+  negative lines that means the offset (or the below-floor credit) is
+  applied twice.
+
+## Design
+
+One rule decides line fate on `cancel`/`markFailed`:
+
+| batch carries | lines are… | why |
+|---|---|---|
+| `carryForwardPaise !== 0` | **consumed (PAID, nothing moved)** | the batch's net was recorded as carry-forward — the lines are already counted; releasing them would charge/pay the same amounts again |
+| `carryForwardPaise === 0` | released to `eligible` | nothing was carried; every line — negative offsets included — is still pending and re-enters exactly once |
+
+The debt **moves**: when a batch is computed with a carried opening balance,
+the old batch's `carryForwardPaise` is cleared at the same time the new batch
+is pinned. The debt therefore exists in exactly one place at all times: the
+latest batch that recorded it. (Crash between the two writes → the new batch
+is DRAFT; cancelling it releases its lines and leaves the old carry intact —
+the debt is counted exactly once on either side of the crash.)
+
+Zero-net batches are refused at `submitForApproval`
+(`PAYOUT_NOTHING_TO_PAY`) — a ₹0 instruction is never sent to the provider;
+`negativeBalanceCarryForward: false` refuses the negative cycle at compute
+time (`PAYOUT_NEGATIVE_BALANCE`) instead of silently zeroing it.
+
+## The accounting, verified in paise
+
+Paid order (drain D) → full refund → next cycle:
+
+1. refund journal debits `vendor_payable` D (books: we are owed D);
+2. negative-only cycle: net 0, carry −N (N = the line's net); cancel
+   consumes the line, carry survives;
+3. new sale (net N₂): cycle opens at −N, pays exactly N₂−N to the bank;
+   the journal drains the payable by (new sale − debt);
+4. books end at zero, cash matches the vendor's true entitlement, and the
+   recovered debt is visible on the vendor's `refund_clawback` account as
+   the journal's balancing residue.
+
+## Verification (2026-09-07)
+
+- Hermetic `smoke-payouts` §16 (suite 142/142): the full loop above with
+  hand-computed paise at every step; debt-transfer no-double-charge; the
+  `PAYOUT_NOTHING_TO_PAY` and `PAYOUT_NEGATIVE_BALANCE` guards; unpaid-line
+  refund (no negative line); failed-batch line release; trial balanced.
+- Live `e2e-live` (93): the sandbox even produced a real below-floor batch
+  (net ₹0, carry ₹184.26) which A45 cancelled through the browser.
+- Browser `ui-admin` A45 (44 total): sweep → compute → DRAFT batch cancelled
+  with a reason, lines released; honest empty state when nothing is payable.

@@ -425,3 +425,20 @@ left by a previous CI-style run was shadowing the serving process's log and
 silently breaking OTP discovery after any API restart.
 
 CI counts synced in `.github/workflows/ci.yml`: live 93 checks, admin browser 43.
+
+## Phase 15 re-verification — clawback settlement (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-payouts` | **142/142** (+§16: paid order → full refund debits the vendor payable by the exact drained share; negative-only cycle nets zero with the debt as negative carry-forward; zero-net batch refused at submit (`PAYOUT_NOTHING_TO_PAY`); cancel of the carry batch CONSUMES its lines (no double-charge) and keeps the carry; the next cycle opens with the debt and pays exactly the reduced net — bank and vendor payable match hand-computed paise, each line settled once; carry-forward disabled → `PAYOUT_NEGATIVE_BALANCE`; unpaid-line refund just reverses; FAILED batch releases its lines (leak fixed); trial balanced throughout) |
+| `smoke:all` (22 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **93/93** (fixed this phase: §4 product pick used a nonexistent `product.type` — now `isPerishable === false`; §14 statement ref/UTRs made run-unique so idempotent re-ingest can't false-fail on a ref collision) |
+| Admin browser UI | **44/44** (A45: sweep → compute via the UI; a DRAFT batch — new or left by an interrupted run — is opened by row, cancelled with a reason, and its lines released; empty state is honestly reported when nothing is payable) |
+
+Two real bugs found and fixed by the hermetic layer: a carried debt was
+**never cleared from the old batch**, so the next cycle would absorb the same
+debt twice; and `markFailed` never released its lines (they stayed pinned to
+the failed batch, contradicting the docstring and the retry-by-next-cycle
+design). `cancel`'s line release is now sign/carry-aware (see API.md Phase 15).
+
+CI counts synced in `.github/workflows/ci.yml`: live 93 checks, admin browser 44.
