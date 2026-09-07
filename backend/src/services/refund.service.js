@@ -5,6 +5,7 @@ import walletService from './wallet.service.js';
 import paymentProvider from './paymentProvider.service.js';
 import ledgerPostingService from './ledgerPosting.service.js';
 import payoutService from './payout.service.js';
+import domainEventService from './domainEvent.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { roundMoney, moneySum } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
@@ -16,6 +17,8 @@ import {
   PAYMENT_PROVIDER,
   PAYMENT_STATUS,
   WALLET_TXN_REASON,
+  DOMAIN_EVENT_TYPE,
+  LEDGER_JOURNAL_KIND,
 } from '../constants/enums.js';
 
 /** Refunds above this amount go through the gateway (slower) instead of wallet. */
@@ -80,6 +83,7 @@ class RefundService {
       amount: value, currency: order.currency || 'INR',
       reason, destination: dest, status: REFUND_TRANSACTION_STATUS.PENDING,
       idempotencyKey: key, initiatedBy,
+      traceId: order.traceId || null,
       ...comps,
     });
 
@@ -110,6 +114,17 @@ class RefundService {
 
       await txn.save();
       await this.syncPaymentRefundState({ tenantId, orderId, paymentId });
+
+      // ---- Phase 10: record the refund FACT in the audit backbone first ----
+      //      (event before journal, so a crash-window is visible + replayable)
+      domainEventService.append({
+        tenantId, traceId: txn.traceId, kind: DOMAIN_EVENT_TYPE.REFUND_ISSUED,
+        aggregateType: 'refund', aggregateId: txn._id,
+        idempotencyKey: `${LEDGER_JOURNAL_KIND.REFUND_ISSUED}:refund:${txn._id}`,
+        occurredAt: txn.completedAt,
+        refType: 'order', refId: orderId,
+        payload: { orderId, orderNumber: order.orderNumber, amountPaise: Math.round(value * 100), destination: dest },
+      });
 
       // ---- Phase 6.1: reverse a proportional slice of the sale journal ----
       //      We reverse what the sale actually credited (vendor payable,
@@ -221,6 +236,25 @@ class RefundService {
         txn.completedAt = new Date();
         txn.rawGatewayResponse = { ...(txn.rawGatewayResponse || {}), reconciled: true, source: remote.raw || null };
         await txn.save();
+
+        // ---- Phase 10: record the refund FACT now that the gateway attests
+        //      it. Covers the crash window "gateway refund created, process
+        //      died before initiate() finished" — the row sat PENDING with a
+        //      gatewayRef and never got its event. Idempotent: the same
+        //      idempotencyKey as the initiate() path, so a refund that was
+        //      already recorded is a no-op. The JOURNAL is deliberately not
+        //      posted here — if it is missing, the nightly integrity report
+        //      sees the event without its journal and the replay re-derives
+        //      it (postRefund, which only runs for SUCCESS refunds).
+        domainEventService.append({
+          tenantId: txn.tenantId, traceId: txn.traceId, kind: DOMAIN_EVENT_TYPE.REFUND_ISSUED,
+          aggregateType: 'refund', aggregateId: txn._id,
+          idempotencyKey: `${LEDGER_JOURNAL_KIND.REFUND_ISSUED}:refund:${txn._id}`,
+          occurredAt: txn.completedAt,
+          refType: 'order', refId: txn.orderId,
+          payload: { orderId: txn.orderId, amountPaise: Math.round(moneySum(txn.amount) * 100), destination: txn.destination, reconciled: true },
+        });
+
         await this.syncPaymentRefundState({ tenantId: txn.tenantId, orderId: txn.orderId, paymentId: txn.paymentId });
         resolved.push({ refundId: txn._id, state: 'success' });
       } else if (remote?.state === 'failed') {

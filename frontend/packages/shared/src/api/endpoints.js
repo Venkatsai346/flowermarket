@@ -129,6 +129,10 @@ export function createEndpoints(client) {
 
       // maintenance
       nightly: (body = {}) => c.post('/admin/maintenance/nightly', body),
+
+      // Phase 10 — money audit backbone
+      integrity: () => c.get('/admin/integrity'),
+      trace: (id) => c.get(`/admin/traces/${id}`),
     },
 
     public: {
@@ -309,6 +313,9 @@ export function createEndpoints(client) {
       trialBalance: () => c.get('/ledger/trial-balance'),
       journals: (q = {}) => c.get('/ledger/journals', { query: q }),
       verify: (body = {}) => c.post('/ledger/verify', body),
+      // Phase 10 — system integrity report + replay (SUPER_ADMIN)
+      integrity: () => c.get('/ledger/integrity'),
+      replay: (body = {}) => c.post('/ledger/integrity/replay', body),
     },
 
     /** Phase 6.2 — GST registration, documents and rate policy. */

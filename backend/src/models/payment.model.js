@@ -36,6 +36,8 @@ const PaymentSchema = new Schema(
     },
 
     idempotencyKey: { type: String, required: true },
+    // end-to-end correlation id (Phase 10) — inherited from the order
+    traceId: { type: String, default: null, index: true },
 
     status: {
       type: String,

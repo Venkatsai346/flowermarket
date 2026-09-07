@@ -47,6 +47,9 @@ const RefundTransactionSchema = new Schema(
     },
 
     idempotencyKey: { type: String, required: true },
+    // end-to-end correlation id (Phase 10) — inherited from the order, so a
+    // refund sits on the same trace as the sale it reverses
+    traceId: { type: String, default: null, index: true },
     gatewayRef: { type: String, default: null },
     walletTxnId: { type: Types.ObjectId, ref: 'WalletTransaction', default: null },
     rawGatewayResponse: { type: Schema.Types.Mixed, default: null },

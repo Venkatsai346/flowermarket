@@ -52,16 +52,21 @@ updated, and log/tenant discovery in the e2e scripts is now dynamic.)
 | smoke-worker (leased claims, reaper, backoff/DLQ, single-flight) | 6/6 |
 | smoke-observability (healthz/readyz/metrics, outbox lag, heartbeat, jobs) | 7/7 |
 | smoke-payments (webhook idempotency, amount verify, reconciliation, metrics) | 13/13 |
+| smoke-audit (trace propagation, exactly-once append, crash-window replay, orphan restore, refund/cancel chain) | 15/15 |
 
 ### C. Live E2E (`backend/scripts/e2e-live.mjs`, real HTTP against :4000)
-**67/67 cases passed.** Covers: ranked search + catalog + categories/brands/
+**73/73 cases passed.** Covers: ranked search + catalog + categories/brands/
 product/stock + suggest + plans + default-tenant fallback; phone-OTP auth
 (verify + wrong-OTP reject + 401); addresses + wallet; cart → slot →
 server-quoted checkout (UPI mock, charged==quote, order-number format); admin
 email/password login + RBAC (403/401); fulfillment pick→pack→dispatch→rider
 machine (accept/arrive-hub/depart/arrive/complete OTP-POD)→delivered;
 return pickup+QC→wallet refund; wallet checkout + debit + pre-pick cancel saga
-→ wallet refund; admin catalog ops + outbox drain; both frontends serve HTML.
+→ wallet refund; admin catalog ops + outbox drain; both frontends serve HTML;
+**money audit backbone (Phase 10 §11):** `x-trace-id` echo, order traceId
+stamping, full trace chain (sale + refund + cancel on one trace, time-ordered),
+platform integrity report `ok` with 100% event↔journal coverage, tenant-scoped
+report, and SUPER_ADMIN-only RBAC on report/replay.
 
 ### D. Frontend unit suites
 | App | Result |
@@ -119,7 +124,7 @@ feature exercised through the frontend, real HTTP through the Vite proxies to
 | Polling flips the page Awaiting payment → Confirmed (no refresh) | P06 |
 | Dev toggle: back to sync mode | P07 |
 
-**Admin web — 37/37** (`frontend/e2e/ui-admin.e2e.mjs`)
+**Admin web — 39/39** (`frontend/e2e/ui-admin.e2e.mjs`)
 | Area | Cases |
 |---|---|
 | Login page renders; admin email+password login → dashboard | A01–A02 |
@@ -147,6 +152,8 @@ feature exercised through the frontend, real HTTP through the Vite proxies to
 | Domains page renders | A24 |
 | Platform console: overview / stores / lifecycle / vendor applications / vendors / billing / plans / payouts / ledger | A25–A33 |
 | Payments ops: live async payment → webhook audit → drawer → reconcile | A37 |
+| System integrity: ledger page reports all 7 subsystems + replay action (live, green) | A38 |
+| Follow the money: order drawer assembles the trace timeline (order → payment → journal → audit events) | A39 |
 | RBAC: store admin blocked from vendor console | A34 |
 | Rider session: login as UI-created rider → /rider renders | A35 |
 | No page errors / failed API requests | A36 |

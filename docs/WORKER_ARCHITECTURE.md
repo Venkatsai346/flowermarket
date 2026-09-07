@@ -81,7 +81,7 @@ new entrypoint, one small model, lease fields on the outbox row.
 
 | Job | Cadence | Runs |
 |---|---|---|
-| `tenant-nightly` | daily @ `WORKER_NIGHTLY_HOUR` (default 02:00) | `maintenanceService.nightly` for **every active tenant** (forecast, analytics rollups, export jobs + runs, notifications, event drain) |
+| `tenant-nightly` | daily @ `WORKER_NIGHTLY_HOUR` (default 02:00) | `maintenanceService.nightly` for **every active tenant** (forecast, analytics rollups, export jobs + runs, notifications, event drain, ledger backfill, **integrity report → conditional replay + balance repair** — see `docs/AUDIT_ARCHITECTURE.md`) |
 | `marketplace-nightly` | daily @ hour+5 | `maintenanceService.marketplaceNightly` (billing cycle per period, rollovers, overdue sweep, platform rollups, shared drain) |
 | `payment-reconcile` | every `PAYMENT_RECONCILE_EVERY_MS` (5 min) — first **interval** job (scheduler gained `everyMs` support for it) | `paymentService.reconcilePending` + `refundService.reconcileRefunds`: stale PENDING payments/refunds are resolved **against the gateway** (source of truth) — lost webhooks are recovered, unattested captures are failed + compensated. See `docs/PAYMENTS_ARCHITECTURE.md` |
 

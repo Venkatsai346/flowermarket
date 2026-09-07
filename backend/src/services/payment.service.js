@@ -5,6 +5,7 @@ import PaymentWebhookEvent, { PAYMENT_WEBHOOK_EVENT_STATUS } from '../models/pay
 import { webhookEvents } from '../observability/registry.js';
 import paymentProvider from './paymentProvider.service.js';
 import walletService from './wallet.service.js';
+import domainEventService from './domainEvent.service.js';
 import { Types } from 'mongoose';
 import { notFound, badRequest, conflict } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
@@ -17,6 +18,7 @@ import {
   PAYMENT_TRANSACTION_STATUS,
   WALLET_TXN_REASON,
   ORDER_CANCELLATION_REASON,
+  DOMAIN_EVENT_TYPE,
 } from '../constants/enums.js';
 
 /**
@@ -42,7 +44,7 @@ class PaymentService {
    * marks success/failure. Idempotent on idempotencyKey.
    * @returns {{ payment, transaction, chargeResult }}
    */
-  async charge({ tenantId, userId, orderId, amount, method = 'upi', idempotencyKey, provider = 'mock' }) {
+  async charge({ tenantId, userId, orderId, amount, method = 'upi', idempotencyKey, provider = 'mock', traceId = null }) {
     const value = roundMoney(amount);
     const isWallet = method === PAYMENT_METHOD.WALLET;
 
@@ -65,7 +67,7 @@ class PaymentService {
       payment = await Payment.create({
         tenantId, userId, orderId, amount: value, method,
         provider: isWallet ? PAYMENT_PROVIDER.WALLET : provider,
-        idempotencyKey, status: PAYMENT_STATUS.PENDING,
+        idempotencyKey, status: PAYMENT_STATUS.PENDING, traceId,
       });
     } catch (err) {
       // Unique idempotencyKey race: two identical requests arrived together.
@@ -361,6 +363,17 @@ class PaymentService {
       { paymentId: payment._id, type: PAYMENT_TRANSACTION_TYPE.CHARGE },
       { $set: { status: PAYMENT_TRANSACTION_STATUS.SUCCESS, completedAt: new Date(), rawGatewayResponse: raw || undefined } }
     );
+    // audit backbone: the payment fact (no journal of its own — the sale
+    // journal is the order's; this records the gateway's confirmation)
+    domainEventService.append({
+      tenantId: payment.tenantId, traceId: payment.traceId,
+      kind: DOMAIN_EVENT_TYPE.PAYMENT_CONFIRMED,
+      aggregateType: 'payment', aggregateId: payment._id,
+      idempotencyKey: `payment_confirmed:${payment._id}`,
+      occurredAt: payment.paidAt,
+      refType: 'order', refId: payment.orderId,
+      payload: { orderId: payment.orderId, amountPaise: Math.round(payment.amount * 100), provider: payment.provider, gatewayPaymentId: payment.gatewayPaymentId },
+    });
     return payment;
   }
 
@@ -378,6 +391,15 @@ class PaymentService {
       { paymentId: payment._id, status: PAYMENT_TRANSACTION_STATUS.PENDING },
       { $set: { status: PAYMENT_TRANSACTION_STATUS.FAILED, failureReason: reason, completedAt: new Date() } }
     );
+    domainEventService.append({
+      tenantId: payment.tenantId, traceId: payment.traceId,
+      kind: DOMAIN_EVENT_TYPE.PAYMENT_FAILED,
+      aggregateType: 'payment', aggregateId: payment._id,
+      idempotencyKey: `payment_failed:${payment._id}`,
+      occurredAt: payment.failedAt,
+      refType: 'order', refId: payment.orderId,
+      payload: { orderId: payment.orderId, reason, provider: payment.provider },
+    });
     return payment;
   }
 
@@ -472,11 +494,11 @@ class PaymentService {
       return finish(
         'mismatch',
         `gateway amount ${amountPaise}p ≠ recorded ${Math.round(payment.amount * 100)}p — payment left untouched for review`,
-        { paymentId: payment._id, orderId: payment.orderId },
+        { paymentId: payment._id, orderId: payment.orderId, traceId: payment.traceId || null },
       );
     }
     if (isCapture && currency && payment.currency && currency.toUpperCase() !== (payment.currency || 'INR').toUpperCase()) {
-      return finish('mismatch', `gateway currency ${currency} ≠ recorded ${payment.currency}`, { paymentId: payment._id, orderId: payment.orderId });
+      return finish('mismatch', `gateway currency ${currency} ≠ recorded ${payment.currency}`, { paymentId: payment._id, orderId: payment.orderId, traceId: payment.traceId || null });
     }
 
     // ---- 4. state transition (each step is itself idempotent) ----
@@ -506,10 +528,12 @@ class PaymentService {
       }).catch(() => {}); // already cancelled / not cancel-able — settled
     }
 
+    // the audit row adopts the PAYMENT's traceId, so the gateway's capture
+    // lands on the same end-to-end chain as the original checkout request
     return finish(
       'processed',
       null,
-      { paymentId: payment._id, orderId: payment.orderId, order: order || null },
+      { paymentId: payment._id, orderId: payment.orderId, order: order || null, traceId: payment.traceId || null },
     );
   }
 

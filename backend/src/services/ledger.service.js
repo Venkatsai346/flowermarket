@@ -178,7 +178,7 @@ class LedgerService {
    */
   async post({
     kind, idempotencyKey, lines = [], refType = null, refId = null,
-    tenantId = null, vendorId = null, occurredAt = null, postedBy = null, meta = null,
+    tenantId = null, vendorId = null, occurredAt = null, postedBy = null, meta = null, traceId = null,
   }) {
     if (!kind || !LEDGER_JOURNAL_KIND[String(kind).toUpperCase()]) {
       if (!Object.values(LEDGER_JOURNAL_KIND).includes(kind)) {
@@ -236,6 +236,7 @@ class LedgerService {
         const [created] = await LedgerJournal.create([{
           kind,
           idempotencyKey,
+          traceId,
           tenantId: tId,
           vendorId: vId,
           refType,
@@ -350,7 +351,7 @@ class LedgerService {
    */
   async reverseProportional({
     originalKey, amountPaise, counterAccount, kind = LEDGER_JOURNAL_KIND.REFUND_ISSUED,
-    idempotencyKey, refType = null, refId = null, occurredAt = null, memo = null, postedBy = null,
+    idempotencyKey, refType = null, refId = null, occurredAt = null, memo = null, postedBy = null, traceId = null,
   }) {
     const amount = Math.round(Number(amountPaise) || 0);
     if (amount <= 0) throw badRequest('Reversal amount must be positive', 'LEDGER_INVALID_AMOUNT');
@@ -400,6 +401,7 @@ class LedgerService {
       vendorId: original.vendorId,
       occurredAt,
       postedBy,
+      traceId: traceId || original.traceId || null,
       meta: { reversalOf: String(original._id), originalKey },
     });
 

@@ -13,6 +13,7 @@ import Counter from '../models/counter.model.js';
 import LedgerJournal from '../models/ledgerJournal.model.js';
 import taxService from './tax.service.js';
 import ledgerService, { ledgerAccounts } from './ledger.service.js';
+import domainEventService from './domainEvent.service.js';
 import payoutProvider from './payoutProvider.service.js';
 import auditService from './audit.service.js';
 import config from '../config/index.js';
@@ -23,6 +24,7 @@ import { assertTransition, PAYOUT_IN_FLIGHT } from '../utils/payoutStateMachine.
 import {
   BANK_VERIFICATION_STATUS, KYC_STATUS, PAYOUT_LINE_STATE, PAYOUT_STATE, PAYOUT_HOLD_REASON,
   STATUTORY_RATE_KIND, LEDGER_JOURNAL_KIND, ORDER_STATUS, AUDIT_ACTION, AUDIT_ACTOR_TYPE,
+  DOMAIN_EVENT_TYPE,
 } from '../constants/enums.js';
 
 /**
@@ -490,6 +492,7 @@ class PayoutService {
       batchNumber: await this.nextBatchNumber(),
       vendorId: toId(vendorId),
       tenantId: lines[0]?.tenantId || null,
+      traceId: req?.traceId || null,
       cycle: { from: cycleFrom, to: cycleTo, label: `${cycleFrom.toISOString().slice(0, 10)}→${cycleTo.toISOString().slice(0, 10)}` },
       lineItemCount: lines.length,
       ...totals,
@@ -745,6 +748,7 @@ class PayoutService {
       refId: batch._id,
       tenantId: batch.tenantId,
       vendorId: batch.vendorId,
+      traceId: batch.traceId || null,
       meta: { batchNumber: batch.batchNumber },
     });
   }
@@ -783,6 +787,18 @@ class PayoutService {
     await this.transition(batch, PAYOUT_STATE.PROCESSING, { actorId, note: 'submitting to provider' });
     batch.submittedAt = new Date();
     await batch.save();
+
+    // Phase 10: record the payout FACT in the audit backbone first (a crash
+    // between this and the journal post is visible + replayable)
+    domainEventService.append({
+      tenantId: batch.tenantId, traceId: batch.traceId,
+      kind: DOMAIN_EVENT_TYPE.PAYOUT_INITIATED,
+      aggregateType: 'payout_batch', aggregateId: batch._id,
+      idempotencyKey: `${LEDGER_JOURNAL_KIND.PAYOUT_INITIATED}:payout_batch:${batch._id}`,
+      occurredAt: batch.submittedAt,
+      refType: 'payout_batch', refId: batch._id,
+      payload: { batchNumber: batch.batchNumber, vendorId: batch.vendorId, netPaise: batch.netPaise },
+    });
 
     // discharge the liability at submission time
     const journal = await this.postPayoutJournal(batch);
@@ -936,6 +952,17 @@ class PayoutService {
       memo,
     }));
 
+    // Phase 10: record the reversal FACT first (visible + replayable)
+    domainEventService.append({
+      tenantId: batch.tenantId, traceId: batch.traceId,
+      kind: DOMAIN_EVENT_TYPE.PAYOUT_REVERSED,
+      aggregateType: 'payout_batch', aggregateId: batch._id,
+      idempotencyKey: `${LEDGER_JOURNAL_KIND.PAYOUT_REVERSED}:payout_batch:${batch._id}`,
+      occurredAt: new Date(),
+      refType: 'payout_batch', refId: batch._id,
+      payload: { batchNumber: batch.batchNumber, vendorId: batch.vendorId, amountPaise: original.totalPaise, memo },
+    });
+
     const result = await ledgerService.post({
       kind: LEDGER_JOURNAL_KIND.PAYOUT_REVERSED,
       idempotencyKey: `${LEDGER_JOURNAL_KIND.PAYOUT_REVERSED}:payout_batch:${batch._id}`,
@@ -944,6 +971,7 @@ class PayoutService {
       refId: batch._id,
       tenantId: batch.tenantId,
       vendorId: batch.vendorId,
+      traceId: batch.traceId || null,
       meta: { batchNumber: batch.batchNumber, reversalOf: String(original._id), memo },
     });
     if (result.created) {

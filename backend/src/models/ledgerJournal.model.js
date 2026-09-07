@@ -44,6 +44,8 @@ const LedgerJournalSchema = new Schema(
   {
     kind: { type: String, enum: Object.values(LEDGER_JOURNAL_KIND), required: true, index: true },
     idempotencyKey: { type: String, required: true, unique: true },
+    // end-to-end correlation id (Phase 10) — the request/saga that caused it
+    traceId: { type: String, default: null, index: true },
 
     // scope — nullable for platform-level journals
     tenantId: { type: Types.ObjectId, ref: 'Tenant', default: null, index: true },

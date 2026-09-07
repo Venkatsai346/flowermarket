@@ -32,6 +32,9 @@ const PaymentWebhookEventSchema = new Schema(
     provider: { type: String, required: true, maxlength: 40 },
     eventId: { type: String, required: true, maxlength: 120 },
     eventType: { type: String, required: true, maxlength: 80 }, // e.g. payment.captured
+    // end-to-end correlation id (Phase 10) — adopts the payment's traceId so
+    // the gateway's capture lands on the same chain as the original request
+    traceId: { type: String, default: null, index: true },
     tenantId: { type: Types.ObjectId, ref: 'Tenant', default: null, index: true },
     paymentId: { type: Types.ObjectId, ref: 'Payment', default: null },
     orderId: { type: Types.ObjectId, ref: 'Order', default: null },

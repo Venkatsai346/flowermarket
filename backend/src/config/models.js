@@ -26,8 +26,16 @@ const MODEL_FILES = [
   'scheduledJob.model.js',
   // ---- payments ----
   'paymentWebhookEvent.model.js',
+  // ---- Phase 6.1/6.3: ledger + payouts (their unique idempotencyKey indexes
+  //      are the exactly-once backbone — they must be materialised in the
+  //      worker/nightly context, not only the API) ----
+  'ledgerAccount.model.js', 'ledgerJournal.model.js', 'ledgerEntry.model.js', 'accountBalance.model.js',
+  'payoutPolicy.model.js', 'vendorPayoutAccount.model.js', 'payoutLineItem.model.js',
+  'payoutBatch.model.js', 'payoutStatusHistory.model.js', 'payoutAdjustment.model.js',
   // ---- observability ----
   'systemHeartbeat.model.js',
+  // ---- Phase 10: money audit backbone ----
+  'domainEvent.model.js',
 ];
 
 export default MODEL_FILES;

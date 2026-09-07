@@ -533,6 +533,7 @@ for (const [id, path, desc, rx] of platformPages) {
 await shot(page, 'a33-platform');
 
 // ---------------------------------------------------------------- payments ops
+let seedOrder = null; // hoisted: A39 (trace timeline) reuses the seeded order
 await R.check('A37', 'Payments ops: live async payment → webhook audit → drawer → reconcile', async () => {
   // 1) seed a REAL async payment through the live API: pending charge,
   //    then a signed gateway webhook that captures it.
@@ -552,7 +553,7 @@ await R.check('A37', 'Payments ops: live async payment → webhook audit → dra
       slotReservationId: r2.id || r2._id, addressId, paymentMethod: 'upi', confirmPriceChanges: true,
     }, { token: custTok });
     if (co2.paymentPending !== true) throw new Error('seed: expected paymentPending, got ' + JSON.stringify(co2).slice(0, 160));
-    const seedOrder = co2.order || co2;
+    seedOrder = co2.order || co2;
     const seedOrderId = seedOrder.id || seedOrder._id;
     // signed gateway webhook (same HMAC contract as Razorpay)
     const body = JSON.stringify({
@@ -605,6 +606,39 @@ await R.check('A37', 'Payments ops: live async payment → webhook audit → dra
   }
 });
 await shot(page, 'a37-payments');
+
+// ---------------------------------------------------------------- Phase 10: money audit backbone
+await R.check('A38', 'System integrity: ledger page reports all subsystems + replay action', async () => {
+  await page.goto(BASE + '/platform/ledger', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /System integrity/i, 15000);
+  await waitText(page, /All subsystems consistent|DRIFT DETECTED/i, 20000);
+  const t = await bodyText(page);
+  if (!/All subsystems consistent/i.test(t)) throw new Error('integrity not green on live stack');
+  if (!/Replay/i.test(t)) throw new Error('replay action missing');
+  for (const sub of ['Ledger', 'Search index', 'Delivery slots', 'Payouts', 'Audit event store']) {
+    if (!new RegExp(sub, 'i').test(t)) throw new Error(`missing subsystem row: ${sub}`);
+  }
+  return 'all 7 subsystems reported, stack green';
+});
+await shot(page, 'a38-integrity');
+
+await R.check('A39', 'Follow the money: order drawer assembles the trace timeline', async () => {
+  if (!seedOrder?.orderNumber) throw new Error('A37 did not produce a seed order');
+  const no = seedOrder.orderNumber;
+  await page.goto(BASE + '/orders', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, new RegExp(no), 15000);
+  await page.evaluate((n) => {
+    const el = Array.from(document.querySelectorAll('tbody tr, a, button')).find((e) => (e.innerText || '').includes(n));
+    if (el) el.click();
+  }, no);
+  await waitText(page, /Follow the money/i, 15000);
+  await waitText(page, /Order placed/i, 10000);
+  await waitText(page, /Audit event · sale_captured/i, 20000);
+  await waitText(page, /Journal · sale_captured/i, 10000);
+  await page.keyboard.press('Escape');
+  return `${no}: order→payment→journal→audit events on one trace`;
+});
+await shot(page, 'a39-trace');
 
 // ---------------------------------------------------------------- RBAC + rider
 await R.check('A34', 'RBAC: store admin blocked from vendor console', async () => {

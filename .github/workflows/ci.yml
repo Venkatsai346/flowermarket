@@ -27,7 +27,7 @@ env:
 
 jobs:
   backend:
-    name: Backend — pure + 16 hermetic suites
+    name: Backend — pure + 17 hermetic suites
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -75,7 +75,7 @@ jobs:
         run: npm run build
 
   live-e2e:
-    name: Live E2E — full stack (67 checks)
+    name: Live E2E — full stack (73 checks)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -105,7 +105,7 @@ jobs:
         run: npm ci
       - name: Boot live stack (rs0 → seed → API :4000 → worker → Vite :5173/:5174)
         run: bash scripts/ci/boot-live-stack.sh
-      - name: Live E2E — 67 checks
+      - name: Live E2E — 73 checks
         working-directory: backend
         run: |
           . /tmp/fm-ci/env.sh
@@ -117,7 +117,7 @@ jobs:
           node scripts/async-payment-live.test.mjs
 
   browser-ui:
-    name: Browser UI — real Chromium (storefront 29 + admin 37 + async-pay 7)
+    name: Browser UI — real Chromium (storefront 29 + admin 39 + async-pay 7)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -170,7 +170,7 @@ jobs:
         run: |
           . /tmp/fm-ci/env.sh
           BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-async-payment.e2e.mjs
-      - name: Admin browser suite (37 checks)
+      - name: Admin browser suite (39 checks)
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh

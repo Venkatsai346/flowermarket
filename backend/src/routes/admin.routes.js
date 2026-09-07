@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import AdminController from '../controllers/admin.controller.js';
+import TraceController from '../controllers/trace.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
@@ -108,5 +109,11 @@ router.post('/exports/run', validate(runDueExportsSchema), AdminController.runDu
 
 // ---- Phase 4b: nightly maintenance pipeline ----
 router.post('/maintenance/nightly', validate(nightlySchema), AdminController.nightly);
+
+// ---- Phase 10: money audit backbone (tenant-scoped) ----
+//   GET /admin/integrity            "is MY store consistent?" (ledger + index + slots + ...)
+//   GET /admin/traces/:traceId      follow one transaction end to end
+router.get('/integrity', AdminController.integrity);
+router.get('/traces/:traceId', TraceController.getTrace);
 
 export default router;

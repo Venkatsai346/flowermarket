@@ -325,6 +325,19 @@ class AdminController {
     });
     res.status(200).json(success(result, { message: 'Nightly pipeline complete (idempotent steps)' }));
   });
+
+  /**
+   * Tenant-scoped integrity report (Phase 10) — the store admin's "is my
+   * store's money + data consistent?" answer. Platform-wide view lives at
+   * GET /ledger/integrity (super_admin).
+   */
+  integrity = asyncHandler(async (req, res) => {
+    const { default: integrityService } = await import('../services/integrity.service.js');
+    const report = await integrityService.report({ tenantId: req.tenantId });
+    res.status(200).json(success(report, {
+      message: report.overall === 'ok' ? 'Store consistent' : 'Drift detected — see checks',
+    }));
+  });
 }
 
 export default new AdminController();

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, RefreshCw, Search, SearchX, ShoppingCart } from 'lucide-react';
+import { Banknote, Boxes, Eye, FileText, RefreshCw, Route, Search, SearchX, ShoppingCart } from 'lucide-react';
 import { fmtDateTime, inr, num, pickMeta, ORDER_STATUS_META } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
@@ -23,6 +23,61 @@ const STATUS_OPTIONS = [
   ['cancelled', 'Cancelled'],
   ['return_requested', 'Return requested'],
 ];
+
+/** Phase 10 — "follow the money": every fact about this order's trace,
+ *  in time order, from the audit backbone. */
+function TraceTimeline({ traceId }) {
+  const { data, loading } = useApi(() => api.admin.trace(traceId), [traceId]);
+  if (loading && !data) return <p className="text-xs text-slate-400">Assembling the money trail…</p>;
+  if (!data) return null;
+  const chain = data.chain || [];
+  if (chain.length === 0) return <p className="text-xs text-slate-400">No steps recorded on this trace.</p>;
+  const iconFor = (kind) => {
+    if (kind.startsWith('journal.')) return Banknote;
+    if (kind.startsWith('event.')) return FileText;
+    if (kind === 'order.created') return ShoppingCart;
+    return Boxes;
+  };
+  const labelFor = (s) => {
+    const kind = s.kind;
+    if (kind === 'order.created') return 'Order placed';
+    if (kind.startsWith('order.status.')) return `Status → ${kind.slice('order.status.'.length)}`;
+    if (kind === 'order.paid') return 'Payment confirmed';
+    if (kind === 'payment.created') return `Payment · ${s.detail || ''}`;
+    if (kind.startsWith('journal.')) return `Journal · ${kind.slice('journal.'.length)}`;
+    if (kind.startsWith('event.')) return `Audit event · ${kind.slice('event.'.length)}`;
+    if (kind.startsWith('payout.')) return `Payout · ${s.detail || ''}`;
+    return kind;
+  };
+  return (
+    <div>
+      <p className="label flex items-center gap-1.5">
+        <Route className="h-3.5 w-3.5" /> Follow the money
+        <span className="ml-1 font-mono text-[10px] text-slate-400">{traceId}</span>
+      </p>
+      <ol className="mt-2 space-y-0">
+        {chain.map((s, i) => {
+          const Icon = iconFor(s.kind);
+          return (
+            <li key={i} className="relative flex gap-3 pb-3 last:pb-0">
+              {i < chain.length - 1 && <span className="absolute left-[11px] top-6 h-full w-px bg-slate-200" />}
+              <span className="relative z-10 mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-white">
+                <Icon className="h-3 w-3 text-slate-500" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-slate-800">{labelFor(s)}</p>
+                <p className="text-[11px] text-slate-400">
+                  {fmtDateTime(s.at)}
+                  {s.paise ? ` · ${inr(s.paise)}` : ''}
+                </p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
 
 function OrderDetail({ orderId, onClose }) {
   const { data, loading, error } = useApi(() => api.admin.order(orderId), [orderId]);
@@ -99,6 +154,8 @@ function OrderDetail({ orderId, onClose }) {
               {order.slotSnapshot.hubId ? ` · hub ${order.slotSnapshot.hubId}` : ''}
             </p>
           )}
+
+          {order.traceId && <TraceTimeline traceId={order.traceId} />}
         </div>
       )}
     </Modal>

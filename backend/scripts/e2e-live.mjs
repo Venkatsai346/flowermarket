@@ -285,6 +285,33 @@ for (const [label, url] of [['admin web :5173', 'http://127.0.0.1:5173/'], ['sto
 }
 
 // ===========================================================================
+section('11. money audit backbone (Phase 10)');
+{
+  // 11.1 — trace middleware: an inbound x-trace-id is echoed on the response
+  const res11 = await fetch(BASE + '/catalog', {
+    headers: { 'content-type': 'application/json', 'x-tenant-id': TENANT, 'x-trace-id': 'tr_e2e_live_1111' },
+  });
+  check('11.1', 'x-trace-id echoed in response header', res11.status === 200 && res11.headers.get('x-trace-id') === 'tr_e2e_live_1111', `status=${res11.status} header=${res11.headers.get('x-trace-id')}`);
+}
+r = await api(`/orders/${order2}`, { token: custTok });
+const o2doc = r.data?.data?.order || r.data?.data;
+const traceId2 = o2doc?.traceId;
+check('11.2', 'order carries its traceId', r.status === 200 && typeof traceId2 === 'string' && traceId2.startsWith('tr_'), `traceId=${traceId2}`);
+r = await api(`/admin/traces/${traceId2}`, { token: adminTok });
+const chain = r.data?.data?.chain || [];
+const kinds = chain.map((c) => c.kind);
+const timeOrdered = chain.every((c, i) => i === 0 || new Date(chain[i - 1].at) <= new Date(c.at));
+check('11.3', 'trace chain: sale + refund + cancel on one trace', r.status === 200 && kinds.includes('order.created') && kinds.includes('event.sale_captured') && kinds.includes('event.refund_issued') && kinds.includes('event.order_cancelled') && kinds.includes('journal.sale_captured') && timeOrdered, `steps=${chain.length} kinds=${kinds.join(',')}`);
+r = await api('/ledger/integrity', { token: adminTok });
+const cov = r.data?.data?.checks?.ledger?.eventJournalCoverage;
+check('11.4', 'integrity report: overall ok + full event↔journal coverage', r.status === 200 && r.data?.data?.overall === 'ok' && r.data?.data?.checks?.ledger?.ok === true && cov?.missingJournals === 0 && cov?.missingEvents === 0, `overall=${r.data?.data?.overall} cov=${j(cov)}`);
+r = await api('/admin/integrity', { token: adminTok });
+check('11.5', 'tenant-scoped integrity (admin)', r.status === 200 && (r.data?.data?.overall === 'ok' || r.data?.data?.overall === 'drift'), `overall=${r.data?.data?.overall}`);
+r = await api('/ledger/integrity', { token: custTok });
+const replayDenied = await api('/ledger/integrity/replay', { method: 'POST', token: custTok, body: {} });
+check('11.6', 'RBAC: replay/report SUPER_ADMIN-only', r.status === 403 && replayDenied.status === 403, `report=${r.status} replay=${replayDenied.status}`);
+
+// ===========================================================================
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);
 console.log(`E2E-LIVE: ${passed}/${results.length} cases passed`);

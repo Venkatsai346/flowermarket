@@ -36,4 +36,11 @@ router.get('/trial-balance', LedgerController.trialBalance);
 router.get('/journals', validate(journalsQuery, 'query'), LedgerController.journals);
 router.post('/verify', LedgerController.verify);
 
+// Phase 10 — the money audit backbone (super_admin, platform-wide):
+//   GET  /ledger/integrity          read-only "is the system consistent?" report
+//   POST /ledger/integrity/replay   rebuild missing journals/events from the
+//                                   domain event store (idempotent, additive)
+router.get('/integrity', LedgerController.integrity);
+router.post('/integrity/replay', LedgerController.replay);
+
 export default router;

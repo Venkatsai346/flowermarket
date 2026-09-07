@@ -683,6 +683,27 @@ export const OUTBOX_STATUS = Object.freeze({
   FAILED: 'failed',
 });
 
+// ---- Domain event store (Phase 10 — the money audit backbone) ----
+// Kinds that MOVE money and therefore must be backed by a ledger journal
+// (the idempotencyKey of the event IS the journal's idempotencyKey, so
+// event→journal coverage is an exact join). Kinds without a journal are
+// pure audit (payment outcomes, cancellations).
+export const DOMAIN_EVENT_TYPE = Object.freeze({
+  SALE_CAPTURED: 'sale_captured',
+  REFUND_ISSUED: 'refund_issued',
+  PAYOUT_INITIATED: 'payout_initiated',
+  PAYOUT_REVERSED: 'payout_reversed',
+  PAYMENT_CONFIRMED: 'payment_confirmed',
+  PAYMENT_FAILED: 'payment_failed',
+  ORDER_CANCELLED: 'order_cancelled',
+});
+export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
+  DOMAIN_EVENT_TYPE.SALE_CAPTURED,
+  DOMAIN_EVENT_TYPE.REFUND_ISSUED,
+  DOMAIN_EVENT_TYPE.PAYOUT_INITIATED,
+  DOMAIN_EVENT_TYPE.PAYOUT_REVERSED,
+]);
+
 // ---- Price history ----
 export const PRICE_CHANGE_REASON = Object.freeze({
   MANUAL: 'manual',

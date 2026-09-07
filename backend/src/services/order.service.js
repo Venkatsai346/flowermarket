@@ -15,11 +15,12 @@ import pricingPolicyService from './pricingPolicy.service.js';
 import slotForecastingService from './slotForecasting.service.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
+import domainEventService from './domainEvent.service.js';
 import ledgerPostingService from './ledgerPosting.service.js';
 import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
-import { roundMoney, moneySum } from '../utils/money.js';
+import { roundMoney, moneySum, toPaise } from '../utils/money.js';
 import { notFound, badRequest, conflict, unauthorized } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import {
@@ -29,6 +30,7 @@ import {
   REFUND_REASON,
   AUDIT_ACTOR_TYPE,
   DELIVERY_ASSIGNMENT_STATUS,
+  DOMAIN_EVENT_TYPE,
 } from '../constants/enums.js';
 
 const MAX_DELIVERY_RETRIES = 2;
@@ -74,7 +76,7 @@ class OrderService {
     // ---- 4. create order + items ----
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     const order = await this.createOrderDoc({
-      tenantId, userId, cart, items, hold, address, paymentMethod, source,
+      tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
     });
 
     // ---- 5. charge (idempotent) ----
@@ -83,7 +85,7 @@ class OrderService {
 
     const { payment, chargeResult } = await paymentService.charge({
       tenantId, userId, orderId: order._id, amount: order.totalAmount,
-      method: paymentMethod, idempotencyKey: key,
+      method: paymentMethod, idempotencyKey: key, traceId: order.traceId,
     });
     order.paymentSummary.paymentId = payment._id;
     order.paymentSummary.status = payment.status;
@@ -166,6 +168,25 @@ class OrderService {
     if (order.cartId) {
       await cartService.markCheckedOut({ cartId: order.cartId, orderId: order._id });
     }
+
+    // ---- Phase 10: record the money FACT in the audit backbone FIRST ----
+    //      The event is appended before the journal post, so a crash between
+    //      the two is VISIBLE (event present, journal missing) and the
+    //      integrity replay re-posts the journal exactly. Never blocks the
+    //      confirmation itself (the audit store aids, it does not gate).
+    domainEventService.append({
+      tenantId, traceId: order.traceId, kind: DOMAIN_EVENT_TYPE.SALE_CAPTURED,
+      aggregateType: 'order', aggregateId: order._id,
+      idempotencyKey: ledgerPostingService.saleKey(order._id),
+      occurredAt: order.paymentSummary?.paidAt || new Date(),
+      refType: 'order', refId: order._id,
+      payload: {
+        orderNumber: order.orderNumber,
+        totalPaise: toPaise(order.totalAmount),
+        paymentMethod: order.paymentMethod,
+        paymentId: order.paymentSummary?.paymentId || null,
+      },
+    });
 
     // ---- Phase 6.1: recognise the money in the double-entry ledger ----
     //      DR gateway_clearing / CR vendor+store payable, commission, GST.
@@ -675,7 +696,7 @@ class OrderService {
     };
   }
 
-  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source }) {
+  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null }) {
     const { charges, slotDoc, categoryByMaster, vendorByMaster } = await this.computeOrderChargesForCart({
       tenantId, userId, cart, items, hold,
     });
@@ -689,6 +710,9 @@ class OrderService {
       tenantId, userId,
       orderNumber: await nextOrderNumber({ tenantId }),
       status: ORDER_STATUS.CREATED,
+      // end-to-end correlation: this order's payment, journals, domain
+      // events and any gateway webhook all share this trace (Phase 10)
+      traceId: req?.traceId || null,
       source,
       itemsCount: items.reduce((a, i) => a + i.qty, 0),
       itemsSubtotal: charges.itemSubtotal,
@@ -793,6 +817,21 @@ class OrderService {
       orderId: order._id, tenantId: order.tenantId,
       fromStatus, toStatus: ORDER_STATUS.CANCELLED,
       actorType, actorId: cancelledBy, note: reason || null,
+    });
+    // audit backbone: cancellation is a money-relevant fact (it can reverse a
+    // sale journal) — record it on the order's trace
+    domainEventService.append({
+      tenantId: order.tenantId, traceId: order.traceId,
+      kind: DOMAIN_EVENT_TYPE.ORDER_CANCELLED,
+      aggregateType: 'order', aggregateId: order._id,
+      idempotencyKey: `order_cancelled:${order._id}`,
+      occurredAt: order.cancellation?.cancelledAt,
+      refType: 'order', refId: order._id,
+      payload: {
+        orderNumber: order.orderNumber, reason,
+        refundTransactionId: order.cancellation?.refundTransactionId || null,
+        fromStatus,
+      },
     });
   }
 

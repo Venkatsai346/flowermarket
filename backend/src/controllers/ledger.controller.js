@@ -64,6 +64,32 @@ class LedgerController {
     const rows = await ledgerService.journalsFor({ refType: req.query.refType, refId: req.query.refId });
     res.status(200).json(success(serializeList(rows).map((j) => ({ ...j, total: fromPaise(j.totalPaise) })), { message: 'Journals fetched' }));
   });
+
+  /**
+   * Platform-wide integrity report (Phase 10) — one structured answer for
+   * "is the system consistent?": ledger (trial + balances + event↔journal
+   * coverage), search index, slots, webhook audit, payouts, notification lag.
+   */
+  integrity = asyncHandler(async (req, res) => {
+    const { default: integrityService } = await import('../services/integrity.service.js');
+    const report = await integrityService.report({});
+    res.status(200).json(success(report, {
+      message: report.overall === 'ok' ? 'System consistent' : 'Drift detected — see checks',
+    }));
+  });
+
+  /**
+   * Rebuild the ledger/audit from the domain event store (Phase 10). The ONLY
+   * write path in this controller — and only ever re-posts idempotently what
+   * the event store already promises, so it can never invent money.
+   */
+  replay = asyncHandler(async (req, res) => {
+    const { default: integrityService } = await import('../services/integrity.service.js');
+    const out = await integrityService.replay({ limit: Number(req.body?.limit) || 200 });
+    res.status(200).json(success(out, {
+      message: `Replayed: ${out.journalsReposted} journal(s) re-posted, ${out.eventsRestored} event(s) restored`,
+    }));
+  });
 }
 
 export default new LedgerController();

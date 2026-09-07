@@ -110,6 +110,9 @@ const OrderSchema = new Schema(
       enum: Object.values(PAYMENT_METHOD),
       default: PAYMENT_METHOD.UPI,
     },
+    // end-to-end correlation id (Phase 10) — links this order to its
+    // payment, ledger journal, domain events and any gateway webhook
+    traceId: { type: String, default: null, index: true },
     paymentSummary: {
       paymentId: { type: Types.ObjectId, ref: 'Payment', default: null },
       status: { type: String, enum: ['pending', 'success', 'failed', 'refunded', 'partially_refunded'], default: 'pending' },

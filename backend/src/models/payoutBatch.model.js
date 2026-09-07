@@ -62,6 +62,8 @@ const PayoutBatchSchema = new Schema(
       index: true,
     },
     idempotencyKey: { type: String, required: true, unique: true },
+    // end-to-end correlation id (Phase 10) — the admin request that created it
+    traceId: { type: String, default: null, index: true },
     approvals: [{
       userId: { type: Types.ObjectId, ref: 'User' },
       at: { type: Date, default: Date.now },

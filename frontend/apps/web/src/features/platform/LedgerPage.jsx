@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  BookOpenCheck, CheckCircle2, Landmark, RefreshCw, Scale, ShieldAlert, Wrench,
+  AlertTriangle, BookOpenCheck, CheckCircle2, Landmark, RefreshCw, Scale, ShieldAlert, Wrench,
 } from 'lucide-react';
 import { inr, fmtDateTime } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -73,6 +73,121 @@ function StatementModal({ accountCode, onClose }) {
         />
       </div>
     </Modal>
+  );
+}
+
+/** One subsystem row of the integrity report. */
+function CheckRow({ name, check, detail }) {
+  const okState = check?.ok === undefined ? null : !!check.ok;
+  return (
+    <div className={cn(
+      'flex items-start gap-3 rounded-lg border px-3 py-2.5',
+      okState === null ? 'border-slate-200 bg-white'
+        : okState ? 'border-emerald-100 bg-emerald-50/40' : 'border-rose-200 bg-rose-50',
+    )}>
+      {okState === null
+        ? <span className="mt-0.5 h-4 w-4 rounded-full border-2 border-slate-300" />
+        : okState
+          ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />}
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-slate-800">{name}</p>
+        {detail && <p className="mt-0.5 break-words text-xs text-slate-500">{detail}</p>}
+      </div>
+    </div>
+  );
+}
+
+function IntegrityCard() {
+  const { data, loading, refetch } = useApi(() => api.ledger.integrity(), []);
+  const { busy, run } = useAction();
+  const report = data;
+  const c = report?.checks || {};
+
+  const replay = async () => {
+    try {
+      const r = await run(() => api.ledger.replay());
+      if (r.data) {
+        toast.success(`Replay: ${r.data.journalsReposted} journal(s) re-posted, ${r.data.eventsRestored} audit row(s) restored`);
+        refetch();
+      }
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const coverage = c.ledger?.eventJournalCoverage;
+  const driftCount =
+    (coverage?.missingJournals || 0) + (coverage?.missingEvents || 0) + (c.payouts?.missingJournals || 0);
+
+  return (
+    <Card
+      className="mb-5"
+      title="System integrity"
+      subtitle="Cross-subsystem consistency: the journal, the audit store, the indexes, slots, payouts and webhooks — one report."
+      actions={
+        <>
+          <Button variant="secondary" icon={RefreshCw} onClick={refetch}>Re-check</Button>
+          <Button
+            variant={driftCount > 0 ? 'danger' : 'secondary'}
+            icon={Wrench}
+            loading={busy}
+            disabled={!driftCount}
+            onClick={replay}
+          >
+            Replay{driftCount > 0 ? ` (${driftCount})` : ''}
+          </Button>
+        </>
+      }
+    >
+      {loading && !report ? (
+        <p className="text-sm text-slate-400">Running the checks…</p>
+      ) : !report ? (
+        <p className="text-sm text-slate-400">No report yet.</p>
+      ) : (
+        <div className="space-y-3">
+          <div className={cn(
+            'flex items-center gap-3 rounded-xl border px-4 py-3',
+            report.overall === 'ok' ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50',
+          )}>
+            {report.overall === 'ok'
+              ? <Scale className="h-5 w-5 text-emerald-600" />
+              : <ShieldAlert className="h-5 w-5 text-rose-600" />}
+            <div>
+              <p className={cn('text-sm font-semibold', report.overall === 'ok' ? 'text-emerald-900' : 'text-rose-900')}>
+                {report.overall === 'ok' ? 'All subsystems consistent' : 'DRIFT DETECTED'}
+              </p>
+              <p className={cn('text-xs', report.overall === 'ok' ? 'text-emerald-700' : 'text-rose-700')}>
+                {c.ledger?.ok
+                  ? `${coverage?.eventsScanned ?? 0} audit events ↔ journals matched · trial ${c.ledger?.trial?.balanced ? 'balanced' : 'UNBALANCED'}`
+                  : `${driftCount} posting(s) need replay`}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <CheckRow name="Ledger" check={c.ledger} detail={c.ledger ? `${c.ledger.trial?.entries ?? 0} entries · trial ${c.ledger.trial?.balanced ? 'balanced' : 'unbalanced'} · ${c.ledger.balances?.ok ? 'balances match' : 'balances drifted'} · ${coverage?.missingJournals || 0} missing journals / ${coverage?.missingEvents || 0} missing audit rows` : ''} />
+            <CheckRow name="Search index" check={c.searchIndex} detail={c.searchIndex ? `${c.searchIndex.indexedDocuments} indexed · ${c.searchIndex.missing} listing(s) not in index · ${c.searchIndex.orphanDocuments} orphan doc(s)` : ''} />
+            <CheckRow name="Delivery slots" check={c.slots} detail={c.slots ? `${c.slots.checked} slot(s) checked · ${c.slots.overReserved} over-reservation(s)` : ''} />
+            <CheckRow name="Payments & webhooks" check={c.payments} detail={c.payments ? `${c.payments.total} webhook event(s) · ${c.payments.processed} processed · ${c.payments.duplicate} duplicate · ${c.payments.mismatches} mismatch(es)` : ''} />
+            <CheckRow name="Payouts" check={c.payouts} detail={c.payouts ? `${c.payouts.batchesChecked} batch(es) · ${c.payouts.missingJournals} missing payout journal(s)` : ''} />
+            <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
+            <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
+          </div>
+          {coverage?.samples?.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-semibold text-amber-900">Drift samples</p>
+              <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                {coverage.samples.slice(0, 8).map((s, i) => (
+                  <li key={i} className="truncate">
+                    {s.type === 'journal_missing' ? 'journal' : 'event'} {s.kind}: <span className="text-amber-600">{s.idempotencyKey}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -150,6 +265,8 @@ export default function LedgerPage() {
           </div>
         </div>
       </div>
+
+      <IntegrityCard />
 
       {drift && !drift.ok && (
         <Card className="mb-5 ring-1 ring-amber-200" title="Drifted accounts" subtitle="The journal is the truth — repair rewrites the view from it.">

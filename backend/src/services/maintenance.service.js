@@ -127,6 +127,32 @@ class MaintenanceService {
       out.searchIndex = { error: err?.message || String(err) };
     }
 
+    // 10. Phase 10 — money audit backbone self-heal. Verify that every money
+    //     fact in the domain event store has its ledger journal (and vice
+    //     versa) and that the materialized balances match the entries. Any
+    //     crash window (fact recorded, journal not yet posted) is repaired
+    //     idempotently here rather than discovered by an auditor.
+    try {
+      const { default: integrityService } = await import('./integrity.service.js');
+      const report = await integrityService.report({ tenantId });
+      const ledgerDrift = !report.checks.ledger.ok;
+      if (ledgerDrift) {
+        out.integrityReplay = await integrityService.replay({ limit: 200 });
+        // balances may have drifted while the journal was missing; re-verify
+        out.balanceRepair = await ledgerService.verifyBalances({ repair: true });
+      }
+      out.integrity = {
+        overall: report.overall,
+        ledgerOk: report.checks.ledger.ok,
+        missingJournals: report.checks.ledger.eventJournalCoverage.missingJournals,
+        missingEvents: report.checks.ledger.eventJournalCoverage.missingEvents,
+        balanceDrift: report.checks.ledger.balances.drifted,
+        searchIndexMissing: report.checks.searchIndex.missing,
+      };
+    } catch (err) {
+      out.integrity = { error: err?.message || String(err) };
+    }
+
     await auditService.record({
       action: 'nightly', entityType: 'maintenance', entityId: tenantId || 'platform',
       tenantId, actorId: actorId || null, actorType,

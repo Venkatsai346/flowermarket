@@ -590,3 +590,24 @@ Media asset: `{id, tenantId, uploadedBy, purpose, type, mimeType, ext, sizeBytes
 **Purpose → type map:** `product_image|category_image|brand_logo|store_logo|store_banner → image`; `product_video → video`. **Limits:** images ≤ 10 MB, videos ≤ 250 MB; ext allowlists enforced at sign time, magic bytes (jpeg/png/gif/webp/avif/mp4/mov) sniffed at confirm time. **Errors:** `MEDIA_TYPE_NOT_ALLOWED`, `MEDIA_TOO_LARGE`, `BAD_MEDIA_PURPOSE`, `MEDIA_VERIFY_FAILED`, `MEDIA_NOT_FOUND`, `KEY_TENANT_MISMATCH`, `LOCAL_UPLOAD_DISABLED`.
 
 **Config:** `STORAGE_PROVIDER`, `LOCAL_STORAGE_DIR` (default `backend/storage/local`), `MEDIA_PRESIGN_EXPIRY_SECONDS` (900), `S3_BUCKET/S3_REGION/S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY/S3_PUBLIC_BASE_URL`, `MEDIA_MAX_IMAGE_BYTES` (10485760), `MEDIA_MAX_VIDEO_BYTES` (262144000). Image/logo/banner fields across catalog + storefront accept relative URIs (`allowRelative`) so local-provider URLs (`/media/local/…`) persist; S3 returns absolute URLs.
+
+## Phase 10 — money audit backbone (blueprint: "Follow the Money")
+
+Trace + audit + integrity. Every money object (order, payment, journal, refund,
+payout batch, webhook audit row) carries the request's `traceId`; a
+request's inbound `x-trace-id` is adopted (regex-validated) or a new one is
+minted and echoed in the `x-trace-id` response header. Full design:
+`docs/AUDIT_ARCHITECTURE.md`.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/ledger/integrity` | SUPER_ADMIN | read-only system integrity report; optional `?tenantId=` scopes the per-tenant checks |
+| `POST` | `/ledger/integrity/replay` | SUPER_ADMIN | re-derive missing journals from the event store + restore missing audit rows; idempotent; body `{limit?}` (default 200) |
+| `GET` | `/admin/integrity` | ADMIN | same report, always tenant-scoped to the caller's tenant |
+| `GET` | `/admin/traces/:traceId` | ADMIN | the full money chain for one trace, time-ordered (order facts, status history, payments, webhook audit rows, journals, payout transitions, domain events); 404 `TRACE_NOT_FOUND` when the id resolves to nothing |
+
+**Integrity report shape:** `{ generatedAt, scope: 'platform'|tenantId, overall: 'ok'|'drift', checks: { ledger: { trial{balanced,differencePaise,entries}, balances{checked,drifted,ok}, eventJournalCoverage{eventsScanned,missingJournals,missingEvents,samples,ok}, ok }, searchIndex{indexedDocuments,listings,missing,error,ok}, slots{checked,overReserved,samples,ok}, payments{total,processed,duplicate,mismatch,ignored,mismatches,ok}, payouts{batchesChecked,missingJournals,ok}, events{total,byKind,newestOccurredAt,ok}, notifications{pending,oldestPendingAgeMs,deadLetters,ok} } }`.
+
+**Replay response:** `{ scope, journalsReposted, eventsRestored, failed, errors[] }`.
+
+**Trace chain row:** `{ kind: 'order.created'|'order.status.*'|'order.paid'|'payment.created'|'journal.*'|'event.*'|'payout.*', at, detail?, paise? }` plus `{ traceId, orderCount, events }`.

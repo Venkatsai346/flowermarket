@@ -222,6 +222,7 @@ class LedgerPostingService {
       tenantId: order.tenantId,
       occurredAt: order.paymentSummary?.paidAt || new Date(),
       postedBy,
+      traceId: order.traceId || null,
       meta: { orderNumber: order.orderNumber, paymentMethod: order.paymentMethod },
     });
   }
@@ -249,6 +250,7 @@ class LedgerPostingService {
       refId: rt._id,
       occurredAt: rt.completedAt || new Date(),
       memo: `refund ${rt.reason}`,
+      traceId: rt.traceId || null,
     });
   }
 
