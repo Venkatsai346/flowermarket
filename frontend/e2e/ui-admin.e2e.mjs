@@ -753,6 +753,20 @@ await R.check('A43', 'Statutory deposits: card renders; the over-deposit guard f
 });
 await shot(page, 'a43-statutory');
 
+await R.check('A44', 'Bank reconciliation: a statement line with an unknown UTR lands in the queue (nothing guessed)', async () => {
+  await page.goto(BASE + '/platform/payouts', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /Bank reconciliation — the egress truth/i, 15000);
+  await waitText(page, /Unmatched queue/i, 10000);
+  const a44utr = 'A44E2E' + Date.now().toString(36).toUpperCase().slice(-6);
+  await typeInto(page, 'textarea[placeholder*="ABC1234"]', `${a44utr}, -12.34, a44 live queue check`);
+  await clickText(page, /Ingest & match/);
+  // the line must appear in the persistent queue view with its amount
+  await waitText(page, new RegExp(a44utr), 15000);
+  await waitText(page, /−₹12\.34/, 10000);
+  return `line ${a44utr} queued (−₹12.34) — no batch matched, nothing guessed`;
+});
+await shot(page, 'a44-statement');
+
 // ---------------------------------------------------------------- RBAC + rider
 await R.check('A34', 'RBAC: store admin blocked from vendor console', async () => {
   await page.goto(BASE + '/vendor', { waitUntil: 'networkidle2', timeout: 30000 });

@@ -41,6 +41,8 @@ const MODEL_FILES = [
   'fiscalPeriod.model.js',
   // ---- Phase 13: statutory deposits (TCS/TDS to the government) ----
   'statutoryDeposit.model.js',
+  // ---- Phase 14: bank statement reconciliation (egress truth) ----
+  'bankStatementLine.model.js',
 ];
 
 export default MODEL_FILES;

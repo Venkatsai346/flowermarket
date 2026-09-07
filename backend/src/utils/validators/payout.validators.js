@@ -115,3 +115,14 @@ export const statutoryDepositSchema = Joi.object({
 export const statutoryRevertSchema = Joi.object({
   reason: Joi.string().trim().min(3).max(300).required(),
 });
+
+// ---- Phase 14: bank statement reconciliation ----
+export const bankStatementIngestSchema = Joi.object({
+  statementRef: Joi.string().trim().min(3).max(64).required(),
+  lines: Joi.array().items(Joi.object({
+    utr: Joi.string().trim().min(3).max(64).required(),
+    amount: Joi.number().when('amountPaise', { is: Joi.exist(), then: Joi.optional(), otherwise: Joi.required() }),
+    amountPaise: Joi.number().integer(),
+    description: Joi.string().max(300).allow(null, ''),
+  })).min(1).max(500).required(),
+});

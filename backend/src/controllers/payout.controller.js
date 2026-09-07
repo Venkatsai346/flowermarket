@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import payoutService from '../services/payout.service.js';
 import statutoryService from '../services/statutory.service.js';
+import bankStatementService from '../services/bankStatement.service.js';
 import payoutProvider from '../services/payoutProvider.service.js';
 import VendorPayoutAccount from '../models/vendorPayoutAccount.model.js';
 import Vendor from '../models/vendor.model.js';
@@ -284,6 +285,29 @@ class PayoutController {
       traceId: req.headers['x-trace-id'] || null,
     });
     res.status(200).json(success(deposit, { message: 'Deposit reverted (reversal journaled)' }));
+  });
+
+  // ---- Phase 14: bank statement reconciliation (the egress truth) ----
+
+  statementSummary = asyncHandler(async (req, res) => {
+    const result = await bankStatementService.summary({
+      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+    });
+    res.status(200).json(success(result, { message: 'Bank statement reconciliation summary' }));
+  });
+
+  statementIngest = asyncHandler(async (req, res) => {
+    const { statementRef, lines } = req.body;
+    const result = await bankStatementService.ingest({
+      statementRef,
+      lines,
+      actorId: req.auth.userId,
+      tenantId: req.auth.tenantId || null,
+      traceId: req.headers['x-trace-id'] || null,
+    });
+    res.status(201).json(created(result, {
+      message: `Statement ${statementRef} matched — ${result.confirmed} confirmed, ${result.returned} returned, ${result.queued} queued`,
+    }));
   });
 
   /**

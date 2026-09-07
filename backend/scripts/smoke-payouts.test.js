@@ -512,7 +512,135 @@ async function main() {
   check('★ trial balance still balances after deposits + revert + replay', tbS.balanced, `diff ${tbS.differencePaise}`);
 
   // -------------------------------------------------------------------------
-  section('14. final integrity');
+  section('15. bank statement — the egress truth (Phase 14)');
+  // -------------------------------------------------------------------------
+  const { default: bankStatement } = await import('../src/services/bankStatement.service.js');
+  const { default: BankStatementLineM } = await import('../src/models/bankStatementLine.model.js');
+  const { DOMAIN_EVENT_TYPE } = await import('../src/constants/enums.js');
+  const domainEventService = domainEvents; // same service, section-11 name
+
+  // section 6's batch is PAID with a UTR; the bank statement is the only
+  // record that can later say the money came BACK
+  const paidBatch = await PayoutBatch.findById(batch._id);
+  check('the paid batch carries a UTR', Boolean(paidBatch.utr), paidBatch.state);
+  const vendorPayableBeforeReturn = (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor._id))).balancePaise;
+  const bankBeforeReturn = (await ledgerService.balance(ledgerAccounts.bank())).balancePaise;
+
+  // 1) the bank confirms the payment (debit with the batch's UTR)
+  const stmt1 = await bankStatement.ingest({
+    statementRef: 'BS-2026-09-07',
+    lines: [{ utr: paidBatch.utr, amountPaise: -paidBatch.netPaise, description: 'payout out' }],
+    tenantId: tenant._id,
+  });
+  eq('the debit line is confirmed against the paid batch', stmt1.confirmed, 1);
+  eq('confirmed does not change the batch', (await PayoutBatch.findById(batch._id)).state, PAYOUT_STATE.PAID);
+
+  // 2) days later: the bank RETURNS the money (credit, same UTR)
+  const stmt2 = await bankStatement.ingest({
+    statementRef: 'BS-2026-09-20',
+    lines: [{ utr: paidBatch.utr, amountPaise: paidBatch.netPaise, description: 'NSF return' }],
+    tenantId: tenant._id,
+  });
+  eq('★ the credit line is matched as a bank return', stmt2.returned, 1);
+  const reversedBatch = await PayoutBatch.findById(batch._id);
+  eq('the batch is REVERSED', reversedBatch.state, PAYOUT_STATE.REVERSED);
+  check('the return reason is on the batch', /bank return per statement/.test(reversedBatch.failureReason || ''), reversedBatch.failureReason);
+  // the unwind mirrors the ORIGINAL journal — assert against its real lines
+  const origJ = await LedgerJournalM.findOne({ idempotencyKey: `payout_initiated:payout_batch:${batch._id}` }).lean();
+  const drainLine = origJ.lines.find((l) => l.accountCode === ledgerAccounts.vendorPayable(vendor._id) && l.debitPaise);
+  eq('the vendor payable is restored by the exact drained amount', (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor._id))).balancePaise, vendorPayableBeforeReturn + drainLine.debitPaise);
+  eq('the bank is made whole', (await ledgerService.balance(ledgerAccounts.bank())).balancePaise, bankBeforeReturn + paidBatch.netPaise);
+  const freedLine = await PayoutLineItem.findOne({ orderId: order1._id });
+  eq('★ the line is back in the eligible pool', freedLine.state, PAYOUT_LINE_STATE.ELIGIBLE);
+  const revEvent = await DomainEvent.findOne({ idempotencyKey: `payout_reversed:payout_batch:${batch._id}` }).lean();
+  check('the reversal fact is chained', Boolean(revEvent) && typeof revEvent.hash === 'string');
+
+  // 3) a statement line nobody matches stays in the queue — never guessed
+  const stmt3 = await bankStatement.ingest({
+    statementRef: 'BS-2026-09-20b',
+    lines: [
+      { utr: 'NO-SUCH-UTR-1', amountPaise: 12345, description: 'unknown credit' },
+      { utr: 'NO-SUCH-UTR-2', amountPaise: -999, description: 'unknown debit' },
+    ],
+    tenantId: tenant._id,
+  });
+  eq('both unknown lines are queued, not guessed', stmt3.queued, 2);
+
+  // 4) the ambiguous-submission case: provider silent, the BANK says it moved
+  //    (white-box: put a real approved batch in PROCESSING with fact+journal,
+  //    exactly as submit() would, then let the statement decide)
+  const acct2 = await VendorPayoutAccount.create({
+    vendorId: vendor2._id, method: 'bank', accountHolderName: 'Jasmine Co',
+    accountNumberEnc: Buffer.from('22334455667').toString('base64'),
+    ifsc: 'ICIC0009876', maskedAccount: '****5667', fingerprint: 'fp-jc', isDefault: true, status: 'active',
+  });
+  acct2.kyc.status = 'approved';
+  acct2.verification.status = 'verified';
+  await acct2.save();
+  const stmtOrder = await makeOrder({ lineTotal: 4000, tax: 0, vendorId: vendor2._id });
+  await payoutService.accrueForOrder({ orderId: stmtOrder._id });
+  await payoutService.markEligible({}); // the 30-day-old line becomes eligible
+  const stmtCyc = await payoutService.computeCycleForVendor({ vendorId: vendor2._id, from, to });
+  const inFlight = stmtCyc.batch;
+  await payoutService.submitForApproval({ batchId: inFlight._id });
+  await payoutService.approve({ batchId: inFlight._id, actorId: approver1 });
+  const doc = await PayoutBatch.findById(inFlight._id);
+  await payoutService.transition(doc, PAYOUT_STATE.QUEUED, { note: 'queued for disbursement' });
+  await payoutService.transition(doc, PAYOUT_STATE.PROCESSING, { note: 'submitting (provider silent)' });
+  doc.submittedAt = new Date();
+  doc.utr = 'BANKONLY-UTR-77';
+  await doc.save();
+  await domainEventService.append({
+    tenantId: doc.tenantId, kind: DOMAIN_EVENT_TYPE.PAYOUT_INITIATED,
+    aggregateType: 'payout_batch', aggregateId: doc._id,
+    idempotencyKey: `payout_initiated:payout_batch:${doc._id}`,
+    occurredAt: doc.submittedAt, refType: 'payout_batch', refId: doc._id,
+    payload: { batchNumber: doc.batchNumber, vendorId: doc.vendorId, netPaise: doc.netPaise },
+  });
+  await payoutService.postPayoutJournal(doc);
+
+  const stmt4 = await bankStatement.ingest({
+    statementRef: 'BS-2026-09-21',
+    lines: [{ utr: 'BANKONLY-UTR-77', amountPaise: -doc.netPaise, description: 'the money moved' }],
+    tenantId: tenant._id,
+  });
+  eq('the bank confirms an in-flight payment', stmt4.confirmed, 1);
+  const settled = await PayoutBatch.findById(inFlight._id);
+  eq('★ the batch is PAID on the bank\u2019s word', settled.state, PAYOUT_STATE.PAID);
+
+  // 5) re-ingesting the same statement is a no-op (never double-reverses)
+  const stmt5 = await bankStatement.ingest({
+    statementRef: 'BS-2026-09-20',
+    lines: [{ utr: paidBatch.utr, amountPaise: paidBatch.netPaise }],
+    tenantId: tenant._id,
+  });
+  eq('re-ingest creates no new lines', stmt5.newLines, 0);
+  eq('…and reverses nothing again', stmt5.returned, 0);
+  eq('the batch is still exactly once reversed', (await PayoutBatch.findById(batch._id)).state, PAYOUT_STATE.REVERSED);
+
+  // 6) the ingestion fact is on the chain. (The §12–13 event-restore scars
+  //    are expected broken_links — a deliberate rebuild re-links the chain
+  //    and leaves its own fact, so the verifier goes clean again.)
+  const ingEvent = await DomainEvent.findOne({ idempotencyKey: 'bank_statement_ingested:BS-2026-09-07' }).lean();
+  check('the ingestion fact is chained', Boolean(ingEvent) && ingEvent.payload.queued === 0 && ingEvent.payload.confirmed === 1);
+  const chainScar = await domainEvents.verifyChains({ tenantId: tenant._id });
+  check('the restore scars from §12–13 are visible as broken_links', chainScar.breaks.length >= 2 && chainScar.breaks.every((b) => b.type === 'broken_link'), JSON.stringify(chainScar.breaks.map((b) => b.type)));
+  const rebuild = await domainEvents.rebuildChain({ tenantId: tenant._id });
+  check('a deliberate rebuild re-links the chain', (rebuild.relinked || 0) > 0, JSON.stringify(rebuild));
+  const chainS = await domainEvents.verifyChains({ tenantId: tenant._id });
+  check('★ chain verifies clean after the rebuild (fact on the chain)', chainS.ok === true && Boolean(await DomainEvent.findOne({ kind: 'chain_rebuilt' })), JSON.stringify(chainS.breaks));
+
+  // 7) the reconciliation picture
+  const stmtSum = await bankStatement.summary({});
+  check('summary: confirmed + returned + queued counts', stmtSum.confirmed >= 2 && stmtSum.returned === 1 && stmtSum.unmatched === 2, JSON.stringify({ c: stmtSum.confirmed, r: stmtSum.returned, u: stmtSum.unmatched }));
+  check('summary: the queue shows the unknown lines', stmtSum.queued.length === 2 && stmtSum.queued.every((q) => q.utr.startsWith('NO-SUCH-UTR')), JSON.stringify(stmtSum.queued.map((q) => q.utr)));
+  eq('statement lines are immutable records (1+1+2+1, re-ingest adds none)', await BankStatementLineM.countDocuments({}), 5);
+
+  const tbB = await ledgerService.trialBalance();
+  check('★ trial balance still balances after confirm + return + settle', tbB.balanced, `diff ${tbB.differencePaise}`);
+
+  // -------------------------------------------------------------------------
+  section('16. final integrity');
   // -------------------------------------------------------------------------
   const finalTb = await ledgerService.trialBalance();
   check('★ trial balance across every journal', finalTb.balanced, `diff ${finalTb.differencePaise} paise`);

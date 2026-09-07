@@ -26,16 +26,24 @@ const RIDER_PHONE = '9000000009';
 // flower-market-api-* process dir's out.log (sandbox start_process layout).
 function otpLogPath() {
   if (process.env.API_LOG_FILE) return process.env.API_LOG_FILE;
-  const conventional = '/tmp/fm-ci/api.out.log';
-  if (fs.existsSync(conventional)) return conventional;
-  const dir = '/tmp/arena-workspace/procs';
+  // The live API process's log wins by mtime — a stale conventional path
+  // (left over from a previous CI-style run) must not shadow the process
+  // that is actually serving requests right now.
   let chosen = null, mtime = 0;
-  for (const e of fs.readdirSync(dir)) {
-    if (!e.startsWith('flower-market-api-')) continue;
-    const p = path.join(dir, e, 'out.log');
-    if (fs.existsSync(p)) { const m = fs.statSync(p).mtimeMs; if (m >= mtime) { mtime = m; chosen = p; } }
+  const consider = (p) => {
+    if (!p || !fs.existsSync(p)) return;
+    const m = fs.statSync(p).mtimeMs;
+    if (m >= mtime) { mtime = m; chosen = p; }
+  };
+  consider('/tmp/fm-ci/api.out.log');
+  const dir = '/tmp/arena-workspace/procs';
+  if (fs.existsSync(dir)) {
+    for (const e of fs.readdirSync(dir)) {
+      if (!e.startsWith('flower-market-api-')) continue;
+      consider(path.join(dir, e, 'out.log'));
+    }
   }
-  if (!chosen) throw new Error('backend out.log not found under ' + dir);
+  if (!chosen) throw new Error('backend out.log not found (/tmp/fm-ci or ' + dir + ')');
   return chosen;
 }
 const OTP_LOG = otpLogPath();
@@ -374,7 +382,31 @@ section('13. statutory deposits (Phase 13)');
   check('13.5', 'RBAC: statutory endpoints SUPER_ADMIN-only', r1.status === 403 && r2.status === 403, `summary=${r1.status} deposit=${r2.status}`);
 }
 
-// ===========================================================================
+// =====================================================================
+// 14. Bank statement reconciliation — the egress truth (Phase 14)
+// =====================================================================
+section('14. bank statement — the egress truth (Phase 14)');
+{
+  const stmtRef = 'BS-E2E-2026-09-' + Math.floor(Math.random() * 900 + 100);
+  const stmtLines = [
+    { utr: 'E2E-STMT-NOMATCH-1', amount: 100, description: 'live: unknown credit' },
+    { utr: 'E2E-STMT-NOMATCH-2', amount: -50, description: 'live: unknown debit' },
+  ];
+
+  const stmtBefore = await api('/payouts/admin/statement', { token: adminTok });
+  check('14.1', 'summary shape (totals + queue)', stmtBefore.status === 200 && typeof stmtBefore.data?.data?.total === 'number' && Array.isArray(stmtBefore.data?.data?.queued), 'status ' + stmtBefore.status);
+
+  const stmtRes = await api('/payouts/admin/statement/ingest', { method: 'POST', token: adminTok, body: { statementRef: stmtRef, lines: stmtLines } });
+  check('14.2', 'ingest: unknown lines queued, none guessed', stmtRes.status === 201 && stmtRes.data?.data?.queued === 2 && stmtRes.data?.data?.returned === 0 && stmtRes.data?.data?.confirmed === 0, 'status ' + stmtRes.status + ' ' + JSON.stringify(stmtRes.data?.data).slice(0, 160));
+
+  const stmtSum2 = await api('/payouts/admin/statement', { token: adminTok });
+  check('14.3', 'the queue shows both lines', stmtSum2.data?.data?.queued.filter((q) => q.statementRef === stmtRef).length === 2, JSON.stringify(stmtSum2.data?.data?.queued).slice(0, 160));
+
+  const stmtRbac1 = await api('/payouts/admin/statement', { token: custTok });
+  const stmtRbac2 = await api('/payouts/admin/statement/ingest', { method: 'POST', token: custTok, body: { statementRef: 'BS-RBAC', lines: [{ utr: 'X-12345', amount: 10 }] } });
+  check('14.4', 'statement endpoints are platform-admin only', stmtRbac1.status === 403 && stmtRbac2.status === 403, `summary=${stmtRbac1.status} ingest=${stmtRbac2.status}`);
+}
+
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);
 console.log(`E2E-LIVE: ${passed}/${results.length} cases passed`);
@@ -384,3 +416,4 @@ if (passed < results.length) {
 }
 console.log(`${'═'.repeat(64)}`);
 process.exit(passed === results.length ? 0 : 1);
+

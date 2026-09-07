@@ -229,6 +229,9 @@ export function createEndpoints(client) {
         statutory: (q = {}) => c.get('/payouts/admin/statutory', { query: q }),
         statutoryDeposit: (body) => c.post('/payouts/admin/statutory/deposit', body),
         statutoryRevert: (id, body) => c.post(`/payouts/admin/statutory/${id}/revert`, body),
+        // Phase 14 — bank statement reconciliation (the egress truth)
+        statement: (q = {}) => c.get('/payouts/admin/statement', { query: q }),
+        statementIngest: (body) => c.post('/payouts/admin/statement/ingest', body),
         sweepEligibility: () => c.post('/payouts/admin/eligibility/sweep'),
         computeCycle: (body) => c.post('/payouts/admin/cycle/compute', body),
         holdLines: (body) => c.post('/payouts/admin/lines/hold', body),

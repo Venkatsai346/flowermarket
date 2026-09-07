@@ -409,3 +409,19 @@ CI counts synced in `.github/workflows/ci.yml`: live 84 checks, admin browser 41
 | Admin browser UI | **42/42** (A43: TCS + TDS cards render, impossible deposit refused through the UI quoting the real liability; console-err=1 = the intentional 409, A36's convention) |
 
 CI counts synced in `.github/workflows/ci.yml`: live 89 checks, admin browser 42.
+
+## Phase 14 re-verification — bank reconciliation, the egress truth (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-payouts` | **118/118** (+§15: debit+UTR confirms a PAID batch with no state change; credit+UTR → REVERSED with the vendor payable restored by the exact drained journal line, bank made whole, line back in the eligible pool, `payout_reversed` chained; unknown lines queued (never guessed); white-box PROCESSING batch settled on the bank's word; idempotent re-ingest (no dupes, no double-reversal); restore-scarred chain rebuilt clean; statement lines immutable) |
+| `smoke:all` (22 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **93/93** (+§14: summary shape, unknown lines queued with nothing guessed, queue shows both, RBAC 403s) |
+| Admin browser UI | **43/43** (A44: statement line with an unknown UTR lands in the persistent queue with its signed amount — nothing guessed; console-err=1 = the intentional A43 409, A36's convention) |
+
+Also fixed this phase: `otpLogPath`/`resolveLogFile` (e2e-live + ui-harness) now
+pick the **live API process's log by mtime** — a stale `/tmp/fm-ci/api.out.log`
+left by a previous CI-style run was shadowing the serving process's log and
+silently breaking OTP discovery after any API restart.
+
+CI counts synced in `.github/workflows/ci.yml`: live 93 checks, admin browser 43.

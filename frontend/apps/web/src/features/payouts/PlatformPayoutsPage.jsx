@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, Ban, BadgeCheck, Banknote, CalendarClock, CheckCircle2, CircleDollarSign,
-  Eye, FileInput, Landmark, RefreshCw, Scale, Send, ShieldAlert, ThumbsDown, ToggleLeft, ToggleRight, Undo2, Wallet,
+  AlertTriangle, ArrowDownLeft, ArrowUpRight, Ban, BadgeCheck, Banknote, CalendarClock,
+  CheckCircle2, CircleDollarSign, Eye, FileInput, Landmark, RefreshCw, Scale, Send,
+  ShieldAlert, ThumbsDown, ToggleLeft, ToggleRight, Undo2, Wallet,
 } from 'lucide-react';
 import { inr, fmtDate } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -260,6 +261,137 @@ function ComputeCycleModal({ onClose, onDone }) {
  * settlement report moves it into `bank` and — with the gate ON — is the only
  * thing that lets a vendor line for that order become payable.
  */
+
+/**
+ * Bank reconciliation (Phase 14): the bank statement is the independent
+ * egress truth. Ingest signed lines (UTR, amount) — debits confirm what the
+ * provider said it paid (or settle what it never confirmed); credits reverse
+ * PAID batches (bank returns / NSF). Whatever does not UTR-match a live batch
+ * is queued, visible, and never guessed at.
+ */
+function StatementCard() {
+  const { data, loading, refetch } = useApi(() => api.payouts.admin.statement(), []);
+  const { busy, run } = useAction();
+  const [ref, setRef] = useState(() => `BS-${new Date().toISOString().slice(0, 10)}-${Math.floor(Math.random() * 900 + 100)}`);
+  const [lines, setLines] = useState('');
+
+  const parseLines = () =>
+    lines
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const [utr, amt, ...rest] = l.split(',').map((s) => s.trim());
+        const amount = Number(amt);
+        if (!utr || !amt || !Number.isFinite(amount) || amount === 0) return null;
+        return { utr, amount, description: rest.join(', ') || null };
+      })
+      .filter(Boolean);
+
+  const doIngest = async () => {
+    const parsed = parseLines();
+    if (!parsed.length) {
+      toast.error('Each line must look like:  UTR, ±amount  (e.g. ABC123, -1234.56)');
+      return;
+    }
+    try {
+      const res = await run(() => api.payouts.admin.statementIngest({ statementRef: ref, lines: parsed }));
+      const d = res?.data ?? res;
+      toast.success(`${d.confirmed ?? 0} confirmed · ${d.returned ?? 0} returned · ${d.queued ?? 0} queued`);
+      setLines('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  return (
+    <Card
+      className="mb-5"
+      title="Bank reconciliation — the egress truth"
+      subtitle="The bank statement is an independent source of truth. Debit lines confirm payouts (and settle ones the provider never confirmed); credit lines on a PAID batch are bank returns and reverse it. UTR-exact only — anything else is queued for a human, never guessed."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading the reconciliation picture…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <span className="text-sm font-semibold tabular-nums text-emerald-800">{data?.confirmed ?? 0}</span>
+              <span className="text-xs text-emerald-700">confirmed</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+              <Undo2 className="h-4 w-4 text-rose-600" />
+              <span className="text-sm font-semibold tabular-nums text-rose-800">{data?.returned ?? 0}</span>
+              <span className="text-xs text-rose-700">returned (reversed)</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <span className="text-sm font-semibold tabular-nums text-amber-800">{data?.unmatched ?? 0}</span>
+              <span className="text-xs text-amber-700">in the queue</span>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[1fr_1.4fr]">
+            <div>
+              <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Statement ref</label>
+              <input
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                value={ref}
+                onChange={(e) => setRef(e.target.value)}
+                placeholder="BS-2026-09-07"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">Re-ingesting the same ref + lines is a no-op.</p>
+            </div>
+            <div>
+              <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Lines — one per line: UTR, ±amount</label>
+              <textarea
+                className="mt-1 h-24 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs"
+                value={lines}
+                onChange={(e) => setLines(e.target.value)}
+                placeholder={'e.g.  ABC1234, -1234.56, payout out\n      DEF5678, +1234.56, NSF return'}
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <Button icon={FileInput} loading={busy} onClick={doIngest}>
+                  Ingest &amp; match
+                </Button>
+                <span className="text-[11px] text-slate-400">negative = money out · positive = money back</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Unmatched queue — needs a human</p>
+            {(data?.queued || []).length === 0 ? (
+              <p className="mt-1 text-xs text-slate-400">Nothing is waiting. Every ingested line matched or was ignored.</p>
+            ) : (
+              <div className="mt-1 divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {data.queued.map((q, i) => (
+                  <div key={`${q.statementRef}-${q.lineNo}-${i}`} className="flex items-center justify-between px-3 py-2 text-sm">
+                    <span className="flex items-center gap-2">
+                      {q.amountPaise < 0 ? <ArrowUpRight className="h-3.5 w-3.5 text-rose-500" /> : <ArrowDownLeft className="h-3.5 w-3.5 text-emerald-500" />}
+                      <span className="font-mono text-xs text-slate-700">{q.utr}</span>
+                      <span className="text-[11px] text-slate-400">{q.statementRef} · line {q.lineNo}</span>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      {q.description && <span className="hidden max-w-[220px] truncate text-[11px] text-slate-400 sm:inline">{q.description}</span>}
+                      <span className={cn('tabular-nums text-xs font-semibold', q.amountPaise < 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                        {q.amountPaise < 0 ? '−' : '+'}{inr(Math.abs(q.amountPaise) / 100)}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function SettlementCard() {
   const { data, loading, refetch } = useApi(() => api.payouts.admin.settlements(), []);
   const { busy, run } = useAction();
@@ -598,6 +730,8 @@ export default function PlatformPayoutsPage() {
       <SettlementCard />
 
       <StatutoryCard />
+
+      <StatementCard />
 
       {(needsAttention.length > 0 || inFlightTotal > 0) && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2">

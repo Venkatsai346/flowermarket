@@ -25,15 +25,21 @@ export const ADMIN_PASSWORD = 'Admin@12345';
 // dir's out.log (sandbox start_process convention).
 function resolveLogFile() {
   if (process.env.API_LOG_FILE) return process.env.API_LOG_FILE;
-  const conventional = '/tmp/fm-ci/api.out.log';
-  if (fs.existsSync(conventional)) return conventional;
-  const dir = '/tmp/arena-workspace/procs';
+  // The live API process's log wins by mtime — a stale conventional path
+  // (left over from a previous CI-style run) must not shadow the process
+  // that is actually serving requests right now.
   let chosen = null, mtime = 0;
+  const consider = (p) => {
+    if (!p || !fs.existsSync(p)) return;
+    const m = fs.statSync(p).mtimeMs;
+    if (m >= mtime) { mtime = m; chosen = p; }
+  };
+  consider('/tmp/fm-ci/api.out.log');
+  const dir = '/tmp/arena-workspace/procs';
   if (fs.existsSync(dir)) {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!e.name.startsWith('flower-market-api-')) continue;
-      const p = path.join(dir, e.name, 'out.log');
-      if (fs.existsSync(p)) { const m = fs.statSync(p).mtimeMs; if (m >= mtime) { mtime = m; chosen = p; } }
+      consider(path.join(dir, e.name, 'out.log'));
     }
   }
   return chosen;

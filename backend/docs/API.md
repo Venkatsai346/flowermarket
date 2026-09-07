@@ -678,3 +678,33 @@ event-first + chained, reverts journaled never deleted. Full design:
 
 Both journal kinds (`statutory_deposit`, `statutory_deposit_reverted`) are
 chained and covered by the event↔journal drift check in both directions.
+
+## Phase 14 — bank statement reconciliation (the egress truth)
+
+The bank statement is the **independent source of truth for money out**: a
+PAID payout can be returned by the bank days later (NSF, closed account) and
+the provider will never say so. These endpoints ingest signed statement lines
+and match them **UTR-exact only** — nothing is ever fuzzy-matched:
+
+| bank line | batch with that UTR | result |
+|---|---|---|
+| debit (−) | PROCESSING | the money moved → `markPaid` (resolves an ambiguous submission) |
+| debit (−) | PAID | `confirmed_paid` — the bank agrees (audit only, no state change) |
+| credit (+) | PAID | **bank return** → `markReversed` (journal unwound, lines freed) |
+| anything else | — | `unmatched` — queued, visible, never guessed |
+
+Money moves only through the normal payout service methods (chained events,
+balanced journals); the statement only *decides*. Re-ingesting the same
+`{statementRef, lineNo}` is a no-op (unique index). Each ingestion appends one
+chained `bank_statement_ingested` fact (not a journal kind). Full design:
+`docs/AUDIT_ARCHITECTURE.md` (Part 5).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/statement` | SUPER_ADMIN | `{ total, confirmed, returned, unmatched, queued[{ statementRef, lineNo, utr, amountPaise, description, createdAt }], recentMatches[...] }` (`?limit=` caps the lists) |
+| `POST` | `/payouts/admin/statement/ingest` | SUPER_ADMIN | body `{ statementRef (min 3), lines: [{ utr (min 3), amount \| amountPaise (non-zero, signed rupees/paise), description? }] }` → 201 `{ statementRef, lines, newLines, confirmed, returned, queued, failed: [{ lineNo, utr, reason }] }` |
+
+**Errors:** 400 `STATEMENT_REF_REQUIRED` / `STATEMENT_NO_LINES` /
+`STATEMENT_LINE_BAD` (missing UTR or zero amount). A line whose match throws
+(locked batch, unexpected state) is kept `unmatched` with `matchError` set and
+reported in `failed` — the ingest itself still succeeds for the other lines.

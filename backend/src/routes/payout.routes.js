@@ -8,7 +8,7 @@ import {
   payoutListQuerySchema, payoutIdParamSchema, computeCycleSchema, approveSchema,
   reasonSchema, holdSchema, releaseSchema, adjustmentSchema, payoutAccountSchema,
   kycSchema, kycReviewSchema, kycListQuerySchema, payoutPolicySchema, settlementIngestSchema,
-  statutoryDepositSchema, statutoryRevertSchema,
+  statutoryDepositSchema, statutoryRevertSchema, bankStatementIngestSchema,
 } from '../utils/validators/payout.validators.js';
 
 const router = Router();
@@ -54,6 +54,9 @@ router.get('/admin/settlements', platformAdmin, PayoutController.settlementSumma
 router.get('/admin/statutory', platformAdmin, PayoutController.statutorySummary);
 router.post('/admin/statutory/deposit', platformAdmin, validate(statutoryDepositSchema), PayoutController.statutoryDeposit);
 router.post('/admin/statutory/:id/revert', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(statutoryRevertSchema), PayoutController.statutoryRevert);
+// Phase 14 — bank statement reconciliation (the egress truth)
+router.get('/admin/statement', platformAdmin, PayoutController.statementSummary);
+router.post('/admin/statement/ingest', platformAdmin, validate(bankStatementIngestSchema), PayoutController.statementIngest);
 router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.getPayout);
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);

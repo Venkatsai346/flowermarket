@@ -706,6 +706,7 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   PSP_SETTLED: 'psp_settled', // PSP settlement ingested: cash reached our bank
   STATUTORY_DEPOSIT: 'statutory_deposit', // TCS/TDS paid to the government
   STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted',
+  BANK_STATEMENT_INGESTED: 'bank_statement_ingested', // independent egress truth matched
   // Phase 11 — the audit chain was deliberately re-linked after a legitimate
   // row-set change (e.g. an event restored from its journal). Manual only.
   CHAIN_REBUILT: 'chain_rebuilt',

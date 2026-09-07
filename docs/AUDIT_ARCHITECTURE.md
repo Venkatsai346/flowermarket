@@ -447,3 +447,73 @@ statutory_deposit_reverted:  the mirror (operator correction — never deleted)
   reporting concern outside this ledger's scope.
 - A revert is an internal correction, not a government refund request — the
   audit trail (original + reversal + reason) is what a reviewer needs.
+
+# Part 5 — Phase 14: bank reconciliation (the egress truth)
+
+## The problem
+
+Every edge of the money loop except one had an independent source of truth:
+the customer's cash is proven by the PSP webhook (Phase 12's cash gate), the
+settlement by the gateway's clearing file, the government's share by the
+deposit UTR. The **egress** — money leaving the bank to vendors — was trusted
+to the payout provider. But a provider can mark a payout PAID and the bank can
+return it days later (NSF, closed account, recall) — and the provider will
+never say so. The bank's own statement is the only record that knows.
+
+## Design
+
+- **`BankStatementLine`** — one ingested line: `{ statementRef, lineNo, utr,
+  amountPaise (signed: <0 debit/out, >0 credit/in), description }` +
+  `{ matchStatus: unmatched | confirmed_paid | returned, matchedBatchId,
+  matchError, ingestedBy }`. Unique `{statementRef, lineNo}` → re-ingesting a
+  statement is a no-op (never double-reverses, never double-counts).
+- **Matching is UTR-exact and conservative** — a UTR is an identifier the
+  bank, the provider and the ledger all hold; nothing else is used, and
+  nothing is fuzzy:
+
+  | bank line | batch with that UTR | result |
+  |---|---|---|
+  | debit (−) | PROCESSING | the money moved → `markPaid` (resolves an ambiguous submission from the bank side) |
+  | debit (−) | PAID | `confirmed_paid` — audit only, no state change |
+  | credit (+) | PAID | **bank return** → `markReversed` |
+  | anything else | — | `unmatched` — queued, visible, **never guessed** |
+
+- **The statement only decides; it never moves money.** Every state change
+  goes through the existing `payoutService.markPaid` / `markReversed`, so the
+  reversal journal (DR bank / CR vendor payable + GST/TCS/TDS mirrors), the
+  line release back to `eligible`, the `payout_reversed` chained event and the
+  audit action all happen exactly as with an operator-triggered reversal. A
+  line whose match throws is kept `unmatched` with `matchError` and reported
+  in `failed[]` — the other lines in the statement still process.
+- **One chained fact per ingest**: `bank_statement_ingested:{statementRef}`
+  (info event, not a journal kind — no money is posted by the ingest itself;
+  the money facts are the matched batches' own journals). This answers "who
+  fed us a statement, when, and what happened" on the tamper-evident chain.
+
+## Verification (2026-09-07)
+
+- Hermetic `smoke-payouts` §15 (suite 118/118): the paid batch's own UTR is
+  confirmed by a debit (no state change); a credit with the same UTR reverses
+  it — vendor payable restored by the **exact drained journal line** (not the
+  net — the statutory/GST mirrors return too), bank made whole, line back in
+  the eligible pool, `payout_reversed` chained; unknown lines queued; a
+  white-box PROCESSING batch (fact + journal posted, provider silent) is
+  settled **on the bank's word**; re-ingest is a no-op; the restore-scarred
+  chain is rebuilt clean and the ingestion fact verified on it; statement
+  lines immutable; trial balanced throughout.
+- Live `e2e-live` §14 (93 total): summary shape, unknown lines queued with
+  nothing guessed, queue visibility, RBAC.
+- Browser `ui-admin` A44 (43 total): a line with an unknown UTR lands in the
+  persistent queue with its signed amount.
+
+## Boundary notes
+
+- A UTR collision across batches (two batches claiming one UTR) would match
+  the first found — the unique-UTR-per-batch invariant of the provider layer
+  makes this a data-integrity bug to catch in the drift checks, not a
+  matching hazard.
+- Debits against REVERSED batches and credits against PROCESSING batches are
+  intentionally unmatched (a re-send or a duplicate) — a human decides, with
+  the batch's full history in hand.
+- The queue is a worklist, not a state: lines are immutable once recorded;
+  the batch's state (and its events) is the resolution.
