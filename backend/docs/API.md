@@ -802,3 +802,30 @@ Pre-Phase-17 data: carry batches created before this phase carry no book face.
 `scripts/seed-vendor-carry-views.mjs` is a one-off, idempotent migration that
 recovers `carryLedgerViewPaise` from each such batch's consumed lines (book
 view + opening face + pinned adjustments). Run `DRY_RUN=true` first.
+## Phase 18 — statutory ledger integrity (`tcs_payable` / `tds_payable` are real accounts)
+
+TCS (GST s.52) and TDS (IT s.194-O) are withheld from vendor payouts when the
+batch journal is posted, credited to `tcs_payable` / `tds_payable`, and
+discharged by deposits to the government (Phase 13). Phase 18 reconciles those
+accounts against the domain facts that created them:
+
+    {statute}_payable  =  withheld − net deposits
+
+where **withheld** = Σ `batch.{tcs,tds}Paise` over batches whose payout
+journal is live (state PROCESSING / PAID — the journal credits the payable at
+submission), and **net deposits** = recorded deposits − reverts. A REVERSED
+or FAILED batch booked the credit AND posted the mirror unwind, so it nets to
+zero and is not withheld. The payable accounts are platform-global (no
+tenant in the code), so the reconcile is platform-scoped.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/statutory-reconcile` | SUPER_ADMIN | both statutes → `{ statutes[{statute, accountCode, withheldPaise, netDepositedPaise, expectedPaise, booksPaise, differencePaise, balanced}], drifted, totalDifferencePaise, ok }`; `?statute=tcs\|tds` → the single statute row |
+| `POST` | `/payouts/admin/statutory-reconcile/repair` | SUPER_ADMIN | body `{ statute }` (required — repair is per-statute by design): posts **one** signed `statutory_backfill` journal for the difference (under-stated → DR `bank` / CR `{statute}_payable`; over-stated → the mirror) + a `statutory_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null, balanced:true}`) when balanced. Without `statute` while a statute is drifted → 400 `STATUTORY_RECONCILE_NEEDS_STATUTE`. Zero-difference backfills are refused (`STATUTORY_BACKFILL_EMPTY`) |
+
+The backfill amount is the measured *difference* — not re-derivable — so
+`replay` refuses it with `STATUTORY_BACKFILL_NOT_REPLAYABLE`, exactly like
+the wallet and vendor backfills. The integrity report gained `checks.statutory`,
+and the platform Ledger page gained a **Statutory payable (TCS/TDS)** row
+(drift to the paise + per-statute backfill action; A38 now requires all
+10 subsystems).

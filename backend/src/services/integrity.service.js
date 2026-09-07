@@ -1,6 +1,7 @@
 import ledgerService from './ledger.service.js';
 import walletService from './wallet.service.js';
 import payoutService from './payout.service.js';
+import statutoryService from './statutory.service.js';
 import domainEventService from './domainEvent.service.js';
 import searchIndexer from './searchIndexer.service.js';
 import DeliverySlot from '../models/deliverySlot.model.js';
@@ -39,7 +40,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -53,6 +54,7 @@ class IntegrityService {
       domainEventService.verifyChains({ tenantId }).catch((e) => ({ error: e?.message || String(e), ok: false })),
       this._walletCheck(scope),
       this._vendorCheck(),
+      this._statutoryCheck(),
     ]);
 
     const ledger = {
@@ -90,6 +92,10 @@ class IntegrityService {
       // account must equal its unsettled payout lines + adjustments + carry.
       // Platform-scoped (vendors and payable accounts are platform-global).
       vendors,
+      // Phase 18: the TCS/TDS payables are real ledger accounts — each must
+      // equal withheld (live payout journals) − net deposits. Platform-scoped
+      // (the payable accounts carry no tenant).
+      statutory,
       // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
       // deleted or re-ordered rows) are a DRIFT — the strongest signal in
       // the report. Unanchored rows are normal while repairChain catches up.
@@ -133,6 +139,16 @@ class IntegrityService {
   async _vendorCheck() {
     try {
       const r = await payoutService.reconcileVendors({});
+      return { ...r, ok: r.ok };
+    } catch (e) {
+      return { error: e?.message || String(e), ok: false };
+    }
+  }
+
+  /** Phase 18: TCS/TDS payables must equal withheld − net deposits. */
+  async _statutoryCheck() {
+    try {
+      const r = await statutoryService.reconcile({});
       return { ...r, ok: r.ok };
     } catch (e) {
       return { error: e?.message || String(e), ok: false };

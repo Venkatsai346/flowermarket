@@ -737,3 +737,74 @@ post an unknown number of journals at once.
   `carryLedgerViewPaise` for pre-Phase-17 carry batches from their consumed
   lines (the live tenant needed no run: its one legacy carry had already
   been absorbed).
+## Part 9 — Phase 18: statutory ledger integrity (TCS/TDS are real accounts)
+
+Phase 13 made the platform pay its withholdings: TCS (GST s.52) and TDS
+(IT s.194-O) are withheld from vendor payouts, credited to `tcs_payable` /
+`tds_payable`, and discharged by UTR-tracked deposits to the government.
+But like the wallet before Phase 16 and the vendor payables before Phase 17,
+nothing ever asked *do those accounts match the facts that created them?*
+A lost journal, a manual edit, or a payout posted without its withholdings
+would leave the platform owing the government more or less than its books
+say — a compliance gap discovered (if at all) by a tax officer, not by the
+system.
+
+### The invariant
+
+For each statute, to the paise, at all times:
+
+```
+{statute}_payable  =  withheld − net deposits
+```
+
+- **withheld** — Σ `batch.{tcs,tds}Paise` over batches whose
+  `PAYOUT_INITIATED` journal is live (state PROCESSING or PAID). The journal
+  is posted at *submission* (the liability is booked the moment the
+  instruction is accepted) and credits the payable for the batch's
+  aggregated withholdings.
+- **net deposits** — recorded deposits minus reverts. Both move the same
+  account (DR on deposit, CR on revert), so the deposit's UTR trail and the
+  ledger agree by construction.
+
+The subtlety mirrors Phase 17's: a batch is "withheld" only while its credit
+is live. A **REVERSED** batch (bank returned the money after a successful
+transfer) and a **FAILED** batch (provider rejected) both posted the
+`PAYOUT_INITIATED` credit AND the mirror unwind — they net to zero and are
+excluded. Counting them would double-count the unwind as a second withholding.
+
+### Where the money is, and the sign of the repair
+
+The payable is funded by the payout itself: the `PAYOUT_INITIATED` journal
+debits the bank (net) while crediting the payable the withheld slice. So the
+backfill's counter is **bank**:
+
+- under-stated (books owe the government less than the facts say) —
+  **DR bank / CR {statute}_payable**: the liability is restored and the bank
+  is corrected to what it actually retained;
+- over-stated — the mirror.
+
+Signed by the direction of the difference, posted as **one**
+`statutory_backfill` journal with the `statutory_backfill` domain event
+appended first under the **same idempotency key** — one fact, not two. The
+amount is the measured difference, not re-derivable from any aggregate, so
+`replay` refuses it with `STATUTORY_BACKFILL_NOT_REPLAYABLE`. Repair is
+**per-statute by design** (`STATUTORY_RECONCILE_NEEDS_STATUTE` otherwise):
+a blind platform-wide statutory repair would post an unknown number of
+journals at once.
+
+### Where it shows up
+
+- `GET /payouts/admin/statutory-reconcile` (SUPER_ADMIN) — platform picture
+  (per-statute detail) or `?statute=` single-statute report.
+- `POST /payouts/admin/statutory-reconcile/repair` (SUPER_ADMIN) — the
+  one-journal, per-statute repair.
+- Integrity report `checks.statutory` (platform-scoped — the payable
+  accounts carry no tenant) → the ledger page's **Statutory payable (TCS/TDS)**
+  row (A38 now requires all 10 subsystems), with drift to the paise and a
+  per-statute backfill action.
+- `smoke-statutory` (49 checks): the withholdings booked at submission, a
+  deposit and its revert, over-deposit refusal, bank-reversal and
+  provider-failure unwinds, drift → signed backfill → balanced → zero-diff
+  refused, backfill journal loss → findDrift → replay refused → re-post under
+  the event's own key restores the pair with no residual drift, trial
+  balance + audit chain with statutory journals mixed in.

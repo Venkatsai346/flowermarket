@@ -65,6 +65,9 @@ router.post('/admin/statement/ingest', platformAdmin, validate(bankStatementInge
 // Phase 17 — vendor payable integrity (the payout lines ARE the ledger)
 router.get('/admin/vendor-reconcile', platformAdmin, validate(vendorReconcileQuery, 'query'), PayoutController.vendorReconcile);
 router.post('/admin/vendor-reconcile/repair', platformAdmin, validate(vendorReconcileBody, 'body'), PayoutController.vendorReconcileRepair);
+// Phase 18 — statutory payable integrity (TCS/TDS are real accounts)
+router.get('/admin/statutory-reconcile', platformAdmin, validate(Joi.object({ statute: Joi.string().valid('tcs', 'tds').optional() }), 'query'), PayoutController.statutoryReconcile);
+router.post('/admin/statutory-reconcile/repair', platformAdmin, validate(Joi.object({ statute: Joi.string().valid('tcs', 'tds') }), 'body'), PayoutController.statutoryReconcileRepair);
 router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.getPayout);
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);

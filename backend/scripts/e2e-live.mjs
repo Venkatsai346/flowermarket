@@ -461,6 +461,25 @@ section('16. vendor payable integrity (Phase 17)');
   check('16.5', 'per-vendor scope: single vendor reconciles balanced', vs.status === 200 && vs.data?.data?.balanced === true && (!listed || (vs.data?.data?.openLines === 0 && vs.data?.data?.expectedPaise === 0)), j(vs.data?.data).slice(0, 160));
 }
 
+section('17. statutory payable integrity (Phase 18)');
+{
+  const srec = await api('/payouts/admin/statutory-reconcile', { token: adminTok });
+  check('17.1', 'platform statutory reconcile: payables = withheld − deposited, no drift', srec.status === 200 && srec.data?.data?.ok === true && srec.data?.data?.drifted === 0 && Array.isArray(srec.data?.data?.statutes), j(srec.data?.data).slice(0, 160));
+
+  const srow = srec.data?.data?.statutes?.find((s) => s.statute === 'tcs');
+  check('17.2', 'per-statute picture: withheld / deposited / books to the paise', srec.status === 200 && !!srow && srow.balanced === true && srow.expectedPaise === srow.booksPaise, j(srow).slice(0, 160));
+
+  const sinteg = await api('/ledger/integrity', { token: adminTok });
+  check('17.3', 'integrity report: statutory check present and ok', sinteg.status === 200 && sinteg.data?.data?.checks?.statutory?.ok === true, j(sinteg.data?.data?.checks?.statutory).slice(0, 160));
+
+  const srbac1 = await api('/payouts/admin/statutory-reconcile', { token: custTok });
+  const srbac2 = await api('/payouts/admin/statutory-reconcile/repair', { method: 'POST', token: custTok });
+  check('17.4', 'statutory reconcile endpoints are platform-admin only', srbac1.status === 403 && srbac2.status === 403, `reconcile=${srbac1.status} repair=${srbac2.status}`);
+
+  const srepair = await api('/payouts/admin/statutory-reconcile/repair', { method: 'POST', token: adminTok });
+  check('17.5', 'no-op repair: already balanced, nothing posted', srepair.status === 200 && srepair.data?.data?.balanced === true && srepair.data?.data?.repaired === null, j(srepair.data?.data).slice(0, 160));
+}
+
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);
 console.log(`E2E-LIVE: ${passed}/${results.length} cases passed`);

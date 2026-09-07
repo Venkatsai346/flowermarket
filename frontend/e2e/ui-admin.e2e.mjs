@@ -615,10 +615,10 @@ await R.check('A38', 'System integrity: ledger page reports all subsystems + rep
   const t = await bodyText(page);
   if (!/All subsystems consistent/i.test(t)) throw new Error('integrity not green on live stack');
   if (!/Replay/i.test(t)) throw new Error('replay action missing');
-  for (const sub of ['Ledger', 'Search index', 'Delivery slots', 'Payouts', 'Wallet ledger', 'Vendor ledger', 'Audit event store']) {
+  for (const sub of ['Ledger', 'Search index', 'Delivery slots', 'Payouts', 'Wallet ledger', 'Vendor ledger', 'Statutory payable', 'Audit event store']) {
     if (!new RegExp(sub, 'i').test(t)) throw new Error(`missing subsystem row: ${sub}`);
   }
-  return 'all 9 subsystems reported, stack green';
+  return 'all 10 subsystems reported, stack green';
 });
 await shot(page, 'a38-integrity');
 

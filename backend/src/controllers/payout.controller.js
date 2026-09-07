@@ -315,6 +315,35 @@ class PayoutController {
     res.status(200).json(success(result, { message: result.repaired ? 'Vendor payable backfilled' : 'Vendor payable already balanced' }));
   });
 
+  // ---- Phase 18: statutory payable integrity (TCS/TDS are real accounts) ----
+
+  statutoryReconcile = asyncHandler(async (req, res) => {
+    const result = await statutoryService.reconcile({ statute: req.query.statute || null });
+    res.status(200).json(success(result, { message: 'Statutory payable reconciliation' }));
+  });
+
+  statutoryReconcileRepair = asyncHandler(async (req, res) => {
+    const statute = req.body?.statute || null;
+    if (!statute) {
+      const all = await statutoryService.reconcile({});
+      if (all.drifted === 0) {
+        res.status(200).json(success({ repaired: null, balanced: true }, { message: 'Already balanced' }));
+        return;
+      }
+      const err = badRequest('Pass {"statute": "tcs"|"tds"} to repair a specific payable — repair is per-statute by design', 'STATUTORY_RECONCILE_NEEDS_STATUTE');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    const row = await statutoryService.reconcile({ statute });
+    if (row.balanced) {
+      res.status(200).json(success({ ...row, repaired: null }, { message: 'Statutory payable already balanced' }));
+      return;
+    }
+    const repaired = await statutoryService.postStatutoryBackfill({ statute, differencePaise: row.differencePaise });
+    const after = await statutoryService.reconcile({ statute });
+    res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: row.differencePaise, posted: repaired.posted } }, { message: 'Statutory payable backfilled' }));
+  });
+
   // ---- Phase 14: bank statement reconciliation (the egress truth) ----
 
   statementSummary = asyncHandler(async (req, res) => {

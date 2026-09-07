@@ -172,6 +172,7 @@ function IntegrityCard() {
             <CheckRow name="Payouts" check={c.payouts} detail={c.payouts ? `${c.payouts.batchesChecked} batch(es) · ${c.payouts.missingJournals} missing payout journal(s)` : ''} />
             <CheckRow name="Wallet ledger" check={c.wallet} detail={c.wallet ? `${c.wallet.wallets} wallet(s) · balances ${inr(c.wallet.walletTotalPaise)} vs liability ${inr(c.wallet.ledgerPaise)} · difference ${inr(Math.abs(c.wallet.differencePaise))}` : ''} />
             <CheckRow name="Vendor ledger" check={c.vendors} detail={c.vendors ? `${c.vendors.vendorsChecked} vendor(s) checked · ${c.vendors.drifted} drifted · total difference ${inr(c.vendors.totalDifferencePaise)}` : ''} />
+            <CheckRow name="Statutory payable (TCS/TDS)" check={c.statutory} detail={c.statutory ? `${c.statutory.statutes?.length ?? 0} payable(s) checked · ${c.statutory.drifted ?? 0} drifted · total difference ${inr(c.statutory.totalDifferencePaise ?? 0)}` : ''} />
             <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
             <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
             <CheckRow name="Audit chain (tamper-evidence)" check={c.auditChain} detail={c.auditChain ? `${c.auditChain.eventsVerified} event(s) re-hashed · ${c.auditChain.unanchored} unanchored · ${c.auditChain.breaks.length} break(s)` : ''} />
@@ -221,6 +222,37 @@ function IntegrityCard() {
                       }}
                     >
                       Backfill {d.vendorId.slice(0, 8)}…
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {c.statutory && !c.statutory.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  {c.statutory.drifted} TCS/TDS payable account(s) disagree with what was withheld from payouts and deposited
+                  (total {inr(c.statutory.totalDifferencePaise)}). A backfill posts one signed `statutory_backfill`
+                  journal per drifted statute — it is recorded in the audit store and cannot be replayed (the amount is
+                  not re-derivable), so pick the statute deliberately.
+                </p>
+                <div className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                  {(c.statutory.statutes || []).filter((d) => !d.balanced).slice(0, 2).map((d) => (
+                    <li key={d.statute}>{d.statute.toUpperCase()} payable: books {inr(d.booksPaise)} vs owed {inr(d.expectedPaise)} (diff {inr(d.differencePaise)} · withheld {inr(d.withheldPaise)} − deposited {inr(d.netDepositedPaise)})</li>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(c.statutory.statutes || []).filter((d) => !d.balanced).slice(0, 2).map((d) => (
+                    <Button
+                      key={d.statute}
+                      variant="secondary"
+                      icon={Wrench}
+                      loading={busy}
+                      onClick={async () => {
+                        const r = await run(() => api.payouts.admin.statutoryReconcileRepair({ statute: d.statute }));
+                        if (r?.data) { toast.success('Statutory payable backfilled'); refetch(); }
+                      }}
+                    >
+                      Backfill {d.statute.toUpperCase()}
                     </Button>
                   ))}
                 </div>

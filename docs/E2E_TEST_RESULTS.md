@@ -51,13 +51,14 @@ updated, and log/tenant discovery in the e2e scripts is now dynamic.)
 | smoke-payouts | 143/143 (grew through Phases 11–17: bank settlement, statutory, statement, clawback, refund/carry integrity) |
 | smoke-wallet (Phase 16) | 57/57 |
 | smoke-vendors (Phase 17) | 90/90 |
+| smoke-statutory (Phase 18) | 49/49 |
 | smoke-worker (leased claims, reaper, backoff/DLQ, single-flight) | 6/6 |
 | smoke-observability (healthz/readyz/metrics, outbox lag, heartbeat, jobs) | 7/7 |
 | smoke-payments (webhook idempotency, amount verify, reconciliation, metrics) | 13/13 |
 | smoke-audit (trace propagation, exactly-once append, crash-window replay, orphan restore, refund/cancel chain) | 15/15 |
 
 ### C. Live E2E (`backend/scripts/e2e-live.mjs`, real HTTP against :4000)
-**104/104 cases passed** (current — see the Phase re-verification sections below; the per-phase sections are the authoritative record). Snapshot text below:
+**109/109 cases passed** (current — see the Phase re-verification sections below; the per-phase sections are the authoritative record). Snapshot text below:
 **79/79 cases passed** (Phase 10 snapshot). Covers: ranked search + catalog + categories/brands/
 product/stock + suggest + plans + default-tenant fallback; phone-OTP auth
 (verify + wrong-OTP reject + 401); addresses + wallet; cart → slot →
@@ -478,3 +479,19 @@ from a carry batch's consumed lines for pre-Phase-17 data) found nothing to do
 and the first live reconcile balanced to the paise with no repair.
 
 CI counts synced in `.github/workflows/ci.yml`: live 104 checks, admin browser 44.
+## Phase 18 re-verification — statutory ledger integrity (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-statutory` (NEW) | **49/49** — `tcs_payable` / `tds_payable` treated as real ledger accounts: `books == withheld (live payout journals) − net deposits` to the paise after every movement (payout paid, deposit, revert, bank reversal, provider failure — the last two unwind the withheld amount via the mirror journal); over-deposit refused with the actual balance; white-box drift → exact paise detected → signed backfill (under-stated: DR bank / CR payable) → balanced → zero-difference refused; backfill journal loss → `findDrift` → replay refused with `STATUTORY_BACKFILL_NOT_REPLAYABLE` (never guesses) → re-post under the event's own key restores the pair with zero residual drift; trial balance + audit chain hold with statutory journals mixed in |
+| `smoke:all` (25 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **109/109** (+§17: platform statutory reconcile `ok` with per-statute detail; per-statute picture (withheld / deposited / books to the paise); integrity `checks.statutory.ok`; 403s for customer on both admin endpoints; no-op repair posts nothing) |
+| Admin browser UI | **44/44** (A38 now requires the **Statutory payable (TCS/TDS)** row: "all 10 subsystems reported") |
+
+The live tenant came in clean at honest zeros (no StatutoryRate rows in the
+live DB, so no withholdings were booked by its historical payout cycles —
+the books and the facts agree at zero). `DRY_RUN` (the one-off migration
+scripts' preview mode) was documented in `.env.example` to keep the
+env-var invariant green.
+
+CI counts synced in `.github/workflows/ci.yml`: live 109 checks, admin browser 44.

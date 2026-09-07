@@ -244,11 +244,15 @@ export function createEndpoints(client) {
         cancel: (id, body) => c.post(`/payouts/admin/${id}/cancel`, body),
         submitToProvider: (id) => c.post(`/payouts/admin/${id}/submit-to-provider`),
         reconcile: (body = {}) => c.post('/payouts/admin/reconcile', body),
-        ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
 
         // Phase 17 — vendor payable integrity (the payout lines ARE the ledger)
         vendorReconcile: (q = {}) => c.get('/payouts/admin/vendor-reconcile', { query: q }),
-        vendorReconcileRepair: (body = {}) => c.post('/payouts/admin/vendor-reconcile/repair', body),      },
+        vendorReconcileRepair: (body = {}) => c.post('/payouts/admin/vendor-reconcile/repair', body),
+
+        // Phase 18 — statutory payable integrity (TCS/TDS are real accounts)
+        statutoryReconcile: (q = {}) => c.get('/payouts/admin/statutory-reconcile', { query: q }),
+        statutoryReconcileRepair: (body = {}) => c.post('/payouts/admin/statutory-reconcile/repair', body),
+      },
     },
 
     /**

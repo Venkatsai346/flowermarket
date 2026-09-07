@@ -1,11 +1,12 @@
 import mongoose from 'mongoose';
 import StatutoryDeposit from '../models/statutoryDeposit.model.js';
+import PayoutBatch from '../models/payoutBatch.model.js';
 import ledgerService, { ledgerAccounts } from './ledger.service.js';
 import domainEventService from './domainEvent.service.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/ApiError.js';
 import { toPaise } from '../utils/money.js';
 import {
-  DOMAIN_EVENT_TYPE, LEDGER_JOURNAL_KIND, STATUTORY_STATUTE,
+  DOMAIN_EVENT_TYPE, LEDGER_JOURNAL_KIND, STATUTORY_STATUTE, PAYOUT_STATE,
 } from '../constants/enums.js';
 
 /**
@@ -151,6 +152,117 @@ class StatutoryService {
    * Statutory picture: for each statute — what is withheld (the payable
    * balance), what has been deposited (net of reverts), what is still owed.
    */
+  // -------------------------------------------------------------------------
+  // Phase 18 — statutory ledger integrity (the payables are real accounts)
+  // -------------------------------------------------------------------------
+  //
+  // The books for {statute}_payable must equal the domain facts:
+  //
+  //   withheld  = Σ batch.{tcs,tds}Paise over batches whose PAYOUT_INITIATED
+  //               journal is still live (state PROCESSING / PAID — the
+  //               journal credits the payable at submission). A REVERSED or
+  //               FAILED batch booked the credit AND posted the mirror
+  //               unwind, netting to zero, so it is not withheld.
+  //   expected  = withheld − net deposits (recorded − reverted)
+  //   books     = the account balance
+  //   drift     = expected − books   (> 0: books under-state the liability)
+  //
+  // The payables are platform-global (the account codes carry no tenant), so
+  // the reconcile is platform-scoped.
+
+  /** Reconcile one statute (or both when omitted). Read-only. */
+  async reconcile({ statute = null } = {}) {
+    const statutes = statute
+      ? (ACCOUNT_FOR[statute] ? [statute] : (() => { throw badRequest(`statute must be one of ${Object.values(STATUTORY_STATUTE).join(', ')}`, 'STATUTORY_BAD_STATUTE'); })())
+      : Object.values(STATUTORY_STATUTE);
+
+    const [live, balances, deposits] = await Promise.all([
+      PayoutBatch.find({ state: { $in: [PAYOUT_STATE.PROCESSING, PAYOUT_STATE.PAID] } }).lean(),
+      Promise.all(statutes.map((s) => ledgerService.balance(ACCOUNT_FOR[s]()))),
+      StatutoryDeposit.find({}).lean(),
+    ]);
+
+    const withheld = { [STATUTORY_STATUTE.TCS]: 0, [STATUTORY_STATUTE.TDS]: 0 };
+    for (const b of live) {
+      withheld[STATUTORY_STATUTE.TCS] += b.tcsPaise || 0;
+      withheld[STATUTORY_STATUTE.TDS] += b.tdsPaise || 0;
+    }
+    const netDeposited = { [STATUTORY_STATUTE.TCS]: 0, [STATUTORY_STATUTE.TDS]: 0 };
+    for (const d of deposits) {
+      netDeposited[d.statute] += d.amountPaise;
+      if (d.status === 'reverted') netDeposited[d.statute] -= d.amountPaise;
+    }
+
+    const rows = statutes.map((s, i) => {
+      const expectedPaise = withheld[s] - netDeposited[s];
+      const booksPaise = balances[i].balancePaise;
+      const differencePaise = expectedPaise - booksPaise;
+      return {
+        statute: s,
+        accountCode: ACCOUNT_FOR[s](),
+        withheldPaise: withheld[s],
+        netDepositedPaise: netDeposited[s],
+        expectedPaise,
+        booksPaise,
+        differencePaise,
+        balanced: differencePaise === 0,
+      };
+    });
+
+    return rows.length === 1
+      ? rows[0]
+      : {
+        statutes: rows,
+        drifted: rows.filter((r) => !r.balanced).length,
+        totalDifferencePaise: rows.reduce((a, r) => a + Math.abs(r.differencePaise), 0),
+        ok: rows.every((r) => r.balanced),
+      };
+  }
+
+  /**
+   * Post ONE signed statutory_backfill journal for a drifted statute (repair).
+   * Event-first with the journal's own idempotency key; the amount is the
+   * measured difference — not re-derivable — so replay refuses it.
+   */
+  async postStatutoryBackfill({ statute, differencePaise, note = null, idempotencyKey = null }) {
+    if (!ACCOUNT_FOR[statute]) throw badRequest(`statute must be one of ${Object.values(STATUTORY_STATUTE).join(', ')}`, 'STATUTORY_BAD_STATUTE');
+    const diff = Math.round(Number(differencePaise) || 0);
+    if (diff === 0) throw badRequest('Backfill difference must be non-zero', 'STATUTORY_BACKFILL_EMPTY');
+
+    const key = idempotencyKey || `statutory_backfill:${statute}:${new Date().toISOString()}`;
+    const account = ACCOUNT_FOR[statute]();
+    const bank = ledgerAccounts.bank();
+    // under-stated (diff > 0): the withheld money is owed and the bank is
+    // short of the liability → DR bank / CR payable. Over-stated: the mirror.
+    const lines = diff > 0
+      ? [{ accountCode: bank, debitPaise: diff }, { accountCode: account, creditPaise: diff }]
+      : [{ accountCode: account, debitPaise: -diff }, { accountCode: bank, creditPaise: -diff }];
+
+    const event = await domainEventService.append({
+      tenantId: null,
+      kind: DOMAIN_EVENT_TYPE.STATUTORY_BACKFILL,
+      aggregateType: 'statutory_payable',
+      aggregateId: account,
+      idempotencyKey: key,
+      occurredAt: new Date(),
+      refType: 'statutory_payable',
+      refId: account,
+      payload: { statute, differencePaise: diff, note: note || null },
+    });
+
+    const posted = await ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.STATUTORY_BACKFILL,
+      idempotencyKey: key,
+      lines,
+      refType: 'statutory_payable',
+      refId: null, // the account code is not an ObjectId — it lives in meta
+      tenantId: null,
+      occurredAt: event?.occurredAt || new Date(),
+      meta: { statute, note: note || null },
+    });
+    return { posted: posted.created, idempotencyKey: key, journal: posted.journal || null };
+  }
+
   async summary({ tenantId = null, limit = 20 } = {}) {
     const [tcs, tds, deposits] = await Promise.all([
       ledgerService.balance(ledgerAccounts.tcsPayable()),
