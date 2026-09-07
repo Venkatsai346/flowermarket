@@ -294,6 +294,12 @@ class DomainEventService {
   }
 
   /** All events for one trace (the "follow the money" chain), oldest first. */
+  /** Look up an event by its idempotency key (journal-chain checks, replay). */
+  findEventByKey(idempotencyKey) {
+    if (!idempotencyKey) return Promise.resolve(null);
+    return DomainEvent.findOne({ idempotencyKey }).lean();
+  }
+
   async forTrace(traceId) {
     if (!traceId) return [];
     return DomainEvent.find({ traceId }).sort({ occurredAt: 1, createdAt: 1 }).lean();
@@ -357,6 +363,8 @@ class DomainEventService {
       LEDGER_JOURNAL_KIND.PSP_SETTLED,
       LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT,
       LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT_REVERTED,
+      LEDGER_JOURNAL_KIND.WALLET_TOPUP,
+      LEDGER_JOURNAL_KIND.WALLET_BACKFILL,
     ];
     const jQ = { kind: { $in: moneyKinds } };
     if (tenantId) jQ.tenantId = tenantId;
@@ -454,6 +462,22 @@ class DomainEventService {
         await payoutService.unwindPayoutJournal(batch, 'replay: restore reversal');
         return;
       }
+      case DOMAIN_EVENT_TYPE.WALLET_TOPUP: {
+        // the WalletTransaction is the aggregate of record — re-derive the
+        // counter from its reason (top-up → gateway clearing, goodwill →
+        // goodwill expense)
+        const { default: WalletTransaction } = await import('../models/walletTransaction.model.js');
+        const { WALLET_TXN_REASON } = await import('../constants/enums.js');
+        const txn = await WalletTransaction.findById(id).lean();
+        if (!txn) throw Object.assign(new Error('wallet transaction missing'), { code: 'AGGREGATE_MISSING' });
+        await ledgerPostingService.postWalletTopup({ walletTransaction: txn, goodwill: txn.reason === WALLET_TXN_REASON.GOODWILL });
+        return;
+      }
+      case DOMAIN_EVENT_TYPE.WALLET_BACKFILL:
+        // the reconciled difference is historical data — it cannot be
+        // re-derived after the fact, so replay REFUSES it loudly instead of
+        // guessing an amount
+        throw Object.assign(new Error('wallet backfill journal not re-derivable — restore manually'), { code: 'WALLET_BACKFILL_NOT_REPLAYABLE' });
       case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT:
       case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED: {
         // the StatutoryDeposit doc is the aggregate of record (findDrift does

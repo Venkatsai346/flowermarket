@@ -442,3 +442,19 @@ the failed batch, contradicting the docstring and the retry-by-next-cycle
 design). `cancel`'s line release is now sign/carry-aware (see API.md Phase 15).
 
 CI counts synced in `.github/workflows/ci.yml`: live 93 checks, admin browser 44.
+
+## Phase 16 re-verification — wallet ledger integrity (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-wallet` (NEW) | **57/57** — invariant holds after each movement type (topup, second user, wallet sale, wallet refund, goodwill); goodwill DRs the new `wallet_goodwill_expense` account; white-box drift → exact paise detected → signed backfill → balanced → no-op second repair; journal deletion → `findDrift` → `replay` restores the exact paise from the `WalletTransaction`; backfill replay refused with `WALLET_BACKFILL_NOT_REPLAYABLE` (never guesses); trial balance + audit chain hold with wallet journals mixed in |
+| `smoke:all` (23 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **99/99** (+§15: top-up ₹300 accepted; balance = before + 300; reconcile balanced with the journal posted; integrity `checks.wallet.ok`; 403s for customer on both admin endpoints; no-op repair posts nothing) |
+| Admin browser UI | **44/44** (A38 now requires the **Wallet ledger** row: "all 8 subsystems reported") |
+
+The live tenant carried **₹2,000** of pre-Phase-16 top-up drift into this
+phase — the first reconcile measured it to the paise and the repair posted
+one `wallet_backfill` journal (now visible in the journal list + audit
+store), after which every layer agreed the books were balanced.
+
+CI counts synced in `.github/workflows/ci.yml`: live 99 checks, admin browser 44.

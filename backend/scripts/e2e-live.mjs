@@ -410,6 +410,34 @@ section('14. bank statement — the egress truth (Phase 14)');
   check('14.4', 'statement endpoints are platform-admin only', stmtRbac1.status === 403 && stmtRbac2.status === 403, `summary=${stmtRbac1.status} ingest=${stmtRbac2.status}`);
 }
 
+// =====================================================================
+// §15 Wallet ledger integrity (Phase 16) — the wallet IS a ledger account
+// =====================================================================
+section('15. wallet ledger integrity (Phase 16)');
+{
+  const balBefore = await api('/wallet', { token: custTok });
+  const before = Number(balBefore.data?.data?.balance || 0);
+
+  const topupRes = await api('/wallet/topup', { method: 'POST', token: custTok, body: { amount: '300.00' } });
+  check('15.1', 'topup ₹300 accepted (mock gateway)', topupRes.status === 201 && topupRes.data?.data?.wallet?.balance !== undefined, 'status ' + topupRes.status + ' ' + j(topupRes.data).slice(0, 120));
+
+  const balAfter = await api('/wallet', { token: custTok });
+  check('15.2', 'wallet balance = before + 300', Math.abs(Number(balAfter.data?.data?.balance) - (before + 300)) < 0.001, `before=${before} after=${balAfter.data?.data?.balance}`);
+
+  const recon = await api('/wallet/admin/reconcile', { token: adminTok });
+  check('15.3', 'reconcile: wallets = customer_wallet_liability after topup', recon.status === 200 && recon.data?.data?.balanced === true && recon.data?.data?.differencePaise === 0, j(recon.data?.data).slice(0, 160));
+
+  const integ = await api('/ledger/integrity', { token: adminTok });
+  check('15.4', 'integrity report: wallet check ok', integ.status === 200 && integ.data?.data?.checks?.wallet?.ok === true, j(integ.data?.data?.checks?.wallet).slice(0, 160));
+
+  const rbac1 = await api('/wallet/admin/reconcile', { token: custTok });
+  const rbac2 = await api('/wallet/admin/reconcile/repair', { method: 'POST', token: custTok });
+  check('15.5', 'reconcile endpoints are platform-admin only', rbac1.status === 403 && rbac2.status === 403, `reconcile=${rbac1.status} repair=${rbac2.status}`);
+
+  const repair = await api('/wallet/admin/reconcile/repair', { method: 'POST', token: adminTok });
+  check('15.6', 'no-op repair: already balanced, nothing posted', repair.status === 200 && repair.data?.data?.balanced === true && repair.data?.data?.repaired === null, j(repair.data?.data).slice(0, 160));
+}
+
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);
 console.log(`E2E-LIVE: ${passed}/${results.length} cases passed`);

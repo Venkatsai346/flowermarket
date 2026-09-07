@@ -707,6 +707,8 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   STATUTORY_DEPOSIT: 'statutory_deposit', // TCS/TDS paid to the government
   STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted',
   BANK_STATEMENT_INGESTED: 'bank_statement_ingested', // independent egress truth matched
+  WALLET_TOPUP: 'wallet_topup', // customer money into the wallet (Phase 16)
+  WALLET_BACKFILL: 'wallet_backfill', // pre-ledger wallet balances reconciled
   // Phase 11 — the audit chain was deliberately re-linked after a legitimate
   // row-set change (e.g. an event restored from its journal). Manual only.
   CHAIN_REBUILT: 'chain_rebuilt',
@@ -719,6 +721,8 @@ export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
   DOMAIN_EVENT_TYPE.PSP_SETTLED,
   DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT,
   DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED,
+  DOMAIN_EVENT_TYPE.WALLET_TOPUP,
+  DOMAIN_EVENT_TYPE.WALLET_BACKFILL,
 ]);
 
 // ---- Price history ----
@@ -842,7 +846,9 @@ export const LEDGER_JOURNAL_KIND = Object.freeze({
   COMMISSION_INVOICED: 'commission_invoiced',
   ADJUSTMENT: 'adjustment',             // manual, reason-coded, audited
   STATUTORY_DEPOSIT: 'statutory_deposit',       // TCS/TDS paid to the government
-  STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted', // operator correction
+  STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted', // operator correction,
+  WALLET_TOPUP: 'wallet_topup', // customer money in via the gateway
+  WALLET_BACKFILL: 'wallet_backfill', // one-time reconciliation of pre-ledger wallets
 });
 
 /** Which statutes the platform withholds from vendor payouts. */
@@ -864,6 +870,7 @@ export const LEDGER_ACCOUNT = Object.freeze({
   TCS_PAYABLE: 'tcs_payable',                           // liability: collected u/s 52
   TDS_PAYABLE: 'tds_payable',                           // liability: deducted u/s 194-O
   CUSTOMER_WALLET_LIABILITY: 'customer_wallet_liability',
+  WALLET_GOODWILL_EXPENSE: 'wallet_goodwill_expense',  // expense: platform money given away
   ROUNDING_DIFFERENCE: 'rounding_difference',           // expense: never expected to be non-zero
 });
 

@@ -170,9 +170,30 @@ function IntegrityCard() {
             <CheckRow name="Delivery slots" check={c.slots} detail={c.slots ? `${c.slots.checked} slot(s) checked · ${c.slots.overReserved} over-reservation(s)` : ''} />
             <CheckRow name="Payments & webhooks" check={c.payments} detail={c.payments ? `${c.payments.total} webhook event(s) · ${c.payments.processed} processed · ${c.payments.duplicate} duplicate · ${c.payments.mismatches} mismatch(es)` : ''} />
             <CheckRow name="Payouts" check={c.payouts} detail={c.payouts ? `${c.payouts.batchesChecked} batch(es) · ${c.payouts.missingJournals} missing payout journal(s)` : ''} />
+            <CheckRow name="Wallet ledger" check={c.wallet} detail={c.wallet ? `${c.wallet.wallets} wallet(s) · balances ${inr(c.wallet.walletTotalPaise)} vs liability ${inr(c.wallet.ledgerPaise)} · difference ${inr(Math.abs(c.wallet.differencePaise))}` : ''} />
             <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
             <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
             <CheckRow name="Audit chain (tamper-evidence)" check={c.auditChain} detail={c.auditChain ? `${c.auditChain.eventsVerified} event(s) re-hashed · ${c.auditChain.unanchored} unanchored · ${c.auditChain.breaks.length} break(s)` : ''} />
+            {c.wallet && !c.wallet.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  Wallet balances and the customer-wallet-liability account disagree by {inr(Math.abs(c.wallet.differencePaise))}.
+                  Backfill posts one `wallet_backfill` journal for the difference — it is recorded in the audit store and cannot be replayed (the amount is not re-derivable), so do it deliberately.
+                </p>
+                <Button
+                  variant="secondary"
+                  icon={Wrench}
+                  className="mt-2"
+                  loading={busy}
+                  onClick={async () => {
+                    const r = await run(() => api.wallet.walletReconcileRepair());
+                    if (r?.data) { toast.success('Wallet ledger backfilled'); refetch(); }
+                  }}
+                >
+                  Backfill ledger from wallet balances
+                </Button>
+              </div>
+            )}
             {c.auditChain?.breaks?.length > 0 && (
               <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 sm:col-span-2">
                 <p className="text-xs font-semibold text-rose-900">Chain breaks — the audit log does not verify. Investigate; a rebuild re-links the chain but is itself recorded.</p>

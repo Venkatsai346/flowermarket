@@ -75,7 +75,7 @@ jobs:
         run: npm run build
 
   live-e2e:
-    name: Live E2E — full stack (93 checks)
+    name: Live E2E — full stack (99 checks)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -105,7 +105,7 @@ jobs:
         run: npm ci
       - name: Boot live stack (rs0 → seed → API :4000 → worker → Vite :5173/:5174)
         run: bash scripts/ci/boot-live-stack.sh
-      - name: Live E2E — 93 checks
+      - name: Live E2E — 99 checks
         working-directory: backend
         run: |
           . /tmp/fm-ci/env.sh

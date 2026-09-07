@@ -1,4 +1,5 @@
 import ledgerService from './ledger.service.js';
+import walletService from './wallet.service.js';
 import domainEventService from './domainEvent.service.js';
 import searchIndexer from './searchIndexer.service.js';
 import DeliverySlot from '../models/deliverySlot.model.js';
@@ -37,7 +38,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -49,6 +50,7 @@ class IntegrityService {
       domainEventService.stats({ tenantId }),
       this._notificationCheck(scope),
       domainEventService.verifyChains({ tenantId }).catch((e) => ({ error: e?.message || String(e), ok: false })),
+      this._walletCheck(scope),
     ]);
 
     const ledger = {
@@ -81,6 +83,7 @@ class IntegrityService {
       payouts: { ...payouts, ok: payouts.missingJournals === 0 },
       events: { ...events, ok: true }, // the audit store has no "drift" — it is the reference
       notifications,
+      wallet,
       // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
       // deleted or re-ordered rows) are a DRIFT — the strongest signal in
       // the report. Unanchored rows are normal while repairChain catches up.
@@ -109,6 +112,16 @@ class IntegrityService {
   // -------------------------------------------------------------------------
   // per-subsystem checks
   // -------------------------------------------------------------------------
+
+  /** Phase 16: wallet balances must equal the wallet-liability account. */
+  async _walletCheck(scope) {
+    try {
+      const r = await walletService.ledgerReconcile({ tenantId: scope.tenantId || null });
+      return { ...r, ok: r.balanced };
+    } catch (e) {
+      return { error: e?.message || String(e), ok: false };
+    }
+  }
 
   /** A slot can never be reserved beyond its effective capacity. */
   async _slotCheck() {

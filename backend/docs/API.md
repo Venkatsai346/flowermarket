@@ -296,6 +296,29 @@ Two flows (doc §6): `pickup_qc` (pickup → QC → refund) for non-perishables,
 | `GET /fulfillment/refunds` (ADMIN) | all refunds |
 | `POST /fulfillment/refunds` (ADMIN) `{orderId, amount, reason, destination}` | manual refund (idempotencyKey dedupes) |
 | `POST /fulfillment/reconcile/payments` (ADMIN) | sweep stale PENDING gateway payments → FAILED (order compensated); wallet PENDING payments are first **healed** if their debit already exists, then cancelled only if truly unrecoverable |
+| `GET /wallet/admin/reconcile` (SUPER_ADMIN) | **Phase 16** — wallet ledger reconciliation: `Σ Wallet.balance` vs the tenant's `customer_wallet_liability` entry sum → `{wallets, walletTotalPaise, ledgerPaise, differencePaise, balanced, repaired}` (read-only) |
+| `POST /wallet/admin/reconcile/repair` (SUPER_ADMIN) | **Phase 16** — post **one** `wallet_backfill` journal for the difference (signed: wallet ahead → DR `gateway_clearing` / CR liability; behind → the reverse) + a `wallet_backfill` audit event, then re-report the post-repair state. No-op when balanced. The backfill amount is **not re-derivable** from any aggregate, so `replay` deliberately refuses to replay it (`WALLET_BACKFILL_NOT_REPLAYABLE`) — the audit event records what was backfilled and why |
+
+**Phase 16 — the wallet IS a ledger account.** Before this phase the customer
+wallet moved without a journal for top-ups (and goodwill credits), so the
+books and the wallets could drift apart silently. Now every wallet movement
+has exactly one journal owner:
+
+- **topup** → event `wallet_topup` (key `wallet_topup:wallet_txn:{txnId}`) then
+  `wallet_topup` journal — DR `gateway_clearing` / CR `customer_wallet_liability`,
+  paise-exact from the `WalletTransaction`.
+- **goodwill credit** → same kind, DR `wallet_goodwill_expense` / CR liability
+  (no gateway money behind a goodwill credit).
+- **refund credit** → journaled by `refund_issued` (`postRefund`), **no** new
+  journal from the wallet service — no double count.
+- **order payment debit** → journaled by the sale journal
+  (`DR customer_wallet_liability`), unchanged.
+
+The integrity report gained a **Wallet** check
+(`checks.wallet`: `ok === balanced`); the ledger page shows the row plus a
+deliberate *Backfill ledger from wallet balances* action when the two disagree.
+A top-up that crashes between the event and the journal is healed by the
+normal `replay` (the journal re-derives from the `WalletTransaction`).
 
 ## Phase 3.5 — policies, rider app, forecasting, payments webhooks
 
@@ -604,6 +627,8 @@ minted and echoed in the `x-trace-id` response header. Full design:
 | `GET` | `/ledger/integrity` | SUPER_ADMIN | read-only system integrity report; optional `?tenantId=` scopes the per-tenant checks |
 | `POST` | `/ledger/integrity/replay` | SUPER_ADMIN | re-derive missing journals from the event store + restore missing audit rows; idempotent; body `{limit?}` (default 200) |
 | `GET` | `/admin/integrity` | ADMIN | same report, always tenant-scoped to the caller's tenant |
+| `GET` | `/wallet/admin/reconcile` | SUPER_ADMIN | **Phase 16** — wallet↔`customer_wallet_liability` reconciliation (read-only) |
+| `POST` | `/wallet/admin/reconcile/repair` | SUPER_ADMIN | **Phase 16** — post a signed `wallet_backfill` journal for the difference (one journal, audited, not replayable) |
 | `GET` | `/admin/traces/:traceId` | ADMIN | the full money chain for one trace, time-ordered (order facts, status history, payments, webhook audit rows, journals, payout transitions, domain events); 404 `TRACE_NOT_FOUND` when the id resolves to nothing |
 
 **Integrity report shape:** `{ generatedAt, scope: 'platform'|tenantId, overall: 'ok'|'drift', checks: { ledger: { trial{balanced,differencePaise,entries}, balances{checked,drifted,ok}, eventJournalCoverage{eventsScanned,missingJournals,missingEvents,samples,ok}, ok }, searchIndex{indexedDocuments,listings,missing,error,ok}, slots{checked,overReserved,samples,ok}, payments{total,processed,duplicate,mismatch,ignored,mismatches,ok}, payouts{batchesChecked,missingJournals,ok}, events{total,byKind,newestOccurredAt,ok}, notifications{pending,oldestPendingAgeMs,deadLetters,ok} } }`.

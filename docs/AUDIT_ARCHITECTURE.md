@@ -579,3 +579,76 @@ Paid order (drain D) → full refund → next cycle:
   (net ₹0, carry ₹184.26) which A45 cancelled through the browser.
 - Browser `ui-admin` A45 (44 total): sweep → compute → DRAFT batch cancelled
   with a reason, lines released; honest empty state when nothing is payable.
+
+## Part 7 — Phase 16: wallet ledger integrity (the wallet IS a ledger account)
+
+The customer wallet kept two parallel truths: `Wallet.balance` (the money the
+customer can spend) and, for some movements only, the double-entry journal.
+Top-ups and goodwill credits moved wallets **without** a journal, so a
+platform whose wallet history pre-dates the ledger — or which lost a journal
+in a crash window — silently owes customers more or less than its books say.
+Phase 16 closes that gap and makes the wallet a first-class ledger account.
+
+### The invariant
+
+```
+Σ Wallet.balance (tenant)  ===  customer_wallet_liability (tenant entry sum)
+```
+
+to the paise, at all times. Every wallet movement now has exactly one
+journal owner, so neither side can move alone:
+
+| Movement | Journal | Debit | Credit |
+| --- | --- | --- | --- |
+| top-up (real money in via gateway) | `wallet_topup` | `gateway_clearing` | `customer_wallet_liability` |
+| goodwill credit (no gateway money) | `wallet_topup` (kind) | `wallet_goodwill_expense` | `customer_wallet_liability` |
+| refund to wallet | `refund_issued` (unchanged, `postRefund`) | sale-side slice | `customer_wallet_liability` |
+| wallet order payment | sale journal (unchanged) | `customer_wallet_liability` | vendor/TCS/TDS/GST split |
+
+No movement owns two journals — a refund credit from the wallet service
+posts **nothing** (the refund journal already raised the liability), and a
+sale already debited it. The wallet service's rule: *journal exactly the
+movements that no other service journals, and only those.*
+
+### Event-first, replayable
+
+A top-up appends the `wallet_topup` domain event **before** posting the
+journal, sharing the journal's idempotency key
+(`wallet_topup:wallet_txn:{txnId}`). A crash in between is the same drift
+shape as every other money fact: `findDrift` flags the missing journal and
+`replay` re-derives it from the `WalletTransaction` (paise-exact, goodwill
+derived from the txn's `reason`). Verified hermetically by deleting the
+journal and watching the replay restore it.
+
+### Backfill — the honest repair for pre-ledger balances
+
+If the wallets and the ledger disagree (a tenant that was live before the
+ledger, a manual edit, a lost journal whose event is also gone), the report
+says so with the exact difference, and the operator can post **one**
+`wallet_backfill` journal for it:
+
+- signed — wallet ahead: DR `gateway_clearing` / CR liability; behind: the
+  reverse. The clearing side is swept to the bank by settlement ingest,
+  exactly like a sale.
+- audited — a `wallet_backfill` event carries the difference in its payload.
+- **deliberately not replayable** — the backfill amount is not re-derivable
+  from any aggregate (it is the *difference*, a measured fact). `replay`
+  throws `WALLET_BACKFILL_NOT_REPLAYABLE` rather than guess, and the
+  integrity report keeps flagging the missing journal until a human decides.
+  A repair that re-guesses would manufacture the drift it exists to remove.
+
+This phase's own proof: the shared live tenant carried **₹2,000** of
+pre-Phase-16 top-up history. The first reconcile reported the difference to
+the paise; the repair posted one backfill journal; every layer after —
+reconcile, integrity, e2e — agreed the books were balanced.
+
+### Where it shows up
+
+- `GET /wallet/admin/reconcile` (SUPER_ADMIN) — read-only reconciliation.
+- `POST /wallet/admin/reconcile/repair` (SUPER_ADMIN) — the one-journal repair.
+- Integrity report `checks.wallet` → `ok` = balanced; the ledger page's
+  "Wallet ledger" row plus a deliberate *Backfill* action when off the books.
+- `smoke-wallet` (57 checks): the invariant after each of the five movement
+  types, drift → detect → signed backfill → balanced, journal deletion →
+  findDrift → replay restores exact paise, backfill replay refusal, trial
+  balance + audit chain with wallet journals mixed in.

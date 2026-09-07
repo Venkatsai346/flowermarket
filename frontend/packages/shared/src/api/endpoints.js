@@ -425,6 +425,9 @@ export function createEndpoints(client) {
       walletTopup: (body) => c.post('/wallet/topup', body),
       walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
       walletRefunds: (q = {}) => c.get('/wallet/refunds', { query: q }),
+      // Phase 16 — wallet ledger reconcile + backfill (SUPER_ADMIN)
+      walletReconcile: () => c.get('/wallet/admin/reconcile'),
+      walletReconcileRepair: () => c.post('/wallet/admin/reconcile/repair'),
     },
 
     /** Phase 6.5 — search tuning (store admin). */

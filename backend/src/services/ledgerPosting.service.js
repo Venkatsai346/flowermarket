@@ -260,6 +260,32 @@ class LedgerPostingService {
   }
 
   /**
+   * Phase 16: a wallet top-up moves real money into the platform (the gateway
+   * collects it) and raises what we owe the customer as wallet balance.
+   * DR gateway_clearing / CR customer_wallet_liability — the clearing side is
+   * swept to the bank by the normal settlement ingest, exactly like a sale.
+   * (Goodwill credits have no gateway money: DR wallet_goodwill_expense.)
+   */
+  async postWalletTopup({ walletTransaction, goodwill = false }) {
+    const txn = walletTransaction;
+    const counter = goodwill
+      ? ledgerAccounts.walletGoodwillExpense()
+      : ledgerAccounts.gatewayClearing();
+    return ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.WALLET_TOPUP,
+      idempotencyKey: `${LEDGER_JOURNAL_KIND.WALLET_TOPUP}:wallet_txn:${txn._id}`,
+      lines: [
+        { accountCode: counter, debitPaise: Math.round(Number(txn.amount) * 100), creditPaise: 0, memo: `wallet top-up for ${txn.userId}` },
+        { accountCode: ledgerAccounts.walletLiability(), debitPaise: 0, creditPaise: Math.round(Number(txn.amount) * 100), refType: 'wallet_transaction', refId: txn._id },
+      ],
+      refType: 'wallet_transaction',
+      refId: txn._id,
+      tenantId: txn.tenantId,
+      occurredAt: txn.completedAt || txn.createdAt || new Date(),
+    });
+  }
+
+  /**
    * Backfill sweep — post sale journals for orders that reached CONFIRMED
    * without one (ledger introduced after the order, or a crash between the
    * saga step and the post). Idempotent, resumable, safe to run nightly.

@@ -23,7 +23,17 @@ class WalletController {
     res.status(200).json(success(result.items, { message: 'Wallet transactions', meta: result.meta }));
   });
 
-  /** Customer view of their refunds. */
+  /** Phase 16 — wallet ledger reconciliation (SUPER_ADMIN, read-only). */
+  ledgerReconcile = asyncHandler(async (req, res) => {
+    const result = await walletService.ledgerReconcile({ tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Wallet ledger reconciliation' }));
+  });
+
+  ledgerReconcileRepair = asyncHandler(async (req, res) => {
+    const result = await walletService.ledgerReconcile({ tenantId: req.tenantId, repair: true });
+    res.status(200).json(success(result, { message: result.repaired ? 'Wallet ledger backfilled' : 'Wallet ledger already balanced' }));
+  });
+
   topup = asyncHandler(async (req, res) => {
     const result = await walletService.topup({
       tenantId: req.tenantId,
@@ -33,6 +43,7 @@ class WalletController {
     res.status(201).json(success(result, { message: 'Wallet topped up' }));
   });
 
+  /** Customer view of their refunds. */
   refunds = asyncHandler(async (req, res) => {
     const result = await refundService.list({
       tenantId: req.tenantId, userId: req.auth.userId, query: req.query,
