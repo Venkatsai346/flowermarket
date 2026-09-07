@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { Flower2, MapPin, Package, Search, ShoppingBag, X } from 'lucide-react';
 import { useShop } from '../store.js';
-import { api } from '../api.js';
+import { api, useShopAuth } from '../api.js';
+import { t } from '../i18n.js';
 import AccountMenu from './AccountMenu.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import { cn } from '../lib/utils.js';
@@ -14,6 +15,9 @@ export default function Header() {
   const openPin = useShop((s) => s.openPin);
   const pincode = useShop((s) => s.pincode);
   const serviceability = useShop((s) => s.serviceability);
+  const language = useShop((s) => s.language);
+  const setLanguage = useShop((s) => s.setLanguage);
+  const isAuth = useShopAuth((s) => s.isAuthenticated());
   const [local, setLocal] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
@@ -30,10 +34,6 @@ export default function Header() {
     }
   }, [pathname, search]);
 
-  /**
-   * Debounced autocomplete. 160 ms is short enough to feel instant and long
-   * enough that a fast typist does not fire a request per keystroke.
-   */
   useEffect(() => {
     if (local.trim().length < 2) { setSuggestions([]); return undefined; }
     clearTimeout(debounce.current);
@@ -62,6 +62,13 @@ export default function Header() {
     goSearch(text);
   };
 
+  const switchLang = (lang) => {
+    setLanguage(lang);
+    if (isAuth) {
+      api.shop.updateMe({ preferences: { language: lang } }).catch(() => {});
+    }
+  };
+
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/85 backdrop-blur-md">
       <div className="wrap flex h-16 items-center gap-3">
@@ -85,7 +92,7 @@ export default function Header() {
             onChange={(e) => { setLocal(e.target.value); setShowSuggest(true); }}
             onFocus={() => setShowSuggest(true)}
             onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
-            placeholder="Search flowers, plants, gifts…"
+            placeholder={t(language, 'searchPlaceholder')}
             aria-label="Search products"
             autoComplete="off"
             className="input rounded-full !py-2.5 pl-10 pr-9"
@@ -120,6 +127,22 @@ export default function Header() {
         </form>
 
         <nav className="flex shrink-0 items-center gap-1">
+          <div className="hidden items-center rounded-full border border-slate-200 p-0.5 text-[11px] font-semibold sm:flex" role="group" aria-label="Language">
+            <button
+              type="button"
+              onClick={() => switchLang('en')}
+              className={cn('rounded-full px-2 py-1', language === 'en' ? 'bg-slate-900 text-white' : 'text-slate-500')}
+            >
+              EN
+            </button>
+            <button
+              type="button"
+              onClick={() => switchLang('te')}
+              className={cn('rounded-full px-2 py-1', language === 'te' ? 'bg-slate-900 text-white' : 'text-slate-500')}
+            >
+              తె
+            </button>
+          </div>
           <button
             type="button"
             onClick={openPin}
@@ -127,7 +150,7 @@ export default function Header() {
             aria-label="Set delivery pincode"
           >
             <MapPin className={`h-4 w-4 shrink-0 ${serviceability && !serviceability.serviceable ? 'text-rose-500' : ''}`} />
-            <span className="truncate tabular-nums">{pincode || 'Set pin'}</span>
+            <span className="truncate tabular-nums">{pincode || t(language, 'setPin')}</span>
           </button>
           <Link
             to="/orders"
@@ -146,7 +169,7 @@ export default function Header() {
             aria-label={`Cart, ${count} item${count === 1 ? '' : 's'}`}
           >
             <ShoppingBag className="h-4 w-4" />
-            <span className={cn('tabular-nums', count === 0 && 'hidden sm:inline')}>{count || 'Cart'}</span>
+            <span className={cn('tabular-nums', count === 0 && 'hidden sm:inline')}>{count || t(language, 'cart')}</span>
           </button>
         </nav>
       </div>

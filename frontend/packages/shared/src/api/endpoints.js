@@ -445,6 +445,8 @@ export function createEndpoints(client) {
       walletRefunds: (q = {}) => c.get('/wallet/refunds', { query: q }),
       notifications: (q = {}) => c.get('/users/me/notifications', { query: q }),
       markNotificationRead: (id) => c.post(`/users/me/notifications/${id}/read`),
+      me: () => c.get('/users/me'),
+      updateMe: (body) => c.patch('/users/me', body),
       // Phase 16 — wallet ledger reconcile + backfill (SUPER_ADMIN)
       walletReconcile: () => c.get('/wallet/admin/reconcile'),
       walletReconcileRepair: () => c.post('/wallet/admin/reconcile/repair'),

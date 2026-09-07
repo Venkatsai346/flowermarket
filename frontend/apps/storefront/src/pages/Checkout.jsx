@@ -7,7 +7,8 @@ import { api, useShopAuth } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { Button, Money, Empty } from '../components/ui.jsx';
-import { cn, errMsg } from '../lib/utils.js';
+import { asList, cn, errMsg } from '../lib/utils.js';
+import { kolkataDate } from '../lib/arrival.js';
 
 const PAYMENTS = [
   ['upi', 'UPI', BadgeIndianRupee],
@@ -77,24 +78,14 @@ export default function Checkout() {
     [isAuth],
   );
 
-  // --- FIX: Safely extract arrays in case the API wraps them in an object (e.g., { slots: [...] } or { data: [...] }) ---
-  const addressesArray = useMemo(() => {
-    if (Array.isArray(addresses)) return addresses;
-    if (Array.isArray(addresses?.addresses)) return addresses.addresses;
-    if (Array.isArray(addresses?.data)) return addresses.data;
-    return [];
-  }, [addresses]);
+  const addressesArray = useMemo(() => asList(addresses), [addresses]);
 
   const selectedAddress = addressesArray.find((a) => String(a.id) === String(addressId));
   const pin = selectedAddress?.pincode || '';
 
   const { data: slots, loading: slotsLoading } = useApi(async () => {
     if (!pin) return { data: [] };
-    const dates = [0, 1, 2].map((i) => {
-      const d = new Date();
-      d.setDate(d.getDate() + i);
-      return d.toISOString().slice(0, 10);
-    });
+    const dates = [0, 1, 2].map((i) => kolkataDate(i));
     const res = await Promise.all(dates.map((date) => api.shop.slots({ date, pincode: pin })));
     const first = res[0]?.data;
     if (first && first.serviceable === false) {
@@ -103,12 +94,7 @@ export default function Checkout() {
     return { data: res.flatMap((r) => r.data?.slots || []) };
   }, [pin]);
 
-  const slotsArray = useMemo(() => {
-    if (Array.isArray(slots)) return slots;
-    if (Array.isArray(slots?.slots)) return slots.slots;
-    if (Array.isArray(slots?.data)) return slots.data;
-    return [];
-  }, [slots]);
+  const slotsArray = useMemo(() => asList(slots), [slots]);
   const pinServiceable = !pin || slots?.serviceable !== false;
 
   const reservationId = reservation?.id || reservation?.reservationId || null;
@@ -127,7 +113,6 @@ export default function Checkout() {
   const canWalletPay = Boolean(isAuth && wallet && quote && walletBalance >= orderTotal && quote.grandTotal != null);
 
   useEffect(() => {
-    // FIX: Use addressesArray instead of addresses
     if (!addressId && addressesArray.length) {
       setAddressId(String(addressesArray.find((a) => a.isDefault)?.id || addressesArray[0].id));
     }
@@ -152,7 +137,6 @@ export default function Checkout() {
   /** Slots grouped by day, because "tomorrow 4–6pm" is how people think. */
   const byDay = useMemo(() => {
     const groups = new Map();
-    // FIX: Iterate over the safely normalized slotsArray
     for (const s of slotsArray) {
       const key = s.date;
       if (!groups.has(key)) groups.set(key, []);
@@ -162,7 +146,31 @@ export default function Checkout() {
   }, [slotsArray]);
 
   const items = cart?.items || [];
-  
+
+  const applyCoupon = async () => {
+    if (!coupon.trim()) return;
+    setCouponBusy(true);
+    try {
+      const r = await api.shop.applyCoupon(coupon.trim());
+      setCart(r.data);
+      setCoupon('');
+      toast('Coupon applied', 'success');
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    } finally {
+      setCouponBusy(false);
+    }
+  };
+
+  const dropCoupon = async () => {
+    try {
+      const r = await api.shop.removeCoupon();
+      setCart(r.data);
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    }
+  };
+
   const reserve = async (slot) => {
     setSlotId(String(slot.id));
     try {
@@ -234,7 +242,6 @@ export default function Checkout() {
             />
           ) : (
             <div className="space-y-2">
-              {/* FIX: Map over addressesArray */}
               {addressesArray.map((a) => (
                 <button
                   key={a.id}

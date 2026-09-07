@@ -41,9 +41,12 @@ export function ProductSkeleton() {
   );
 }
 
-export function Empty({ icon: Icon, title, message, action }) {
+export function Empty({ icon: Icon, title, message, action, floral = false }) {
   return (
-    <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
+    <div
+      className="flex flex-col items-center justify-center px-6 py-16 text-center"
+      style={floral ? { backgroundImage: 'var(--paper)', backgroundSize: 'cover' } : undefined}
+    >
       {Icon && (
         <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-full" style={{ background: 'var(--brand-soft)' }}>
           <Icon className="h-6 w-6" style={{ color: 'var(--brand)' }} />

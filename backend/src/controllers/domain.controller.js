@@ -4,6 +4,8 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { forbidden } from '../utils/ApiError.js';
 import config from '../config/index.js';
+import { resolveBrandTheme } from '../constants/brandKits.js';
+import { TAX_OWNER_TYPE } from '../constants/enums.js';
 
 class DomainController {
   // ---------------- store owner ----------------
@@ -62,6 +64,19 @@ class DomainController {
     const canonicalHost = await tenantDomainService.canonicalHostFor({
       tenantId: req.tenantId, slug: tenant?.slug,
     });
+    let gstin = null;
+    try {
+      const { default: TaxRegistration } = await import('../models/taxRegistration.model.js');
+      const tax = await TaxRegistration.findOne({
+        ownerType: TAX_OWNER_TYPE.TENANT,
+        ownerId: tenant._id,
+        status: 'active',
+      }).select('gstin').lean();
+      gstin = tax?.gstin || null;
+    } catch {
+      gstin = null;
+    }
+    const theme = resolveBrandTheme(tenant.theme || {});
     res.status(200).json(success({
       store: {
         id: String(tenant._id),
@@ -73,8 +88,9 @@ class DomainController {
         bannerUrl: tenant.store?.bannerUrl || null,
         socialLinks: tenant.store?.socialLinks || {},
         isPublished: Boolean(tenant.store?.isPublished),
+        gstin,
       },
-      theme: tenant.theme || {},
+      theme,
       features: tenant.features || {},
       routing: {
         resolvedFrom: req.tenantSource,

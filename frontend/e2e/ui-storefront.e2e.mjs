@@ -1,5 +1,5 @@
 // Storefront UI E2E — the complete customer journey through the real browser.
-// Wave 3: shareable PDP `/p/:slug`, `/search?q=`, guest cart merge-on-login.
+// Wave 4: floral hero still contains store identity; PDP `/p/:slug`, `/search?q=`, guest cart.
 // Journey: browse/filter/search URL/PDP → guest add → OTP (cart preserved)
 // → checkout (address/slot/UPI) → order detail → cancel → 2nd order →
 // delivered (fulfillment API) → return → returns list → wallet → audit.

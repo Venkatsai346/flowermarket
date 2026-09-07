@@ -154,6 +154,9 @@ test('marketplace tenant status and shop serviceability/invoice helpers map corr
 
   api.shop.markNotificationRead('n_1');
   check(api, client.calls, ['POST', '/users/me/notifications/n_1/read']);
+
+  api.shop.updateMe({ preferences: { language: 'te' } });
+  check(api, client.calls, ['PATCH', '/users/me']);
 });
 
 test('catalog tenant and catalog admin helpers map correctly', async () => {

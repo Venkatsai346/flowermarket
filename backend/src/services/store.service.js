@@ -23,6 +23,7 @@ import { roundMoney } from '../utils/money.js';
 import config from '../config/index.js';
 import { USER_ROLES, PRODUCT_MASTER_STATUS, TENANT_LISTING_STATUS, TENANT_STATUS, AUDIT_ACTION } from '../constants/enums.js';
 import tenantDomainService from './tenantDomain.service.js';
+import { BRAND_KITS } from '../constants/brandKits.js';
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -168,7 +169,13 @@ class StoreService {
     if (payload.name) tenant.name = String(payload.name).trim();
     if (payload.logoUrl !== undefined) tenant.logoUrl = payload.logoUrl || null;
     if (payload.theme) {
-      tenant.theme = { ...(tenant.theme || {}), ...payload.theme };
+      const incoming = { ...(tenant.theme?.toObject?.() || tenant.theme || {}), ...payload.theme };
+      if (payload.theme.kit && BRAND_KITS[payload.theme.kit]) {
+        const kit = BRAND_KITS[payload.theme.kit];
+        if (payload.theme.primaryColor === undefined) incoming.primaryColor = kit.primaryColor;
+        if (payload.theme.accentColor === undefined) incoming.accentColor = kit.accentColor;
+      }
+      tenant.theme = incoming;
     }
     tenant.store = {
       ...(tenant.store || {}),

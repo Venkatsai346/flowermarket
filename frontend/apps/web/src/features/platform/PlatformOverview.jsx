@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom';
 import {
   Building2,
   IndianRupee,
-  MoonStar,
+  Landmark,
   Percent,
   RefreshCw,
+  Scale,
+  ShieldAlert,
   ShoppingCart,
   Store,
   TrendingUp,
@@ -25,12 +27,80 @@ import Button from '../../components/ui/Button.jsx';
 
 const RANGES = [7, 30, 90];
 
+function paiseToInr(p) {
+  const n = Number(p) || 0;
+  return `₹${(n / 100).toLocaleString('en-IN')}`;
+}
+
+function MoneyHealthStrip({ trial, integrity, kyc }) {
+  const tb = trial.data || {};
+  const report = integrity.data || {};
+  const kycItems = Array.isArray(kyc.data) ? kyc.data : kyc.data?.items || [];
+  const kycPending = kyc.meta?.total ?? kycItems.length;
+  const pspOk = report.payments?.ok !== false;
+  const ledgerOk = report.ok !== false && tb.balanced !== false;
+  const pills = [
+    {
+      label: 'Trial balance',
+      ok: tb.balanced !== false && !trial.error,
+      value: trial.loading ? '…' : (tb.balanced ? 'Balanced' : `Off ${paiseToInr(tb.differencePaise)}`),
+      icon: Scale,
+      to: '/platform/ledger',
+    },
+    {
+      label: 'Ledger integrity',
+      ok: ledgerOk && !integrity.error,
+      value: integrity.loading ? '…' : (report.ok ? 'OK' : 'Issues'),
+      icon: Landmark,
+      to: '/platform/ledger',
+    },
+    {
+      label: 'Unsettled PSP',
+      ok: pspOk && !integrity.error,
+      value: integrity.loading ? '…' : (pspOk ? 'Clear' : `${report.payments?.mismatches ?? '—'} mismatch`),
+      icon: IndianRupee,
+      to: '/platform/payouts',
+    },
+    {
+      label: 'KYC blocked',
+      ok: kycPending === 0 && !kyc.error,
+      value: kyc.loading ? '…' : `${kycPending} pending`,
+      icon: ShieldAlert,
+      to: '/platform/lifecycle',
+    },
+  ];
+
+  return (
+    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+      {pills.map((p) => (
+        <Link
+          key={p.label}
+          to={p.to}
+          className={cn(
+            'flex items-center gap-3 rounded-xl border px-3.5 py-2.5 transition hover:bg-white',
+            p.ok ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/70'
+          )}
+        >
+          <p.icon className={cn('h-4 w-4 shrink-0', p.ok ? 'text-emerald-700' : 'text-amber-700')} />
+          <span className="min-w-0">
+            <span className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">{p.label}</span>
+            <span className="block truncate text-sm font-semibold text-slate-900">{p.value}</span>
+          </span>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
 export default function PlatformOverview() {
   const [days, setDays] = useState(30);
   const range = dayRange(days);
   const dash = useApi(() => api.marketplace.platformDashboard({ from: range.from, to: range.to }), [days]);
   const topTenants = useApi(() => api.marketplace.topTenants({ from: range.from, to: range.to, limit: 6 }), [days]);
   const topVendors = useApi(() => api.marketplace.topVendors({ from: range.from, to: range.to, limit: 6 }), [days]);
+  const trial = useApi(() => api.ledger.trialBalance(), [], { toastOnError: false });
+  const integrity = useApi(() => api.ledger.integrity(), [], { toastOnError: false });
+  const kyc = useApi(() => api.payouts.admin.kyc({ status: 'pending', limit: 1 }), [], { toastOnError: false });
   const { busy, run } = useAction();
 
   const d = dash.data || {};
@@ -73,6 +143,8 @@ export default function PlatformOverview() {
           </>
         }
       />
+
+      <MoneyHealthStrip trial={trial} integrity={integrity} kyc={kyc} />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="GMV" value={compact(d.gmv)} icon={IndianRupee} tone="rose" sub={`${fmtDate(range.from)} → ${fmtDate(range.to)}`} />

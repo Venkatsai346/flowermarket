@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Check, Plus } from 'lucide-react';
 import { Money, Stepper } from './ui.jsx';
+import FloralImage from './FloralImage.jsx';
 import { cn } from '../lib/utils.js';
 
 /**
@@ -28,10 +29,9 @@ export default function ProductCard({ listing, qty = 0, busy, onAdd, onQty, onOp
         aria-label={`View ${p.title}`}
       >
         {p.imageUrl ? (
-          <img
+          <FloralImage
             src={p.imageUrl}
             alt={p.title}
-            loading="lazy"
             className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
           />
         ) : (

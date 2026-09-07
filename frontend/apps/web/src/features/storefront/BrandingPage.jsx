@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { ExternalLink, ImageIcon, Palette, Save } from 'lucide-react';
-import { pickMeta, ONBOARDING_META } from '@flower-market/shared';
+import { Check, ExternalLink, ImageIcon, Palette, Save } from 'lucide-react';
+import { pickMeta, ONBOARDING_META, BRAND_KITS, BRAND_KIT_IDS } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi, useAction } from '../../lib/useApi.js';
 import { errMsg } from '../../lib/utils.js';
@@ -29,6 +29,7 @@ export default function BrandingPage() {
         description: t.store?.description || '',
         logoUrl: t.logoUrl || '',
         bannerUrl: t.store?.bannerUrl || '',
+        kit: t.theme?.kit || 'rose',
         instagram: t.store?.socialLinks?.instagram || '',
         facebook: t.store?.socialLinks?.facebook || '',
         website: t.store?.socialLinks?.website || '',
@@ -51,6 +52,7 @@ export default function BrandingPage() {
           description: form.description || null,
           logoUrl: form.logoUrl || null,
           bannerUrl: form.bannerUrl || null,
+          theme: { kit: form.kit || 'rose' },
           socialLinks: {
             instagram: form.instagram || null,
             facebook: form.facebook || null,
@@ -108,6 +110,36 @@ export default function BrandingPage() {
               <Field label="Description">
                 <Textarea value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Tell customers what makes your store special…" />
               </Field>
+              <div>
+                <p className="label">Brand kit</p>
+                <p className="mb-2 text-xs text-slate-500">One florist identity per store — not a hex picker.</p>
+                <div className="grid gap-3 sm:grid-cols-3">
+                  {BRAND_KIT_IDS.map((id) => {
+                    const kit = BRAND_KITS[id];
+                    const on = form.kit === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => set('kit', id)}
+                        className={`relative overflow-hidden rounded-xl border p-3 text-left transition ${on ? 'border-transparent ring-2 ring-slate-900' : 'border-slate-200 hover:border-slate-300'}`}
+                      >
+                        <span className="mb-2 flex h-12 overflow-hidden rounded-lg">
+                          <span className="w-2/3" style={{ background: kit.primaryColor }} />
+                          <span className="w-1/3" style={{ background: kit.accentColor }} />
+                        </span>
+                        <span className="block text-sm font-semibold text-slate-800">{kit.name}</span>
+                        <span className="mt-0.5 block text-[11px] leading-snug text-slate-500">{kit.blurb}</span>
+                        {on && (
+                          <span className="absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full bg-slate-900 text-white">
+                            <Check className="h-3 w-3" />
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <ImageField
                   label="Logo"

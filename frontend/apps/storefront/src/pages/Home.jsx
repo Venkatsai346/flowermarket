@@ -1,12 +1,18 @@
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { MapPin, PackageSearch, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { useCartActions } from '../lib/useCart.js';
+import { resolveBrandTheme } from '../theme.js';
+import { t } from '../i18n.js';
+import { readViewed } from '../lib/viewed.js';
 import ProductCard from '../components/ProductCard.jsx';
+import FloralImage from '../components/FloralImage.jsx';
+import ArrivalPromise from '../components/ArrivalPromise.jsx';
 import { Empty, ProductSkeleton, Button } from '../components/ui.jsx';
 import { cn, errMsg } from '../lib/utils.js';
-import { useState } from 'react';
 
 const SORTS = [
   ['', 'Featured'],
@@ -18,9 +24,11 @@ const SORTS = [
 
 export default function Home() {
   const store = useShop((s) => s.store);
+  const theme = useShop((s) => s.theme);
   const pincode = useShop((s) => s.pincode);
   const serviceability = useShop((s) => s.serviceability);
   const openPin = useShop((s) => s.openPin);
+  const language = useShop((s) => s.language);
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
 
   const [categoryId, setCategoryId] = useState('');
@@ -41,35 +49,57 @@ export default function Home() {
   const items = data || [];
   const tree = categories || [];
   const unserviceable = Boolean(pincode && serviceability && serviceability.serviceable === false);
+  const resolved = resolveBrandTheme(theme || {});
+  const hero = store?.bannerUrl || resolved.heroUrl;
+  const viewed = useMemo(() => readViewed(), [items.length]);
 
   return (
     <>
       {store && (
-        <section className="relative overflow-hidden border-b border-slate-200/70" style={{ background: 'var(--brand-soft)' }}>
-          <div className="wrap flex flex-col gap-4 py-10 sm:py-14">
-            <h1 className="max-w-2xl text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
+        <section className="relative min-h-[28rem] overflow-hidden sm:min-h-[32rem]">
+          <FloralImage
+            src={hero}
+            alt=""
+            priority
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/35 to-black/15" />
+          <div className="wrap relative z-10 flex min-h-[28rem] flex-col justify-end gap-4 py-12 text-white sm:min-h-[32rem] sm:py-16">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/70">
+              {store.name}
+            </p>
+            <h1 className="font-display max-w-2xl text-4xl leading-[1.1] tracking-tight sm:text-5xl">
               {store.tagline || `Fresh from ${store.name}`}
             </h1>
             {store.description && (
-              <p className="max-w-xl text-sm leading-relaxed text-slate-600">{store.description}</p>
+              <p className="max-w-xl text-sm leading-relaxed text-white/80">{store.description}</p>
             )}
-            <button
-              type="button"
-              onClick={openPin}
-              className="inline-flex w-fit items-center gap-2 rounded-full bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm ring-1 ring-slate-200/80"
-            >
-              <MapPin className="h-3.5 w-3.5" />
-              {pincode
-                ? (serviceability && !serviceability.serviceable
-                  ? `We don't deliver to ${pincode}`
-                  : `Delivering to ${pincode}`)
-                : 'Set your pincode for slots'}
-            </button>
+            <ArrivalPromise className="w-fit" />
           </div>
         </section>
       )}
 
       <div className="wrap py-6">
+        {viewed.length > 0 && !unserviceable && (
+          <section className="mb-8">
+            <h2 className="mb-3 font-display text-lg text-slate-900">{t(language, 'recentlyViewed')}</h2>
+            <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+              {viewed.map((v) => (
+                <Link
+                  key={v.slug}
+                  to={`/p/${v.slug}`}
+                  className="w-28 shrink-0"
+                >
+                  <span className="block aspect-square overflow-hidden rounded-2xl bg-slate-100">
+                    <FloralImage src={v.imageUrl} alt="" className="h-full w-full object-cover" />
+                  </span>
+                  <span className="mt-1.5 block line-clamp-2 text-[11px] font-medium text-slate-600">{v.title}</span>
+                </Link>
+              ))}
+            </div>
+          </section>
+        )}
+
         {tree.length > 0 && (
           <div className="no-scrollbar -mx-4 mb-5 flex gap-2 overflow-x-auto px-4 sm:mx-0 sm:px-0">
             <button
@@ -120,6 +150,7 @@ export default function Home() {
 
         {unserviceable ? (
           <Empty
+            floral
             icon={MapPin}
             title={`We don't deliver to ${pincode}`}
             message="Try a pin we cover — we will not show a catalogue we cannot fulfil."
@@ -130,9 +161,10 @@ export default function Home() {
             {Array.from({ length: 8 }).map((_, i) => <ProductSkeleton key={i} />)}
           </div>
         ) : error ? (
-          <Empty icon={PackageSearch} title="Could not load products" message={errMsg(error)} />
+          <Empty floral icon={PackageSearch} title="Could not load products" message={errMsg(error)} />
         ) : items.length === 0 ? (
           <Empty
+            floral
             icon={PackageSearch}
             title="No products yet"
             message="This store has not listed anything yet."

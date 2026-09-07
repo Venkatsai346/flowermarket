@@ -93,6 +93,7 @@ export const storeUpdateSchema = Joi.object({
   name: Joi.string().max(120).optional(),
   logoUrl: Joi.string().uri({ allowRelative: true }).allow('', null).optional(),
   theme: Joi.object({
+    kit: Joi.string().valid('rose', 'marigold', 'tropical').optional(),
     primaryColor: Joi.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
     accentColor: Joi.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
   }).optional(),

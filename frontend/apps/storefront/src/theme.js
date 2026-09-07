@@ -1,11 +1,12 @@
 /**
- * Runtime theming.
+ * Runtime theming + document meta (OG / canonical).
  *
- * A tenant's brand colour arrives in the bootstrap response and is written
- * straight onto `:root` as custom properties. One build, every store — and
- * because the storefront shell renders only after bootstrap resolves, the
- * customer never sees a flash of the wrong brand.
+ * A tenant's brand kit arrives in the bootstrap response and is written
+ * straight onto `:root`. One build, every store — and because the storefront
+ * shell renders only after bootstrap resolves, the customer never sees a
+ * flash of the wrong brand.
  */
+import { BRAND_KITS, resolveBrandTheme } from '@flower-market/shared';
 
 /** #rrggbb → {r,g,b}; tolerant of #rgb and missing '#'. */
 function parseHex(hex) {
@@ -20,11 +21,6 @@ function parseHex(hex) {
   };
 }
 
-/**
- * Relative luminance (WCAG). Used to pick readable text ON the brand colour —
- * a store that picks a pale yellow must not end up with white-on-yellow
- * buttons, so accessibility is computed rather than assumed.
- */
 function luminance({ r, g, b }) {
   const f = (v) => {
     const s = v / 255;
@@ -39,7 +35,6 @@ export function readableInk(hex) {
   return luminance(rgb) > 0.55 ? '#111827' : '#ffffff';
 }
 
-/** A very light tint of the brand, for soft buttons and highlights. */
 export function softTint(hex, alpha = 0.08) {
   const rgb = parseHex(hex);
   if (!rgb) return '#fff1f2';
@@ -48,36 +43,82 @@ export function softTint(hex, alpha = 0.08) {
 
 export function applyTheme(theme = {}) {
   if (typeof document === 'undefined') return;
+  const resolved = resolveBrandTheme(theme);
   const root = document.documentElement;
-  const brand = parseHex(theme.primaryColor) ? theme.primaryColor : null;
-  const accent = parseHex(theme.accentColor) ? theme.accentColor : null;
+  const brand = parseHex(resolved.primaryColor) ? resolved.primaryColor : BRAND_KITS.rose.primaryColor;
+  const accent = parseHex(resolved.accentColor) ? resolved.accentColor : BRAND_KITS.rose.accentColor;
+  const rgb = parseHex(brand);
 
-  if (brand) {
-    const rgb = parseHex(brand);
-    root.style.setProperty('--brand', brand);
-    root.style.setProperty('--brand-ink', readableInk(brand));
-    root.style.setProperty('--brand-soft', softTint(brand, 0.08));
-    root.style.setProperty('--brand-ring', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.22)`);
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', brand);
-  }
-  if (accent) root.style.setProperty('--accent', accent);
+  root.dataset.kit = resolved.kit;
+  root.style.setProperty('--brand', brand);
+  root.style.setProperty('--brand-ink', readableInk(brand));
+  root.style.setProperty('--brand-soft', softTint(brand, 0.08));
+  root.style.setProperty('--brand-ring', `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.22)`);
+  root.style.setProperty('--accent', accent);
+  root.style.setProperty('--paper', `url(${BRAND_KITS[resolved.kit]?.paper || '/brand/empty-petals.jpg'})`);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', brand);
 }
 
-/** Title + description, so a shared link says the store's name, not ours. */
-export function applyDocumentMeta({ name, tagline, description }) {
+function upsertMeta(attr, key, value) {
+  if (typeof document === 'undefined' || !value) return;
+  let tag = document.querySelector(`meta[${attr}="${key}"]`);
+  if (!tag) {
+    tag = document.createElement('meta');
+    tag.setAttribute(attr, key);
+    document.head.appendChild(tag);
+  }
+  tag.setAttribute('content', value);
+}
+
+function upsertLink(rel, href) {
+  if (typeof document === 'undefined' || !href) return;
+  let tag = document.querySelector(`link[rel="${rel}"]`);
+  if (!tag) {
+    tag = document.createElement('link');
+    tag.setAttribute('rel', rel);
+    document.head.appendChild(tag);
+  }
+  tag.setAttribute('href', href);
+}
+
+function absoluteUrl(url, origin) {
+  if (!url) return null;
+  if (/^https?:\/\//i.test(url)) return url;
+  const base = origin || (typeof window !== 'undefined' ? window.location.origin : '');
+  if (!base) return url;
+  return url.startsWith('/') ? `${base}${url}` : `${base}/${url}`;
+}
+
+/** Title + description + OG + canonical, so a shared link says the store's name. */
+export function applyDocumentMeta({
+  name,
+  tagline,
+  description,
+  image,
+  canonicalUrl,
+  path,
+} = {}) {
   if (typeof document === 'undefined') return;
-  if (name) document.title = tagline ? `${name} · ${tagline}` : name;
-  const desc = description || tagline;
-  if (desc) {
-    let tag = document.querySelector('meta[name="description"]');
-    if (!tag) {
-      tag = document.createElement('meta');
-      tag.setAttribute('name', 'description');
-      document.head.appendChild(tag);
-    }
-    tag.setAttribute('content', desc);
-  }
+  const title = name ? (tagline ? `${name} · ${tagline}` : name) : document.title;
+  if (name) document.title = title;
+  const desc = description || tagline || '';
+  if (desc) upsertMeta('name', 'description', desc);
+
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const url = canonicalUrl
+    ? `${canonicalUrl.replace(/\/$/, '')}${path || (typeof window !== 'undefined' ? window.location.pathname : '/')}`
+    : (typeof window !== 'undefined' ? window.location.href : '');
+  const ogImage = absoluteUrl(image, origin);
+
+  upsertMeta('property', 'og:title', title);
+  if (desc) upsertMeta('property', 'og:description', desc);
+  upsertMeta('property', 'og:type', 'website');
+  if (url) upsertMeta('property', 'og:url', url);
+  if (ogImage) upsertMeta('property', 'og:image', ogImage);
+  upsertMeta('name', 'twitter:card', 'summary_large_image');
+  if (url) upsertLink('canonical', url);
 }
 
+export { BRAND_KITS, resolveBrandTheme };
 export default { applyTheme, applyDocumentMeta, readableInk, softTint };

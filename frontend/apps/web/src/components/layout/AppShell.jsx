@@ -1,6 +1,7 @@
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar.jsx';
 import Topbar from './Topbar.jsx';
+import CommandPalette from './CommandPalette.jsx';
 import Toaster from '../ui/Toaster.jsx';
 
 export default function AppShell() {
@@ -13,9 +14,10 @@ export default function AppShell() {
           <Outlet />
         </main>
         <footer className="border-t border-slate-200/70 px-6 py-3 text-center text-xs text-slate-400">
-          Flower Market · Console · v0.1
+          Flower Market · Console · v0.1 · ⌘K
         </footer>
       </div>
+      <CommandPalette />
       <Toaster />
     </div>
   );

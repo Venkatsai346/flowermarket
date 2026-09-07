@@ -1,10 +1,18 @@
 import { create } from 'zustand';
+import { persistGuestKey, clearGuestKey } from './api.js';
 
 const pinKey = () => `fm-pin:${typeof window !== 'undefined' ? window.location.hostname : 'server'}`;
+const langKey = () => `fm-lang:${typeof window !== 'undefined' ? window.location.hostname : 'server'}`;
 
 function readPin() {
   if (typeof window === 'undefined') return '';
   return window.localStorage.getItem(pinKey()) || '';
+}
+
+function readLang() {
+  if (typeof window === 'undefined') return 'en';
+  const v = window.localStorage.getItem(langKey());
+  return v === 'te' ? 'te' : 'en';
 }
 
 /**
@@ -37,6 +45,7 @@ export const useShop = create((set, get) => ({
   // ---- pincode (the front door) ----
   pincode: readPin(),
   serviceability: null,
+  nextSlot: null,
   pinOpen: false,
   openPin: () => set({ pinOpen: true }),
   closePin: () => set({ pinOpen: false }),
@@ -46,9 +55,21 @@ export const useShop = create((set, get) => ({
       if (pin) window.localStorage.setItem(pinKey(), pin);
       else window.localStorage.removeItem(pinKey());
     }
-    set({ pincode: pin, serviceability: pin ? get().serviceability : null });
+    set({ pincode: pin, serviceability: pin ? get().serviceability : null, nextSlot: pin ? get().nextSlot : null });
   },
   setServiceability: (serviceability) => set({ serviceability }),
+  setNextSlot: (nextSlot) => set({ nextSlot }),
+
+  // ---- language (chrome only) ----
+  language: readLang(),
+  setLanguage: (language) => {
+    const lang = language === 'te' ? 'te' : 'en';
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(langKey(), lang);
+      document.documentElement.lang = lang === 'te' ? 'te' : 'en';
+    }
+    set({ language: lang });
+  },
 
   // ---- UI ----
   cartOpen: false,

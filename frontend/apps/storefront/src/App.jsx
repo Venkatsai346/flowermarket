@@ -1,23 +1,26 @@
-import { useEffect } from 'react';
-import { Route, Routes } from 'react-router-dom';
+import { Suspense, lazy, useEffect } from 'react';
+import { Route, Routes, useLocation } from 'react-router-dom';
 import { Flower2, ServerCrash } from 'lucide-react';
 import { api, useShopAuth } from './api.js';
 import { useShop } from './store.js';
-import { applyTheme, applyDocumentMeta } from './theme.js';
+import { applyTheme, applyDocumentMeta, resolveBrandTheme } from './theme.js';
+import { kolkataDate, pickNextSlot } from './lib/arrival.js';
 import Header from './components/Header.jsx';
+import Footer from './components/Footer.jsx';
 import CartSheet from './components/CartSheet.jsx';
 import AuthSheet from './components/AuthSheet.jsx';
 import PincodeSheet from './components/PincodeSheet.jsx';
 import { Toasts } from './components/ui.jsx';
 import Home from './pages/Home.jsx';
-import Product from './pages/Product.jsx';
-import Search from './pages/Search.jsx';
-import Checkout from './pages/Checkout.jsx';
-import Orders from './pages/Orders.jsx';
-import OrderDetail from './pages/OrderDetail.jsx';
-import Returns from './pages/Returns.jsx';
-import Addresses from './pages/Addresses.jsx';
-import Wallet from './pages/Wallet.jsx';
+
+const Product = lazy(() => import('./pages/Product.jsx'));
+const Search = lazy(() => import('./pages/Search.jsx'));
+const Checkout = lazy(() => import('./pages/Checkout.jsx'));
+const Orders = lazy(() => import('./pages/Orders.jsx'));
+const OrderDetail = lazy(() => import('./pages/OrderDetail.jsx'));
+const Returns = lazy(() => import('./pages/Returns.jsx'));
+const Addresses = lazy(() => import('./pages/Addresses.jsx'));
+const Wallet = lazy(() => import('./pages/Wallet.jsx'));
 
 /**
  * The storefront shell.
@@ -62,13 +65,28 @@ function BootScreen({ error }) {
   );
 }
 
+function RouteFallback() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center">
+      <span className="flex h-10 w-10 animate-pulse items-center justify-center rounded-2xl" style={{ background: 'var(--brand-soft)' }}>
+        <Flower2 className="h-5 w-5" style={{ color: 'var(--brand)' }} />
+      </span>
+    </div>
+  );
+}
+
 export default function App() {
-  const { booted, bootError, setBoot, setBootError, store } = useShop();
+  const { booted, bootError, setBoot, setBootError, store, theme, routing } = useShop();
   const setCart = useShop((s) => s.setCart);
   const toasts = useShop((s) => s.toasts);
   const pincode = useShop((s) => s.pincode);
   const setServiceability = useShop((s) => s.setServiceability);
+  const setNextSlot = useShop((s) => s.setNextSlot);
+  const language = useShop((s) => s.language);
+  const setLanguage = useShop((s) => s.setLanguage);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
+  const location = useLocation();
+
   // 1. who is this store?
   useEffect(() => {
     let alive = true;
@@ -77,11 +95,6 @@ export default function App() {
         if (!alive) return;
         setBoot(r.data);
         applyTheme(r.data?.theme);
-        applyDocumentMeta({
-          name: r.data?.store?.name,
-          tagline: r.data?.store?.tagline,
-          description: r.data?.store?.description,
-        });
       })
       .catch((e) => { if (alive) setBootError(e); });
     return () => { alive = false; };
@@ -97,6 +110,26 @@ export default function App() {
     return () => { alive = false; };
   }, [booted, bootError, pincode, setServiceability]);
 
+  // 1c. next open slot for the pin → "Arrives today 4–7 pm"
+  const serviceable = useShop((s) => s.serviceability);
+  useEffect(() => {
+    if (!booted || bootError || !pincode) { setNextSlot(null); return undefined; }
+    if (serviceable && serviceable.serviceable === false) { setNextSlot(null); return undefined; }
+    let alive = true;
+    const load = async () => {
+      for (const offset of [0, 1, 2]) {
+        const r = await api.shop.slots({ date: kolkataDate(offset), pincode });
+        if (!alive) return;
+        if (r.data?.serviceable === false) { setNextSlot(null); return; }
+        const next = pickNextSlot(r.data?.slots);
+        if (next) { setNextSlot(next); return; }
+      }
+      if (alive) setNextSlot(null);
+    };
+    load().catch(() => { if (alive) setNextSlot(null); });
+    return () => { alive = false; };
+  }, [booted, bootError, pincode, serviceable, setNextSlot]);
+
   // 2. the cart follows the session (a guest cart is server-side too)
   useEffect(() => {
     if (!booted || bootError) return undefined;
@@ -107,30 +140,61 @@ export default function App() {
     return () => { alive = false; };
   }, [booted, bootError, isAuth, setCart]);
 
+  // 2b. signed-in language preference wins over localStorage
+  useEffect(() => {
+    if (!booted || !isAuth) return undefined;
+    let alive = true;
+    api.shop.me()
+      .then((r) => {
+        if (!alive) return;
+        const lang = r.data?.preferences?.language;
+        if (lang === 'te' || lang === 'en') setLanguage(lang);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [booted, isAuth, setLanguage]);
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') document.documentElement.lang = language === 'te' ? 'te' : 'en';
+  }, [language]);
+
+  // OG + canonical follow the route so a shared PDP is the PDP, not Home.
+  useEffect(() => {
+    if (!booted || bootError) return;
+    const resolved = resolveBrandTheme(theme || {});
+    applyDocumentMeta({
+      name: store?.name,
+      tagline: store?.tagline,
+      description: store?.description,
+      image: store?.bannerUrl || resolved.heroUrl,
+      canonicalUrl: routing?.canonicalUrl,
+      path: location.pathname + location.search,
+    });
+  }, [booted, bootError, store, theme, routing, location.pathname, location.search]);
+
   if (!booted || bootError) return <BootScreen error={bootError} />;
 
   return (
     <div className="flex min-h-screen flex-col">
-      <Header query={query} onQuery={setQuery} />
+      <Header />
       <main className="flex-1">
-        <Routes>
-          <Route path="/" element={<Home query={query} />} />
-          <Route path="/checkout" element={<Checkout />} />
-          <Route path="/orders" element={<Orders />} />
-          <Route path="/orders/:id" element={<OrderDetail />} />
-          <Route path="/returns" element={<Returns />} />
-          <Route path="/wallet" element={<Wallet />} />
-          <Route path="/addresses" element={<Addresses />} />
-          <Route path="*" element={<Home />} />
-        </Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path="/" element={<Home />} />
+            <Route path="/search" element={<Search />} />
+            <Route path="/p/:slug" element={<Product />} />
+            <Route path="/checkout" element={<Checkout />} />
+            <Route path="/orders" element={<Orders />} />
+            <Route path="/orders/:id" element={<OrderDetail />} />
+            <Route path="/returns" element={<Returns />} />
+            <Route path="/wallet" element={<Wallet />} />
+            <Route path="/addresses" element={<Addresses />} />
+            <Route path="*" element={<Home />} />
+          </Routes>
+        </Suspense>
       </main>
 
-      <footer className="mt-12 border-t border-slate-200/70 py-8">
-        <div className="wrap flex flex-col items-center gap-1 text-center">
-          <p className="text-sm font-semibold text-slate-700">{store?.name}</p>
-          {store?.tagline && <p className="text-xs text-slate-400">{store.tagline}</p>}
-        </div>
-      </footer>
+      <Footer />
 
       <CartSheet />
       <AuthSheet />

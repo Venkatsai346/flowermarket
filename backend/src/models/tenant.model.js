@@ -45,8 +45,13 @@ const TenantSchema = new Schema(
     contactPhone: { type: String, trim: true },
     logoUrl: { type: String, trim: true },
     theme: {
-      primaryColor: { type: String, default: '#7a1f3d' },
-      accentColor: { type: String, default: '#c9a227' },
+      kit: {
+        type: String,
+        enum: ['rose', 'marigold', 'tropical'],
+        default: 'rose',
+      },
+      primaryColor: { type: String, default: '#9F1239' },
+      accentColor: { type: String, default: '#C9A227' },
     },
 
     // ---- Scope ----

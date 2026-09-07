@@ -21,7 +21,7 @@ They are **not** yet a world-class florist platform you would put a real city on
 |---|---:|---:|---:|---|
 | Backend | **88%** | **90%** | n/a | India-correct pricing, live providers, tenant lifecycle, PDF invoices, validation density, paise migration |
 | Admin console | **92%** | **85%** | **70%** | Tenant suspend/activate, vendor product edit, chunk split, visual density, component tests |
-| Storefront | **72%** | **75%** | **55%** | Real checkout (Razorpay widget), pincode gate, shareable PDP, invoices, guest cart, floral brand, SEO |
+| Storefront | **78%** | **78%** | **82%** | Real checkout (Razorpay widget still P0-1); Wave 4 brand/kits/i18n/GSTIN/arrival shipped |
 | Mobile | **8%** | — | — | Not required for web 100%. A later product. |
 | Platform overall | **~80%** | **~82%** | **~60%** | Waves 1–3 below. Wave 4 is the “stunning” leap. |
 
@@ -80,7 +80,7 @@ The money and the saga are done. The remaining work is **product completion, pro
 | Know we deliver to *my* pin | ❌ hero always says “same-day slots”; no pin gate | Pin entry → serviceable / not, before browsing |
 | Browse | ✅ grid, chips, sort, in-stock, autocomplete, `/search?q=` + facets | Wave 4: recently viewed, photography |
 | Product | ✅ `/p/:slug` PDP (gallery, EAV care/vase-life, related, JSON-LD) | Wave 4: photography, occasion bundles |
-| Cart | ⚠️ **auth-gated** (add-to-cart 401s until OTP) | Guest cart (cookie/device) → merge on login |
+| Cart | ✅ guest cookie/`x-guest-key`, merge on OTP | Guest cart (cookie/device) → merge on login |
 | Coupon | ✅ API + cart apply | Surface on checkout (today easy to miss) |
 | Address book | ✅ add / edit / default / delete | + Google/India pin lookup, serviceability badge |
 | Slot | ⚠️ fetched **without pincode**; hub falls back to first active | Slot list for the *address pin*; refuse unserviceable pins |
@@ -302,8 +302,8 @@ A-LIFE buttons (Wave 1) · A-VEDIT (vendor pending-product edit modal) · A-CHUN
 
 **Exit:** admin Chromium 44 still green; storefront UI e2e covers PDP `/p/:slug`, `/search?q=`, guest→login cart merge.
 
-### Wave 4 — 2 weeks · stunning
-Brand kits + photography + PDP gallery/care/related · pin-aware delivery promise in the hero · footer GSTIN · image pipeline WebP · storefront code-split · command palette on admin · i18n chrome `te`/`en`.
+### Wave 4 — 2 weeks · stunning · **SHIPPED**
+Brand kits (classic rose / marigold temple / tropical green) on `tenant.theme.kit` · floral hero photography · pin-aware “Arrives today 4–7 pm” from public slots · footer GSTIN from TaxRegistration · storefront `React.lazy` Checkout/Orders/PDP/Search · admin ⌘K + `g o` palette · i18n chrome `te`/`en` · platform money-health strip · Checkout `asList` (no `--- FIX:`) · OG/canonical. No sharp/WebP transcoder — merchants may upload WebP via the existing media pipeline.
 
 **Exit:** a stranger on mobile, on a tenant Host, can: enter pin → browse a beautiful PDP → OTP → pay UPI → see “arrives today 4–7 pm” → download invoice. The page does not look like a Tailwind dashboard.
 

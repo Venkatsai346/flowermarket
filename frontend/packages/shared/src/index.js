@@ -4,3 +4,4 @@ export { createAuthStore, useAuthStore } from './auth/store.js';
 export * from './utils/money.js';
 export * from './utils/date.js';
 export * from './utils/format.js';
+export { BRAND_KITS, BRAND_KIT_IDS, resolveBrandTheme } from './brand/kits.js';
