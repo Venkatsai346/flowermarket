@@ -329,6 +329,30 @@ check('11.8', 'hash chain verified: no breaks, nothing unanchored', r.status ===
   check('11.12', 'tenant period list (admin, tenant-scoped)', adminPeriods.status === 200 && (adminPeriods.data?.data?.items?.length ?? 0) >= 1, `items=${adminPeriods.data?.data?.items?.length}`);
 }
 
+// Phase 12 — the cash gate: PSP settlement ingestion (chained money event)
+section('12. cash gate: PSP settlement (Phase 12)');
+{
+  // a paid, non-cancelled order from this run's journey to settle
+  const orderList = await api('/orders', { token: custTok });
+  const liveOrder = (orderList.data?.data || []).find((o) => o.status !== 'cancelled') || orderList.data?.data?.[0] || {};
+  const s = await api('/payouts/admin/settlements', { token: adminTok });
+  const sum = s.data?.data || {};
+  check('12.1', 'settlement summary: clearing/bank + paid-order queue', s.status === 200 && typeof sum.gatewayClearingPaise === 'number' && sum.paidOrders >= 1 && sum.unsettledOrders >= 1, JSON.stringify({ paid: sum.paidOrders, unsettled: sum.unsettledOrders, clearing: sum.gatewayClearingPaise }).slice(0, 120));
+
+  const clearingBefore = sum.gatewayClearingPaise;
+  const ing = await api('/payouts/admin/settlements/ingest', { method: 'POST', token: adminTok, body: { rows: [{ orderNumber: liveOrder.orderNumber }], reference: 'e2e-settlement' } });
+  check('12.2', 'ingest settlement for a paid order posts exactly', ing.status === 200 && ing.data?.data?.posted === 1, JSON.stringify(ing.data?.data).slice(0, 120));
+
+  const s2 = await api('/payouts/admin/settlements', { token: adminTok });
+  const sum2 = s2.data?.data || {};
+  check('12.3', 'clearing reduced by the settled amount', sum2.gatewayClearingPaise === clearingBefore - Math.round(Number(liveOrder.totalAmount) * 100), `before=${clearingBefore} after=${sum2.gatewayClearingPaise}`);
+  check('12.4', 'summary reflects the settlement (settledOrders up)', sum2.settledOrders >= sum.settledOrders + 1, `before=${sum.settledOrders} after=${sum2.settledOrders}`);
+
+  // re-ingest is a no-op (idempotent on the event/journal key)
+  const ing2 = await api('/payouts/admin/settlements/ingest', { method: 'POST', token: adminTok, body: { rows: [{ orderNumber: liveOrder.orderNumber }] } });
+  check('12.5', 're-ingesting the same order is idempotent', ing2.data?.data?.posted === 0 && ing2.data?.data?.skipped === 1, JSON.stringify(ing2.data?.data).slice(0, 120));
+}
+
 // ===========================================================================
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);

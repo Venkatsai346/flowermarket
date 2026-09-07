@@ -354,6 +354,7 @@ class DomainEventService {
       LEDGER_JOURNAL_KIND.REFUND_ISSUED,
       LEDGER_JOURNAL_KIND.PAYOUT_INITIATED,
       LEDGER_JOURNAL_KIND.PAYOUT_REVERSED,
+      LEDGER_JOURNAL_KIND.PSP_SETTLED,
     ];
     const jQ = { kind: { $in: moneyKinds } };
     if (tenantId) jQ.tenantId = tenantId;
@@ -451,6 +452,31 @@ class DomainEventService {
         await payoutService.unwindPayoutJournal(batch, 'replay: restore reversal');
         return;
       }
+      case DOMAIN_EVENT_TYPE.PSP_SETTLED: {
+        // the event payload carries the exact settlement amount — re-post the
+        // identical clearing→bank move (idempotent on the same key)
+        const order = await Order.findById(id);
+        if (!order) throw Object.assign(new Error('order missing'), { code: 'ORDER_MISSING' });
+        const ledgerMod = await import('./ledger.service.js');
+        const ledgerService = ledgerMod.default;
+        const { ledgerAccounts } = ledgerMod;
+        const amountPaise = e.payload?.amountPaise ?? Math.round(Number(order.totalAmount) * 100);
+        await ledgerService.post({
+          kind: LEDGER_JOURNAL_KIND.PSP_SETTLED,
+          idempotencyKey: e.idempotencyKey,
+          lines: [
+            { accountCode: ledgerAccounts.bank(), debitPaise: amountPaise },
+            { accountCode: ledgerAccounts.gatewayClearing(), creditPaise: amountPaise },
+          ],
+          refType: 'order',
+          refId: order._id,
+          tenantId: order.tenantId,
+          occurredAt: e.occurredAt,
+          meta: { orderNumber: order.orderNumber, utr: e.payload?.utr || null, reference: e.payload?.reference || null, source: 'replay' },
+          traceId: e.traceId || null,
+        });
+        return;
+      }
       default:
         throw Object.assign(new Error(`no replay for kind ${e.kind}`), { code: 'NO_REPLAY' });
     }
@@ -475,6 +501,11 @@ class DomainEventService {
       [LEDGER_JOURNAL_KIND.PAYOUT_REVERSED]: {
         kind: DOMAIN_EVENT_TYPE.PAYOUT_REVERSED, aggregateType: 'payout_batch', aggregateId: j.refId,
         occurredAt: j.occurredAt, payload: { amountPaise: j.totalPaise, source: 'restored_from_journal' },
+      },
+      [LEDGER_JOURNAL_KIND.PSP_SETTLED]: {
+        kind: DOMAIN_EVENT_TYPE.PSP_SETTLED, aggregateType: 'order', aggregateId: j.refId,
+        occurredAt: j.occurredAt,
+        payload: { orderNumber: j.meta?.orderNumber, amountPaise: j.totalPaise, utr: j.meta?.utr || null, reference: j.meta?.reference || null, source: 'restored_from_journal' },
       },
     }[j.kind];
     if (!map) throw Object.assign(new Error(`no event for journal kind ${j.kind}`), { code: 'NO_MAP' });

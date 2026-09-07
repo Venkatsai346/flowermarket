@@ -386,3 +386,15 @@ Full pyramid green after the hash chain + period close shipped:
 | Live tamper proof (manual, real stack) | `replay-chain` anchored 79 rows → 0 breaks / 0 unanchored; edited one stored event's payload → verifier named `hash_mismatch` at the victim seq; restored → clean; close 2026-09 → report (68 journals, balanced) → reopened |
 
 CI counts synced in `.github/workflows/ci.yml`: live 79 checks, admin browser 40.
+
+## Phase 12 re-verification — the cash gate (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-payouts` | **73/73** (+§11: gate ON blocks unsettled order; settlement ingest unlocks it; `psp_settled` event chained, chain verifies; crash-window replay re-posts the settlement to the exact paise; event restore from journal; summary counts) |
+| `smoke:all` (18 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **84/84** (+§12: summary shape, ingest posts exactly one, clearing reduced by the settled amount, summary reflects it, re-ingest idempotent) |
+| Admin browser UI | **41/41** (A41: gate toggled via UI, settlement ingested from the card's own unsettled queue, gate restored; console-err=0) |
+| Live proof (manual) | summary → ingest → clearing/bank move + chained event visible in the integrity report |
+
+CI counts synced in `.github/workflows/ci.yml`: live 84 checks, admin browser 41.

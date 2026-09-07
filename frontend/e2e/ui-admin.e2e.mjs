@@ -685,6 +685,39 @@ await R.check('A40', 'Fiscal periods: close month via UI → report from journal
 });
 await shot(page, 'a40-periods');
 
+await R.check('A41', 'Cash gate: settlement card — toggle gate ON, ingest a settlement via UI, restore gate', async () => {
+  await page.goto(BASE + '/platform/payouts', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /Settlement — the cash gate/i, 15000);
+  await waitText(page, /Gateway clearing/i, 10000);
+
+  // 1) switch the cash gate ON through the UI
+  await clickText(page, /Cash gate (OFF|ON)/);
+  await waitText(page, /Cash gate ON/, 10000);
+
+  // 2) ingest a settlement for the oldest unsettled paid order shown on the card
+  const orderNo = await page.evaluate(() => {
+    const card = Array.from(document.querySelectorAll('section, div')).find((d) => /Settlement — the cash gate/i.test(d.textContent || ''));
+    const sample = card ? Array.from(card.querySelectorAll('span.font-mono')).map((s) => s.textContent.trim()).find((t) => /^FM-\d{6}-\d{5}$/.test(t)) : null;
+    return sample;
+  });
+  if (!orderNo) throw new Error('no unsettled paid order listed on the settlement card');
+  await page.evaluate((no) => {
+    const ta = document.querySelector('textarea[placeholder*="FM-"]');
+    if (!ta) throw new Error('settlement textarea not found');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+    setter.call(ta, no);
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  }, orderNo);
+  await clickText(page, /Ingest settlement/);
+  await waitText(page, /1 posted/, 15000);
+
+  // 3) restore the gate to its default (off) so later checks run unchanged
+  await clickText(page, /Cash gate ON/);
+  await waitText(page, /Cash gate OFF/, 10000);
+  return `${orderNo}: gate toggled, settlement ingested, gate restored`;
+});
+await shot(page, 'a41-settlement');
+
 // ---------------------------------------------------------------- RBAC + rider
 await R.check('A34', 'RBAC: store admin blocked from vendor console', async () => {
   await page.goto(BASE + '/vendor', { waitUntil: 'networkidle2', timeout: 30000 });

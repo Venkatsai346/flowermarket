@@ -1057,6 +1057,11 @@ class PayoutService {
    * gate 2 — until an order's cash is genuinely in our account, paying the
    * vendor for it is lending them our own money.
    *
+   * Phase 12: settlement is a first-class money event — each row appends a
+   * CHAINED `psp_settled` event BEFORE posting the journal (event-first, the
+   * Phase 10 discipline), which makes the ingest tamper-evident and replayable
+   * (a deleted settlement journal is re-posted by `replay()` from the event).
+   *
    * @param {Array} rows [{ orderId | orderNumber, amount|amountPaise, settledAt, utr }]
    */
   async ingestPspSettlements({ rows = [], reference = null }) {
@@ -1065,10 +1070,25 @@ class PayoutService {
     for (const row of rows) {
       const q = row.orderId ? { _id: toId(row.orderId) } : { orderNumber: row.orderNumber };
       // eslint-disable-next-line no-await-in-loop
-      const order = await Order.findOne(q).select('_id orderNumber tenantId totalAmount').lean();
-      if (!order) { out.unmatched.push(row.orderNumber || String(row.orderId)); continue; }
+      const order = await Order.findOne(q).select('_id orderNumber tenantId totalAmount status paymentSummary').lean();
+      if (!order) { out.unmatched.push({ order: row.orderNumber || String(row.orderId), reason: 'order_not_found' }); continue; }
+      if (order.status === ORDER_STATUS.CANCELLED) { out.unmatched.push({ order: order.orderNumber, reason: 'order_cancelled' }); continue; }
+      if (!order.paymentSummary?.paidAt) { out.unmatched.push({ order: order.orderNumber, reason: 'not_paid' }); continue; }
 
       const amountPaise = row.amountPaise ?? toPaise(row.amount ?? order.totalAmount);
+      const occurredAt = row.settledAt ? new Date(row.settledAt) : new Date();
+      // eslint-disable-next-line no-await-in-loop
+      const event = await domainEventService.append({
+        tenantId: order.tenantId,
+        kind: DOMAIN_EVENT_TYPE.PSP_SETTLED,
+        aggregateType: 'order',
+        aggregateId: order._id,
+        idempotencyKey: `psp_settled:order:${order._id}`,
+        refType: 'order',
+        refId: order._id,
+        occurredAt,
+        payload: { orderNumber: order.orderNumber, amountPaise, utr: row.utr || null, reference: reference || null },
+      });
       // eslint-disable-next-line no-await-in-loop
       const res = await ledgerService.post({
         kind: LEDGER_JOURNAL_KIND.PSP_SETTLED,
@@ -1080,13 +1100,67 @@ class PayoutService {
         refType: 'order',
         refId: order._id,
         tenantId: order.tenantId,
-        occurredAt: row.settledAt ? new Date(row.settledAt) : new Date(),
+        occurredAt,
         meta: { orderNumber: order.orderNumber, utr: row.utr || null, reference },
+        traceId: event?.traceId || null,
       });
       if (res.created) out.posted += 1; else out.skipped += 1;
     }
 
     return out;
+  }
+
+  /**
+   * Cash-gate summary (Phase 12): where is the customer money, and what is the
+   * PSP settlement queue. `gatewayClearingPaise` is the materialized balance
+   * of `gateway_clearing` (captured − settled − refunded); `unsettled` are the
+   * paid, non-cancelled orders whose cash has not yet been ingested.
+   */
+  async settlementSummary({ tenantId = null } = {}) {
+    const clearing = await ledgerService.balance(ledgerAccounts.gatewayClearing());
+    const bank = await ledgerService.balance(ledgerAccounts.bank());
+
+    const settledJournals = await LedgerJournal.find({
+      kind: LEDGER_JOURNAL_KIND.PSP_SETTLED,
+      ...(tenantId ? { tenantId } : {}),
+    }).select('totalPaise occurredAt refId').sort({ occurredAt: 1 }).lean();
+
+    const settledOrderIds = settledJournals.map((j) => String(j.refId));
+    const paidBase = {
+      'paymentSummary.paidAt': { $ne: null },
+      status: { $ne: ORDER_STATUS.CANCELLED },
+      ...(tenantId ? { tenantId } : {}),
+    };
+    const [orders, ordersTotal, unsettledAgg] = await Promise.all([
+      Order.find(paidBase)
+        .select('orderNumber totalAmount paymentSummary')
+        .sort({ 'paymentSummary.paidAt': 1 }).limit(50).lean(),
+      Order.countDocuments(paidBase),
+      Order.aggregate([
+        { $match: paidBase },
+        { $match: settledOrderIds.length ? { _id: { $nin: settledOrderIds.map((s) => new mongoose.Types.ObjectId(s)) } } : {} },
+        { $group: { _id: null, n: { $sum: 1 }, paise: { $sum: { $multiply: ['$totalAmount', 100] } } } },
+      ]),
+    ]);
+    const u = unsettledAgg && unsettledAgg.length ? unsettledAgg[0] : { n: 0, paise: 0 };
+    const policy = await this.resolvePolicy({}).catch(() => null);
+
+    return {
+      gatewayClearingPaise: clearing.balancePaise,
+      bankPaise: bank.balancePaise,
+      settledOrders: settledJournals.length,
+      settledPaise: settledJournals.reduce((s, j) => s + Number(j.totalPaise || 0), 0),
+      lastSettledAt: settledJournals.length ? settledJournals[settledJournals.length - 1].occurredAt : null,
+      paidOrders: ordersTotal,
+      unsettledOrders: u.n,
+      unsettledPaise: Math.round(u.paise || 0),
+      unsettledSample: orders.slice(0, 10).map((o) => ({
+        orderNumber: o.orderNumber,
+        totalPaise: toPaise(o.totalAmount),
+        paidAt: o.paymentSummary?.paidAt || null,
+      })),
+      policy: { requirePspSettlement: Boolean(policy?.requirePspSettlement) },
+    };
   }
 
   // -------------------------------------------------------------------------

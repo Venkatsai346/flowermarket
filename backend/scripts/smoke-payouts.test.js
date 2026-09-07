@@ -376,7 +376,71 @@ async function main() {
   eq('an unmatched row is reported, never guessed', unmatched.unmatched.length, 1);
 
   // -------------------------------------------------------------------------
-  section('11. final integrity');
+  section('11. cash gate: settlement is a first-class chained event (Phase 12)');
+  // -------------------------------------------------------------------------
+  const { default: domainEvents } = await import('../src/services/domainEvent.service.js');
+  const { default: DomainEvent } = await import('../src/models/domainEvent.model.js');
+  const { default: LedgerJournalM } = await import('../src/models/ledgerJournal.model.js');
+  const { default: LedgerEntryM } = await import('../src/models/ledgerEntry.model.js');
+
+  // order2: settled long ago (section 10 did order1); order3: fresh, unsettled
+  const order2 = await makeOrder({ lineTotal: 2000, tax: 0 });
+  await payoutService.accrueForOrder({ orderId: order2._id });
+  await payoutService.upsertPolicy({ scope: 'platform', payload: { requirePspSettlement: true } });
+
+  const order3 = await makeOrder({ lineTotal: 3000, tax: 540 });
+  await payoutService.accrueForOrder({ orderId: order3._id });
+
+  const sweepBlocked = await payoutService.markEligible({});
+  const line3a = await PayoutLineItem.findOne({ orderId: order3._id });
+  eq('★ cash gate ON: an unsettled order is NOT eligible', line3a.state, PAYOUT_LINE_STATE.ACCRUED);
+  check('the sweep reports blocked lines', sweepBlocked.blocked >= 1, JSON.stringify(sweepBlocked));
+
+  const ing3 = await payoutService.ingestPspSettlements({ rows: [{ orderNumber: order3.orderNumber, utr: 'UTR3' }] });
+  eq('settling that one order posts one journal', ing3.posted, 1);
+  const sweep3 = await payoutService.markEligible({});
+  const line3b = await PayoutLineItem.findOne({ orderId: order3._id });
+  eq('★ once the cash is ingested, the line becomes eligible', line3b.state, PAYOUT_LINE_STATE.ELIGIBLE);
+  void sweep3;
+
+  // the settlement sits on the tamper-evident chain
+  const ev3 = await DomainEvent.findOne({ idempotencyKey: `psp_settled:order:${order3._id}` }).lean();
+  check('psp_settled event exists and is hashed', Boolean(ev3) && typeof ev3.hash === 'string');
+  const chain = await domainEvents.verifyChains({ tenantId: tenant._id });
+  check('chain verifies with settlement events on it', chain.ok === true, JSON.stringify(chain.breaks));
+
+  // crash window: the journal+entries vanish, the event survives → replay rebuilds
+  // (a pre-commit crash never $inc'd the balances — repair models that)
+  const j3 = await LedgerJournalM.findOne({ idempotencyKey: `psp_settled:order:${order3._id}` }).lean();
+  await LedgerEntryM.deleteMany({ journalId: j3._id });
+  await LedgerJournalM.deleteOne({ _id: j3._id });
+  await ledgerService.verifyBalances({ repair: true });
+  const drift = await domainEvents.findDrift({});
+  check('drift names the missing settlement journal', drift.missingJournals.some((m) => m.kind === 'psp_settled'), JSON.stringify(drift.missingJournals));
+  const rep1 = await domainEvents.replay({ limit: 50 });
+  check('replay re-posted a journal', rep1.journalsReposted >= 1, JSON.stringify(rep1));
+  const j3b = await LedgerJournalM.findOne({ idempotencyKey: `psp_settled:order:${order3._id}` }).lean();
+  eq('★ settlement journal rebuilt to the exact paise', j3b ? j3b.totalPaise : null, j3.totalPaise);
+
+  // the other direction: the event vanishes, the journal survives → restore
+  await DomainEvent.deleteOne({ idempotencyKey: `psp_settled:order:${order3._id}` });
+  const drift2 = await domainEvents.findDrift({});
+  check('drift names the missing settlement event', drift2.missingEvents.some((m) => m.kind === 'psp_settled'), JSON.stringify(drift2.missingEvents));
+  const rep2 = await domainEvents.replay({ limit: 50 });
+  check('replay restored the settlement event', rep2.eventsRestored >= 1, JSON.stringify(rep2));
+
+  // the cash-gate summary
+  const sum = await payoutService.settlementSummary({});
+  check('summary counts the settled orders', sum.settledOrders >= 2, JSON.stringify(sum));
+  check('summary reports the gate ON', sum.policy.requirePspSettlement === true, JSON.stringify(sum.policy));
+  check('summary: clearing never went negative', sum.gatewayClearingPaise >= 0, String(sum.gatewayClearingPaise));
+  check('summary: unsettled order2 still queued', sum.unsettledOrders >= 1, `unsettled=${sum.unsettledOrders}`);
+
+  // switch the gate back off for the final integrity
+  await payoutService.upsertPolicy({ scope: 'platform', payload: { requirePspSettlement: false } });
+
+  // -------------------------------------------------------------------------
+  section('12. final integrity');
   // -------------------------------------------------------------------------
   const finalTb = await ledgerService.trialBalance();
   check('★ trial balance across every journal', finalTb.balanced, `diff ${finalTb.differencePaise} paise`);

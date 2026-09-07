@@ -246,6 +246,14 @@ class PayoutController {
     res.status(200).json(success(result, { message: 'Settlement report ingested' }));
   });
 
+  /** Cash-gate summary (Phase 12): clearing vs bank, settled queue, policy. */
+  settlementSummary = asyncHandler(async (req, res) => {
+    const result = await payoutService.settlementSummary({
+      tenantId: req.query.tenantId || null,
+    });
+    res.status(200).json(success(result, { message: 'Settlement summary' }));
+  });
+
   /**
    * Provider webhook. Mounted with express.raw BEFORE any JSON parsing, because
    * the HMAC is computed over the exact bytes. An unverified payout webhook

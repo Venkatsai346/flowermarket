@@ -336,3 +336,59 @@ async-flow-live 14/14 · storefront UI 29/29 · async-pay UI 7/7 · admin UI
 | `backend/src/services/ledger.service.js` | (P11) `post()` `PERIOD_CLOSED` guard (new journals only) |
 | `backend/src/services/maintenance.service.js` | (P11) + chain summary in nightly + step 11 (anchor unanchored only) |
 | `frontend/apps/web/src/features/platform/LedgerPage.jsx` | (P11) audit-chain row + **Fiscal periods** card (close/report/reopen) |
+
+# Part 3 — Phase 12: the cash gate (PSP settlement as a chained money event)
+
+Phase 10/11 chained the events that *prove* money moved. Phase 12 chains the
+last missing one: **PSP settlement** — the moment the gateway's clearing
+balance actually reaches the platform's bank account. Until that event is in
+the backbone, the ledger knows money was *captured* but not that it is
+*ours*, and the payout "cash gate" (`policy.requirePspSettlement`) has
+nothing to trust.
+
+## What changed
+
+- `ingestPspSettlements` is **event-first**: each settlement row appends a
+  chained `psp_settled:order:{id}` domain event (payload carries
+  `amountPaise`, `utr`, `reference`) *before* posting the
+  `psp_settled` journal (DR `bank` / CR `gateway_clearing`). Rows for
+  cancelled or unpaid orders are reported as `unmatched: {order, reason}`,
+  never guessed.
+- `psp_settled` is in `DOMAIN_EVENT_JOURNAL_KINDS` and in the
+  `findDrift` money-kind list, so the coverage check is bidirectional for it:
+  a deleted settlement **journal** is re-posted by `replay()` from the event
+  (the exact paise come from the event payload); a deleted settlement
+  **event** is restored from the journal. Settlement is now tamper-evident
+  (it is on the chain) and replayable, exactly like a sale.
+- `GET /payouts/admin/settlements` — the cash-gate summary:
+  `gateway_clearing` and `bank` materialized balances, settled orders/paise,
+  the paid-but-unsettled queue (count, paise, oldest samples) and the current
+  `requirePspSettlement` policy.
+- The admin console's **Platform → Payouts** page gains a **Settlement — the
+  cash gate** card: the four numbers, the gate toggle, an ingest box
+  (one order per line: `FM-YYMMDD-#####[, ₹amount][, UTR]`), the ingest
+  result and the oldest-unsettled queue. The eligibility sweep toast now
+  reports `blocked (cash not settled)` lines when the gate is on.
+
+## Verification (2026-09-07)
+
+- Hermetic `smoke-payouts` §11 (suite now 73/73): gate ON blocks an
+  unsettled order, ingesting that order's settlement makes it eligible; the
+  settlement event is chained and the chain verifies; crash window
+  (journal+entries deleted, balance-repaired) → replay re-posts the
+  settlement to the exact paise; deleted event → restored from the journal;
+  summary counts correct.
+- Live `e2e-live` §12 (84 total): summary shape, ingest posts exactly one,
+  clearing reduced by the settled amount, summary reflects it, re-ingest
+  idempotent.
+- Browser `ui-admin` A41 (41 total): gate toggled through the UI, a
+  settlement ingested from the card's own unsettled queue, gate restored.
+
+## Boundary notes
+
+- Settlement ingestion is operator-driven (the PSP pushes a report; we paste
+  or post it). The amount defaults to the order total; an explicit amount in
+  the row wins (that is how a partial/fee-adjusted settlement is recorded).
+- The gate is per-order, not per-amount: a partially-settled order still
+  unlocks the line. Over-settlement shows up as a smaller (or negative)
+  `gateway_clearing` balance on the summary — visible, not silently netted.

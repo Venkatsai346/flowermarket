@@ -641,3 +641,23 @@ self-healing works across a closed boundary.
 
 **Integrity report additions:** `checks.auditChain: { eventsVerified,
 unanchored, breaks: [{ seq, type, idempotencyKey? }], ok }`.
+
+## Phase 12 — the cash gate (PSP settlement)
+
+Settlement is a first-class, **chained** money event: ingesting the PSP
+report appends a `psp_settled:order:{id}` domain event *before* posting the
+`psp_settled` journal (DR `bank` / CR `gateway_clearing`). It is covered by
+the event↔journal drift check in both directions (a lost journal is
+re-posted by replay from the event's exact amount; a lost event is restored
+from the journal). Full design: `docs/AUDIT_ARCHITECTURE.md` (Part 3).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/settlements` | SUPER_ADMIN | cash-gate summary: `{ gatewayClearingPaise, bankPaise, settledOrders, settledPaise, lastSettledAt, paidOrders, unsettledOrders, unsettledPaise, unsettledSample[{orderNumber,totalPaise,paidAt}], policy{requirePspSettlement} }` |
+| `POST` | `/payouts/admin/settlements/ingest` | SUPER_ADMIN | body `{ rows: [{ orderNumber | orderId, amount? | amountPaise?, utr?, settledAt? }], reference? }` → `{ rows, posted, skipped, unmatched: [{order, reason}] }`. Idempotent per order. Rows for cancelled/unpaid orders come back unmatched, never guessed |
+
+**Gate:** with `PayoutPolicy.requirePspSettlement` true (toggle on the
+Payouts console), the eligibility sweep only promotes a line to `eligible`
+when its order has a `psp_settled` journal — vendors are paid for an order
+only after the customer's cash has genuinely reached the platform's bank.
+The sweep reports `blocked` for gated lines.

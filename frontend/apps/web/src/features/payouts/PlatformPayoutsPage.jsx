@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, Ban, BadgeCheck, Banknote, CalendarClock, CheckCircle2, Eye,
-  RefreshCw, Send, ShieldAlert, ThumbsDown, Wallet,
+  AlertTriangle, Ban, BadgeCheck, Banknote, CalendarClock, CheckCircle2, CircleDollarSign,
+  Eye, FileInput, Landmark, RefreshCw, Send, ShieldAlert, ThumbsDown, ToggleLeft, ToggleRight, Wallet,
 } from 'lucide-react';
 import { inr, fmtDate } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -254,6 +254,152 @@ function ComputeCycleModal({ onClose, onDone }) {
   );
 }
 
+/**
+ * The cash gate (Phase 12): where the customer money actually is.
+ * `gateway_clearing` holds captured-but-unsettled sales; ingesting the PSP's
+ * settlement report moves it into `bank` and — with the gate ON — is the only
+ * thing that lets a vendor line for that order become payable.
+ */
+function SettlementCard() {
+  const { data, loading, refetch } = useApi(() => api.payouts.admin.settlements(), []);
+  const { busy, run } = useAction();
+  const [lines, setLines] = useState('');
+  const [result, setResult] = useState(null);
+
+  const toggleGate = async () => {
+    const on = !data?.policy?.requirePspSettlement;
+    try {
+      await run(() => api.payouts.admin.savePolicy({ scope: 'platform', requirePspSettlement: on }));
+      toast.success(on
+        ? 'Cash gate ON — vendors are paid only after the PSP settles the cash to us'
+        : 'Cash gate OFF — the return window is the only gate');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const ingest = async () => {
+    const rows = lines.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [orderNumber, amount, utr] = l.split(',').map((s) => s?.trim());
+      const row = { orderNumber };
+      if (amount) row.amount = Number(amount);
+      if (utr) row.utr = utr;
+      return row;
+    });
+    if (!rows.length) return;
+    try {
+      const r = await run(() => api.payouts.admin.ingestSettlements({ rows, reference: 'payout-console' }));
+      const d = r.data || {};
+      setResult(d);
+      toast.success(`Settlement ingested — ${d.posted ?? 0} posted, ${d.skipped ?? 0} skipped, ${(d.unmatched || []).length} unmatched`);
+      setLines('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const gateOn = Boolean(data?.policy?.requirePspSettlement);
+
+  return (
+    <Card
+      className="mb-5"
+      title="Settlement — the cash gate"
+      subtitle="Customer money sits in gateway_clearing until the PSP settles it to our bank. With the gate on, a vendor is paid for an order only after that order's cash is in."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading the settlement picture…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-slate-400"><CircleDollarSign className="h-3.5 w-3.5" /> Gateway clearing</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.gatewayClearingPaise || 0) / 100)}</p>
+              <p className="text-[11px] text-slate-400">captured, not yet settled in</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-slate-400"><Landmark className="h-3.5 w-3.5" /> Our bank</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.bankPaise || 0) / 100)}</p>
+              <p className="text-[11px] text-slate-400">settled in, before payouts</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Settled in</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.settledPaise || 0) / 100)} <span className="text-xs font-normal text-slate-400">· {data?.settledOrders ?? 0} order(s)</span></p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Waiting to settle</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.unsettledPaise || 0) / 100)} <span className="text-xs font-normal text-slate-400">· {data?.unsettledOrders ?? 0} of {data?.paidOrders ?? 0} paid</span></p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <button
+              type="button"
+              onClick={toggleGate}
+              disabled={busy}
+              className={cn('inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset transition',
+                gateOn ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-slate-100 text-slate-500 ring-slate-200')}
+            >
+              {gateOn ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}
+              Cash gate {gateOn ? 'ON' : 'OFF'}
+            </button>
+            <p className="text-xs text-slate-500">
+              {gateOn
+                ? 'Payout lines for an order only become eligible once its settlement is ingested.'
+                : 'Only the return window gates payout eligibility.'}
+            </p>
+          </div>
+
+          <div>
+            <Field label="Ingest a PSP settlement report" hint="One order per line — FM-YYMMDD-##### [, amount in ₹] [, UTR]. Amount defaults to the order total.">
+              <textarea
+                value={lines}
+                onChange={(e) => setLines(e.target.value)}
+                rows={3}
+                placeholder={'FM-260907-00045\nFM-260907-00046, 249.00, UTR123456'}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              />
+            </Field>
+            <div className="mt-2 flex items-center gap-3">
+              <Button icon={FileInput} loading={busy} disabled={!lines.trim()} onClick={ingest}>
+                Ingest settlement
+              </Button>
+              {result && (
+                <p className="text-xs text-slate-500">
+                  {result.posted} posted · {result.skipped} skipped · {(result.unmatched || []).length} unmatched
+                  {(result.unmatched || []).length > 0 && (
+                    <span className="text-rose-600">
+                      {' '}({(result.unmatched || []).map((u) => (typeof u === 'string' ? u : u.order)).join(', ')})
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {(data?.unsettledSample || []).length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Oldest paid, not yet settled
+              </p>
+              <ul className="space-y-0.5">
+                {data.unsettledSample.slice(0, 5).map((o) => (
+                  <li key={o.orderNumber} className="flex justify-between text-xs text-slate-500">
+                    <span className="font-mono">{o.orderNumber}</span>
+                    <span className="tabular-nums">{inr((o.totalPaise || 0) / 100)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function PlatformPayoutsPage() {
   const [page, setPage] = useState(1);
   const [state, setState] = useState('');
@@ -277,7 +423,8 @@ export default function PlatformPayoutsPage() {
       if (kind === 'sweep') {
         const r = await run(() => api.payouts.admin.sweepEligibility());
         const d = r.data || {};
-        toast.success(`Eligibility swept — ${d.promoted || 0} promoted, ${d.waiting || 0} still in the return window`);
+        const blocked = d.blocked || 0;
+        toast.success(`Eligibility swept — ${d.promoted || 0} promoted, ${d.waiting || 0} in the return window${blocked ? `, ${blocked} blocked (cash not settled — see the settlement gate)` : ''}`);
       } else {
         const r = await run(() => api.payouts.admin.reconcile({}));
         const d = r.data || {};
@@ -308,6 +455,8 @@ export default function PlatformPayoutsPage() {
           </>
         }
       />
+
+      <SettlementCard />
 
       {(needsAttention.length > 0 || inFlightTotal > 0) && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2">

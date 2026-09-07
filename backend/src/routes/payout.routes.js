@@ -48,6 +48,7 @@ router.post('/admin/lines/hold', platformAdmin, validate(holdSchema), PayoutCont
 router.post('/admin/lines/release', platformAdmin, validate(releaseSchema), PayoutController.release);
 router.post('/admin/adjustments', platformAdmin, validate(adjustmentSchema), PayoutController.addAdjustment);
 router.post('/admin/kyc/:id/review', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(kycReviewSchema), PayoutController.reviewKyc);
+router.get('/admin/settlements', platformAdmin, PayoutController.settlementSummary);
 router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.getPayout);
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);

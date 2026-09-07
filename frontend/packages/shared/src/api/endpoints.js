@@ -223,6 +223,8 @@ export function createEndpoints(client) {
         kyc: (q = {}) => c.get('/payouts/admin/kyc', { query: q }),
         policy: (q = {}) => c.get('/payouts/admin/policy', { query: q }),
         savePolicy: (body) => c.put('/payouts/admin/policy', body),
+        settlements: (q = {}) => c.get('/payouts/admin/settlements', { query: q }),
+        ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
         sweepEligibility: () => c.post('/payouts/admin/eligibility/sweep'),
         computeCycle: (body) => c.post('/payouts/admin/cycle/compute', body),
         holdLines: (body) => c.post('/payouts/admin/lines/hold', body),

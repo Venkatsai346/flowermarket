@@ -703,6 +703,7 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   // Phase 11 — period close lifecycle (no journal; the close is itself the fact)
   PERIOD_CLOSED: 'period_closed',
   PERIOD_REOPENED: 'period_reopened',
+  PSP_SETTLED: 'psp_settled', // PSP settlement ingested: cash reached our bank
   // Phase 11 — the audit chain was deliberately re-linked after a legitimate
   // row-set change (e.g. an event restored from its journal). Manual only.
   CHAIN_REBUILT: 'chain_rebuilt',
@@ -712,6 +713,7 @@ export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
   DOMAIN_EVENT_TYPE.REFUND_ISSUED,
   DOMAIN_EVENT_TYPE.PAYOUT_INITIATED,
   DOMAIN_EVENT_TYPE.PAYOUT_REVERSED,
+  DOMAIN_EVENT_TYPE.PSP_SETTLED,
 ]);
 
 // ---- Price history ----
