@@ -8,6 +8,7 @@
  *
  * Run: npm run smoke   (downloads the MongoDB binary once on first run)
  */
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
@@ -15,6 +16,8 @@ import mongoose from 'mongoose';
 // NOTE: env vars MUST be set before config is imported — config reads env at
 // module load, so it is imported dynamically inside main() below.
 process.env.NODE_ENV = 'test';
+process.env.DEFAULT_TENANT_ID = ''; // hermetic: never leak the dev .env default tenant into the in-memory DB
+process.env.MONGODB_URI = ''; // hermetic: never leak the dev .env DB into test runs (always use the in-memory mongod)
 let mongod;
 
 process.env.OTP_PROVIDER = 'memory';

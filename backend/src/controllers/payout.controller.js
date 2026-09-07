@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import payoutService from '../services/payout.service.js';
+import statutoryService from '../services/statutory.service.js';
+import bankStatementService from '../services/bankStatement.service.js';
 import payoutProvider from '../services/payoutProvider.service.js';
 import VendorPayoutAccount from '../models/vendorPayoutAccount.model.js';
 import Vendor from '../models/vendor.model.js';
@@ -244,6 +246,192 @@ class PayoutController {
       rows: req.body.rows || [], reference: req.body.reference || null,
     });
     res.status(200).json(success(result, { message: 'Settlement report ingested' }));
+  });
+
+  /** Cash-gate summary (Phase 12): clearing vs bank, settled queue, policy. */
+  settlementSummary = asyncHandler(async (req, res) => {
+    const result = await payoutService.settlementSummary({
+      tenantId: req.query.tenantId || null,
+    });
+    res.status(200).json(success(result, { message: 'Settlement summary' }));
+  });
+
+  // ---- Phase 13: statutory deposits (TCS/TDS to the government) ----
+
+  statutorySummary = asyncHandler(async (req, res) => {
+    const result = await statutoryService.summary({
+      tenantId: req.query.tenantId || null,
+      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+    });
+    res.status(200).json(success(result, { message: 'Statutory summary' }));
+  });
+
+  statutoryDeposit = asyncHandler(async (req, res) => {
+    const { statute, amount, amountPaise, utr, reference } = req.body;
+    const deposit = await statutoryService.deposit({
+      statute, amount, amountPaise, utr, reference,
+      tenantId: req.auth.tenantId || null,
+      actorId: req.auth.userId,
+      traceId: req.headers['x-trace-id'] || null,
+    });
+    res.status(201).json(created(deposit, { message: `${String(statute).toUpperCase()} deposit recorded` }));
+  });
+
+  statutoryRevert = asyncHandler(async (req, res) => {
+    const deposit = await statutoryService.revert({
+      depositId: req.params.id,
+      reason: req.body.reason,
+      actorId: req.auth.userId,
+      traceId: req.headers['x-trace-id'] || null,
+    });
+    res.status(200).json(success(deposit, { message: 'Deposit reverted (reversal journaled)' }));
+  });
+
+  // ---- Phase 17: vendor payable integrity (the payout lines ARE the ledger) ----
+
+  vendorReconcile = asyncHandler(async (req, res) => {
+    const vendorId = req.query.id || null;
+    const result = vendorId
+      ? await payoutService.reconcileVendor({ vendorId })
+      : await payoutService.reconcileVendors({});
+    res.status(200).json(success(result, { message: 'Vendor payable reconciliation' }));
+  });
+
+  vendorReconcileRepair = asyncHandler(async (req, res) => {
+    const vendorId = req.body?.id || null;
+    if (!vendorId) {
+      // repair requires a specific vendor — a blind platform-wide repair
+      // would post an unknown number of journals at once
+      const all = await payoutService.reconcileVendors({});
+      if (all.drifted === 0) {
+        res.status(200).json(success({ repaired: null, balanced: true }, { message: 'Already balanced' }));
+        return;
+      }
+      const err = badRequest('Pass {"id": vendorId} to repair a specific vendor — repair is per-vendor by design', 'VENDOR_RECONCILE_NEEDS_ID');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    const result = await payoutService.reconcileVendor({ vendorId, repair: true });
+    res.status(200).json(success(result, { message: result.repaired ? 'Vendor payable backfilled' : 'Vendor payable already balanced' }));
+  });
+
+  // ---- Phase 19: GST output payable integrity (the seller's GST is a ledger) ----
+
+  gstReconcile = asyncHandler(async (req, res) => {
+    const result = await payoutService.reconcileGst({ vendorId: req.query.vendor || null });
+    res.status(200).json(success(result, { message: 'GST output payable reconciliation' }));
+  });
+
+  gstReconcileRepair = asyncHandler(async (req, res) => {
+    const owner = req.body?.owner || null;
+    const all = await payoutService.reconcileGst({});
+    if (!owner) {
+      if (all.drifted === 0) {
+        res.status(200).json(success({ repaired: null, balanced: true }, { message: 'Already balanced' }));
+        return;
+      }
+      const err = badRequest('Pass {"owner": vendorId | "platform"} to repair a specific payable — repair is per-owner by design', 'GST_RECONCILE_NEEDS_OWNER');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    const row = owner === 'platform'
+      ? all.platform
+      : all.vendors.find((v) => v.vendorId === String(owner));
+    if (!row) {
+      const err = notFound('No GST footprint for that owner — nothing to reconcile', 'GST_OWNER_NOT_FOUND');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    if (row.balanced) {
+      res.status(200).json(success({ ...row, repaired: null }, { message: 'GST payable already balanced' }));
+      return;
+    }
+    const isPlatform = owner === 'platform';
+    const repaired = await payoutService.postGstBackfill({
+      scope: isPlatform ? 'platform' : 'vendor',
+      vendorId: isPlatform ? null : owner,
+      differencePaise: row.differencePaise,
+    });
+    const after = isPlatform ? await payoutService.reconcilePlatformGst() : await payoutService.reconcileGst({ vendorId: owner });
+    res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: row.differencePaise, posted: repaired.posted } }, { message: 'GST payable backfilled' }));
+  });
+
+  statementLineDelete = asyncHandler(async (req, res) => {
+    const result = await bankStatementService.deleteLine({ statementRef: req.params.ref, lineNo: Number(req.params.lineNo), actorId: req.auth.userId });
+    res.status(200).json(success(result, { message: 'Statement line deleted (unmatched only)' }));
+  });
+
+  // ---- Phase 20: bank cash position integrity (bank books = cash facts) ----
+
+  bankReconcile = asyncHandler(async (req, res) => {
+    const result = await payoutService.reconcileBank({});
+    res.status(200).json(success(result, { message: 'Bank cash position reconciliation' }));
+  });
+
+  bankReconcileRepair = asyncHandler(async (req, res) => {
+    const all = await payoutService.reconcileBank({});
+    if (all.balanced) {
+      res.status(200).json(success({ ...all, repaired: null }, { message: 'Bank position already balanced' }));
+      return;
+    }
+    const repaired = await payoutService.postBankBackfill({
+      differencePaise: all.differencePaise,
+      note: req.body?.note ? String(req.body.note).slice(0, 300) : null,
+    });
+    const after = await payoutService.reconcileBank({});
+    res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: all.differencePaise, posted: repaired.posted } }, { message: 'Bank cash position backfilled' }));
+  });
+
+  // ---- Phase 18: statutory payable integrity (TCS/TDS are real accounts) ----
+
+  statutoryReconcile = asyncHandler(async (req, res) => {
+    const result = await statutoryService.reconcile({ statute: req.query.statute || null });
+    res.status(200).json(success(result, { message: 'Statutory payable reconciliation' }));
+  });
+
+  statutoryReconcileRepair = asyncHandler(async (req, res) => {
+    const statute = req.body?.statute || null;
+    if (!statute) {
+      const all = await statutoryService.reconcile({});
+      if (all.drifted === 0) {
+        res.status(200).json(success({ repaired: null, balanced: true }, { message: 'Already balanced' }));
+        return;
+      }
+      const err = badRequest('Pass {"statute": "tcs"|"tds"} to repair a specific payable — repair is per-statute by design', 'STATUTORY_RECONCILE_NEEDS_STATUTE');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    const row = await statutoryService.reconcile({ statute });
+    if (row.balanced) {
+      res.status(200).json(success({ ...row, repaired: null }, { message: 'Statutory payable already balanced' }));
+      return;
+    }
+    const repaired = await statutoryService.postStatutoryBackfill({ statute, differencePaise: row.differencePaise });
+    const after = await statutoryService.reconcile({ statute });
+    res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: row.differencePaise, posted: repaired.posted } }, { message: 'Statutory payable backfilled' }));
+  });
+
+  // ---- Phase 14: bank statement reconciliation (the egress truth) ----
+
+  statementSummary = asyncHandler(async (req, res) => {
+    const result = await bankStatementService.summary({
+      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+    });
+    res.status(200).json(success(result, { message: 'Bank statement reconciliation summary' }));
+  });
+
+  statementIngest = asyncHandler(async (req, res) => {
+    const { statementRef, lines } = req.body;
+    const result = await bankStatementService.ingest({
+      statementRef,
+      lines,
+      actorId: req.auth.userId,
+      tenantId: req.auth.tenantId || null,
+      traceId: req.headers['x-trace-id'] || null,
+    });
+    res.status(201).json(created(result, {
+      message: `Statement ${statementRef} matched — ${result.confirmed} confirmed, ${result.returned} returned, ${result.queued} queued`,
+    }));
   });
 
   /**

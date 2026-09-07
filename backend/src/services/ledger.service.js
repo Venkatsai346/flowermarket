@@ -51,6 +51,7 @@ export const ledgerAccounts = {
   tcsPayable: () => LEDGER_ACCOUNT.TCS_PAYABLE,
   tdsPayable: () => LEDGER_ACCOUNT.TDS_PAYABLE,
   walletLiability: () => LEDGER_ACCOUNT.CUSTOMER_WALLET_LIABILITY,
+  walletGoodwillExpense: () => LEDGER_ACCOUNT.WALLET_GOODWILL_EXPENSE,
   roundingDifference: () => LEDGER_ACCOUNT.ROUNDING_DIFFERENCE,
   vendorPayable: (vendorId) => `${LEDGER_ACCOUNT_PREFIX.VENDOR_PAYABLE}:${vendorId}`,
   tenantPayable: (tenantId) => `${LEDGER_ACCOUNT_PREFIX.TENANT_PAYABLE}:${tenantId}`,
@@ -66,6 +67,7 @@ const TYPE_BY_PREFIX = {
   [LEDGER_ACCOUNT.TCS_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,
   [LEDGER_ACCOUNT.TDS_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,
   [LEDGER_ACCOUNT.CUSTOMER_WALLET_LIABILITY]: LEDGER_ACCOUNT_TYPE.LIABILITY,
+  [LEDGER_ACCOUNT.WALLET_GOODWILL_EXPENSE]: LEDGER_ACCOUNT_TYPE.EXPENSE,
   [LEDGER_ACCOUNT.ROUNDING_DIFFERENCE]: LEDGER_ACCOUNT_TYPE.EXPENSE,
   [LEDGER_ACCOUNT_PREFIX.VENDOR_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,
   [LEDGER_ACCOUNT_PREFIX.TENANT_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,
@@ -87,6 +89,7 @@ const ACCOUNT_NAMES = {
   [LEDGER_ACCOUNT.TCS_PAYABLE]: 'TCS payable (GST s.52)',
   [LEDGER_ACCOUNT.TDS_PAYABLE]: 'TDS payable (IT s.194-O)',
   [LEDGER_ACCOUNT.CUSTOMER_WALLET_LIABILITY]: 'Customer wallet liability',
+  [LEDGER_ACCOUNT.WALLET_GOODWILL_EXPENSE]: 'Wallet goodwill expense',
   [LEDGER_ACCOUNT.ROUNDING_DIFFERENCE]: 'Rounding difference',
   [LEDGER_ACCOUNT_PREFIX.VENDOR_PAYABLE]: 'Vendor payable',
   [LEDGER_ACCOUNT_PREFIX.TENANT_PAYABLE]: 'Store payable',
@@ -178,7 +181,7 @@ class LedgerService {
    */
   async post({
     kind, idempotencyKey, lines = [], refType = null, refId = null,
-    tenantId = null, vendorId = null, occurredAt = null, postedBy = null, meta = null,
+    tenantId = null, vendorId = null, occurredAt = null, postedBy = null, meta = null, traceId = null,
   }) {
     if (!kind || !LEDGER_JOURNAL_KIND[String(kind).toUpperCase()]) {
       if (!Object.values(LEDGER_JOURNAL_KIND).includes(kind)) {
@@ -229,6 +232,24 @@ class LedgerService {
     const tId = toId(tenantId);
     const vId = toId(vendorId);
 
+    // ---- Phase 11: a closed fiscal period is immutable ----
+    // The journal (already-posted) case short-circuited above, so this only
+    // blocks NEW postings into closed books. While closed, live money facts
+    // accumulate as detectable drift (event w/o journal) until reopen —
+    // the integrity report is the alarm, the reopen is the act.
+    if (tId) {
+      const closedPeriod = await import('../models/fiscalPeriod.model.js')
+        .then((m) => m.default.findOne({
+          tenantId: tId, state: 'closed', start: { $lte: when }, end: { $gt: when },
+        }).lean());
+      if (closedPeriod) {
+        throw new AppError(
+          `Fiscal period ${closedPeriod.periodKey} is closed — reopen it before posting`,
+          { status: 409, code: 'PERIOD_CLOSED', details: { periodKey: closedPeriod.periodKey } }
+        );
+      }
+    }
+
     try {
       const journal = await this.withOptionalTransaction(async (session) => {
         const opts = session ? { session } : {};
@@ -236,6 +257,7 @@ class LedgerService {
         const [created] = await LedgerJournal.create([{
           kind,
           idempotencyKey,
+          traceId,
           tenantId: tId,
           vendorId: vId,
           refType,
@@ -350,7 +372,7 @@ class LedgerService {
    */
   async reverseProportional({
     originalKey, amountPaise, counterAccount, kind = LEDGER_JOURNAL_KIND.REFUND_ISSUED,
-    idempotencyKey, refType = null, refId = null, occurredAt = null, memo = null, postedBy = null,
+    idempotencyKey, refType = null, refId = null, occurredAt = null, memo = null, postedBy = null, traceId = null,
   }) {
     const amount = Math.round(Number(amountPaise) || 0);
     if (amount <= 0) throw badRequest('Reversal amount must be positive', 'LEDGER_INVALID_AMOUNT');
@@ -400,6 +422,7 @@ class LedgerService {
       vendorId: original.vendorId,
       occurredAt,
       postedBy,
+      traceId: traceId || original.traceId || null,
       meta: { reversalOf: String(original._id), originalKey },
     });
 

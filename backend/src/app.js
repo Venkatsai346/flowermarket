@@ -6,11 +6,14 @@ import compression from 'compression';
 import morgan from 'morgan';
 import config from './config/index.js';
 import apiRouter from './routes/index.js';
+import opsRoutes from './routes/ops.routes.js';
 import PaymentController from './controllers/payment.controller.js';
 import PayoutController from './controllers/payout.controller.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { metricsMiddleware } from './middleware/metrics.js';
+import traceId from './middleware/traceId.js';
 
 /**
  * App factory — keeps server.js free of middleware wiring and lets tests
@@ -49,8 +52,22 @@ export function createApp() {
 
   app.disable('x-powered-by');
 
+  // ---- end-to-end correlation (Phase 10) — first, so every request, the
+  //      access log and every aggregate it creates share one traceId ----
+  app.use(traceId);
+  morgan.token('trace', (req) => req.traceId || '-');
+
   // ---- security headers ----
   app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+
+  // ---- request metrics (first thing, so every request — including 4xx/5xx —
+  //      is timed; the ops endpoints exclude themselves) ----
+  app.use(metricsMiddleware());
+
+  // ---- ops: /healthz, /readyz, /metrics — mounted before morgan so scrape
+  //      traffic never pollutes the access log, and before auth/tenant so a
+  //      monitor needs no tenant header or token ----
+  app.use(opsRoutes);
 
   // ---- CORS (React Native app / admin web) ----
   app.use(
@@ -113,7 +130,11 @@ export function createApp() {
 
   // ---- perf & logging ----
   app.use(compression());
-  app.use(morgan(config.isDev ? 'dev' : 'combined'));
+  // ':trace' appends the end-to-end correlation id to every access-log line
+  // (mimics morgan's dev/combined formats, plus the trace token)
+  app.use(morgan(config.isDev
+    ? ':method :url :status - :response-time ms - :res[content-length] :trace'
+    : ':remote-addr - :remote-user [:date[dev]] ":method :url HTTP/:http-version" :status :res[content-length] ":req[referrer]" ":req[user-agent]" :trace'));
 
   // ---- routes ----
   app.use('/api/v1', apiRouter);

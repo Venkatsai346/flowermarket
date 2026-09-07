@@ -13,6 +13,7 @@
  *
  * Run: node scripts/smoke-media.test.js   (STORAGE_PROVIDER defaults to local)
  */
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +21,8 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
+process.env.DEFAULT_TENANT_ID = ''; // hermetic: never leak the dev .env default tenant into the in-memory DB
+process.env.MONGODB_URI = ''; // hermetic: never leak the dev .env DB into test runs (always use the in-memory mongod)
 process.env.OTP_PROVIDER = 'memory';
 // hermetic local storage for this run
 process.env.LOCAL_STORAGE_DIR = path.join(os.tmpdir(), `fm-media-smoke-${Date.now()}`);

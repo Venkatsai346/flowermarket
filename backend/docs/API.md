@@ -296,6 +296,29 @@ Two flows (doc §6): `pickup_qc` (pickup → QC → refund) for non-perishables,
 | `GET /fulfillment/refunds` (ADMIN) | all refunds |
 | `POST /fulfillment/refunds` (ADMIN) `{orderId, amount, reason, destination}` | manual refund (idempotencyKey dedupes) |
 | `POST /fulfillment/reconcile/payments` (ADMIN) | sweep stale PENDING gateway payments → FAILED (order compensated); wallet PENDING payments are first **healed** if their debit already exists, then cancelled only if truly unrecoverable |
+| `GET /wallet/admin/reconcile` (SUPER_ADMIN) | **Phase 16** — wallet ledger reconciliation: `Σ Wallet.balance` vs the tenant's `customer_wallet_liability` entry sum → `{wallets, walletTotalPaise, ledgerPaise, differencePaise, balanced, repaired}` (read-only) |
+| `POST /wallet/admin/reconcile/repair` (SUPER_ADMIN) | **Phase 16** — post **one** `wallet_backfill` journal for the difference (signed: wallet ahead → DR `gateway_clearing` / CR liability; behind → the reverse) + a `wallet_backfill` audit event, then re-report the post-repair state. No-op when balanced. The backfill amount is **not re-derivable** from any aggregate, so `replay` deliberately refuses to replay it (`WALLET_BACKFILL_NOT_REPLAYABLE`) — the audit event records what was backfilled and why |
+
+**Phase 16 — the wallet IS a ledger account.** Before this phase the customer
+wallet moved without a journal for top-ups (and goodwill credits), so the
+books and the wallets could drift apart silently. Now every wallet movement
+has exactly one journal owner:
+
+- **topup** → event `wallet_topup` (key `wallet_topup:wallet_txn:{txnId}`) then
+  `wallet_topup` journal — DR `gateway_clearing` / CR `customer_wallet_liability`,
+  paise-exact from the `WalletTransaction`.
+- **goodwill credit** → same kind, DR `wallet_goodwill_expense` / CR liability
+  (no gateway money behind a goodwill credit).
+- **refund credit** → journaled by `refund_issued` (`postRefund`), **no** new
+  journal from the wallet service — no double count.
+- **order payment debit** → journaled by the sale journal
+  (`DR customer_wallet_liability`), unchanged.
+
+The integrity report gained a **Wallet** check
+(`checks.wallet`: `ok === balanced`); the ledger page shows the row plus a
+deliberate *Backfill ledger from wallet balances* action when the two disagree.
+A top-up that crashes between the event and the journal is healed by the
+normal `replay` (the journal re-derives from the `WalletTransaction`).
 
 ## Phase 3.5 — policies, rider app, forecasting, payments webhooks
 
@@ -333,6 +356,7 @@ Two flows (doc §6): `pickup_qc` (pickup → QC → refund) for non-perishables,
 | `GET /fulfillment/forecast/history?hubId=` | fulfillment-time history (self-correction inputs) |
 | `POST /fulfillment/assignments/sweep?limit=` | expire stale PENDING_ACCEPT rider assignments → auto-reassign |
 | `GET /fulfillment/payments` · `GET /fulfillment/payments/:id` | payment reads (ADMIN) |
+| `POST /fulfillment/payments/mock/force-pending` `{enabled}` | **dev-only** (400 outside `NODE_ENV=development`): flips the in-process mock gateway between sync and async (pending) charge modes at runtime — lets the awaiting-payment storefront flow (banner + 5s poll) be exercised on the live stack without `MOCK_PAYMENT_PENDING` or real keys (ADMIN) |
 
 ### Payment webhooks (raw body — no tenant header, signature-verified)
 
@@ -589,3 +613,307 @@ Media asset: `{id, tenantId, uploadedBy, purpose, type, mimeType, ext, sizeBytes
 **Purpose → type map:** `product_image|category_image|brand_logo|store_logo|store_banner → image`; `product_video → video`. **Limits:** images ≤ 10 MB, videos ≤ 250 MB; ext allowlists enforced at sign time, magic bytes (jpeg/png/gif/webp/avif/mp4/mov) sniffed at confirm time. **Errors:** `MEDIA_TYPE_NOT_ALLOWED`, `MEDIA_TOO_LARGE`, `BAD_MEDIA_PURPOSE`, `MEDIA_VERIFY_FAILED`, `MEDIA_NOT_FOUND`, `KEY_TENANT_MISMATCH`, `LOCAL_UPLOAD_DISABLED`.
 
 **Config:** `STORAGE_PROVIDER`, `LOCAL_STORAGE_DIR` (default `backend/storage/local`), `MEDIA_PRESIGN_EXPIRY_SECONDS` (900), `S3_BUCKET/S3_REGION/S3_ACCESS_KEY_ID/S3_SECRET_ACCESS_KEY/S3_PUBLIC_BASE_URL`, `MEDIA_MAX_IMAGE_BYTES` (10485760), `MEDIA_MAX_VIDEO_BYTES` (262144000). Image/logo/banner fields across catalog + storefront accept relative URIs (`allowRelative`) so local-provider URLs (`/media/local/…`) persist; S3 returns absolute URLs.
+
+## Phase 10 — money audit backbone (blueprint: "Follow the Money")
+
+Trace + audit + integrity. Every money object (order, payment, journal, refund,
+payout batch, webhook audit row) carries the request's `traceId`; a
+request's inbound `x-trace-id` is adopted (regex-validated) or a new one is
+minted and echoed in the `x-trace-id` response header. Full design:
+`docs/AUDIT_ARCHITECTURE.md`.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/ledger/integrity` | SUPER_ADMIN | read-only system integrity report; optional `?tenantId=` scopes the per-tenant checks |
+| `POST` | `/ledger/integrity/replay` | SUPER_ADMIN | re-derive missing journals from the event store + restore missing audit rows; idempotent; body `{limit?}` (default 200) |
+| `GET` | `/admin/integrity` | ADMIN | same report, always tenant-scoped to the caller's tenant |
+| `GET` | `/wallet/admin/reconcile` | SUPER_ADMIN | **Phase 16** — wallet↔`customer_wallet_liability` reconciliation (read-only) |
+| `POST` | `/wallet/admin/reconcile/repair` | SUPER_ADMIN | **Phase 16** — post a signed `wallet_backfill` journal for the difference (one journal, audited, not replayable) |
+| `GET` | `/admin/traces/:traceId` | ADMIN | the full money chain for one trace, time-ordered (order facts, status history, payments, webhook audit rows, journals, payout transitions, domain events); 404 `TRACE_NOT_FOUND` when the id resolves to nothing |
+
+**Integrity report shape:** `{ generatedAt, scope: 'platform'|tenantId, overall: 'ok'|'drift', checks: { ledger: { trial{balanced,differencePaise,entries}, balances{checked,drifted,ok}, eventJournalCoverage{eventsScanned,missingJournals,missingEvents,samples,ok}, ok }, searchIndex{indexedDocuments,listings,missing,error,ok}, slots{checked,overReserved,samples,ok}, payments{total,processed,duplicate,mismatch,ignored,mismatches,ok}, payouts{batchesChecked,missingJournals,ok}, events{total,byKind,newestOccurredAt,ok}, notifications{pending,oldestPendingAgeMs,deadLetters,ok} } }`.
+
+**Replay response:** `{ scope, journalsReposted, eventsRestored, failed, errors[] }`.
+
+**Trace chain row:** `{ kind: 'order.created'|'order.status.*'|'order.paid'|'payment.created'|'journal.*'|'event.*'|'payout.*', at, detail?, paise? }` plus `{ traceId, orderCount, events }`.
+
+## Phase 11 — tamper-evident chain + fiscal period close
+
+Every domain event is hash-chained per tenant
+(`hash = sha256(prevHash|canonical-content)`, genesis `'0'×64`, tail anchor
+in the separate `auditchains` collection). A content edit, a deleted row or a
+lost tail all surface as a named break in the integrity report
+(`hash_mismatch`, `broken_front`, `broken_link`, `tail_missing`,
+`tail_mismatch`). **Breaks are never auto-healed** — the only re-link is a
+deliberate, audited `rebuild-chain` that appends a `chain_rebuilt` fact
+event. Full design: `docs/AUDIT_ARCHITECTURE.md` (Part 2).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `POST` | `/ledger/integrity/replay-chain` | SUPER_ADMIN | anchor **unanchored** rows (crashed appends) in seq order; idempotent; body `{limit?}` (default 500) → `{ anchored, failed[] }` |
+| `POST` | `/ledger/integrity/rebuild-chain` | SUPER_ADMIN | deliberate manual re-link: re-hash the whole chain in seq order (seqs preserved), reset the anchor, append a `chain_rebuilt` fact → `{ relinked, tailHash }`. Use after restoring rows from the source system |
+| `GET` | `/ledger/periods` | SUPER_ADMIN | fiscal period list (all tenants; `?tenantId=` scopes) |
+| `GET` | `/ledger/periods/:periodKey` | SUPER_ADMIN | **period report derived from the journal** for `YYYY-MM`: `{ periodKey, state, closedAt, reopenedAt, journals, grossCapturedPaise, refundsPaise, netCapturedPaise, payoutsInitiatedPaise, payoutsReversedPaise, byKind, periodBalanced }` |
+| `POST` | `/ledger/periods/:periodKey/close` | SUPER_ADMIN | close the month (allowed mid-month — operator freeze); appends a chained `period_closed` event → `{ periodKey, state }` |
+| `POST` | `/ledger/periods/:periodKey/reopen` | SUPER_ADMIN | reopen; appends a chained `period_reopened` event; unblocks posting → `{ periodKey, state }` |
+| `GET` | `/admin/periods` | ADMIN | tenant-scoped period list |
+| `GET` | `/admin/periods/:periodKey` | ADMIN | tenant-scoped period report (same shape) |
+
+**Guard:** `ledger.post()` rejects any **new** journal whose `occurredAt`
+falls inside a closed period with **409 `PERIOD_CLOSED`** (`details.periodKey`).
+Idempotent re-posts (replay of an already-journaled event) pass, so
+self-healing works across a closed boundary.
+
+**Integrity report additions:** `checks.auditChain: { eventsVerified,
+unanchored, breaks: [{ seq, type, idempotencyKey? }], ok }`.
+
+## Phase 12 — the cash gate (PSP settlement)
+
+Settlement is a first-class, **chained** money event: ingesting the PSP
+report appends a `psp_settled:order:{id}` domain event *before* posting the
+`psp_settled` journal (DR `bank` / CR `gateway_clearing`). It is covered by
+the event↔journal drift check in both directions (a lost journal is
+re-posted by replay from the event's exact amount; a lost event is restored
+from the journal). Full design: `docs/AUDIT_ARCHITECTURE.md` (Part 3).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/settlements` | SUPER_ADMIN | cash-gate summary: `{ gatewayClearingPaise, bankPaise, settledOrders, settledPaise, lastSettledAt, paidOrders, unsettledOrders, unsettledPaise, unsettledSample[{orderNumber,totalPaise,paidAt}], policy{requirePspSettlement} }` |
+| `POST` | `/payouts/admin/settlements/ingest` | SUPER_ADMIN | body `{ rows: [{ orderNumber | orderId, amount? | amountPaise?, utr?, settledAt? }], reference? }` → `{ rows, posted, skipped, unmatched: [{order, reason}] }`. Idempotent per order. Rows for cancelled/unpaid orders come back unmatched, never guessed |
+
+**Gate:** with `PayoutPolicy.requirePspSettlement` true (toggle on the
+Payouts console), the eligibility sweep only promotes a line to `eligible`
+when its order has a `psp_settled` journal — vendors are paid for an order
+only after the customer's cash has genuinely reached the platform's bank.
+The sweep reports `blocked` for gated lines.
+
+## Phase 13 — statutory deposits (TCS/TDS to the government)
+
+The closing entry for the withholdings: payouts credit `tcs_payable` /
+`tds_payable`; these endpoints pay the government (DR payable / CR bank).
+Balance-guarded (you cannot deposit more than you withheld), UTR-mandatory,
+event-first + chained, reverts journaled never deleted. Full design:
+`docs/AUDIT_ARCHITECTURE.md` (Part 4).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/statutory` | SUPER_ADMIN | `{ tcs, tds: { payableBalancePaise, depositedPaise, netDepositedPaise, revertedPaise, deposits, outstandingPaise }, recentDeposits[{ id, statute, amountPaise, utr, status, createdAt, revertReason }] }` |
+| `POST` | `/payouts/admin/statutory/deposit` | SUPER_ADMIN | body `{ statute: 'tcs'\|'tds', amount \| amountPaise, utr (min 3 chars), reference? }` → 201 the deposit. **409 `STATUTORY_OVER_DEPOSIT`** when the amount exceeds the payable balance (details quote it) |
+| `POST` | `/payouts/admin/statutory/:id/revert` | SUPER_ADMIN | body `{ reason (min 3 chars) }` → posts the mirror journal (DR bank / CR payable), marks the deposit reverted with the reason. 409 `STATUTORY_ALREADY_REVERTED` |
+
+Both journal kinds (`statutory_deposit`, `statutory_deposit_reverted`) are
+chained and covered by the event↔journal drift check in both directions.
+
+## Phase 14 — bank statement reconciliation (the egress truth)
+
+The bank statement is the **independent source of truth for money out**: a
+PAID payout can be returned by the bank days later (NSF, closed account) and
+the provider will never say so. These endpoints ingest signed statement lines
+and match them **UTR-exact only** — nothing is ever fuzzy-matched:
+
+| bank line | batch with that UTR | result |
+|---|---|---|
+| debit (−) | PROCESSING | the money moved → `markPaid` (resolves an ambiguous submission) |
+| debit (−) | PAID | `confirmed_paid` — the bank agrees (audit only, no state change) |
+| credit (+) | PAID | **bank return** → `markReversed` (journal unwound, lines freed) |
+| anything else | — | `unmatched` — queued, visible, never guessed |
+
+Money moves only through the normal payout service methods (chained events,
+balanced journals); the statement only *decides*. Re-ingesting the same
+`{statementRef, lineNo}` is a no-op (unique index). Each ingestion appends one
+chained `bank_statement_ingested` fact (not a journal kind). Full design:
+`docs/AUDIT_ARCHITECTURE.md` (Part 5).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/statement` | SUPER_ADMIN | `{ total, confirmed, returned, unmatched, queued[{ statementRef, lineNo, utr, amountPaise, description, createdAt }], recentMatches[...] }` (`?limit=` caps the lists) |
+| `POST` | `/payouts/admin/statement/ingest` | SUPER_ADMIN | body `{ statementRef (min 3), lines: [{ utr (min 3), amount \| amountPaise (non-zero, signed rupees/paise), description? }] }` → 201 `{ statementRef, lines, newLines, confirmed, returned, queued, failed: [{ lineNo, utr, reason }] }` |
+
+**Errors:** 400 `STATEMENT_REF_REQUIRED` / `STATEMENT_NO_LINES` /
+`STATEMENT_LINE_BAD` (missing UTR or zero amount). A line whose match throws
+(locked batch, unexpected state) is kept `unmatched` with `matchError` set and
+reported in `failed` — the ingest itself still succeeds for the other lines.
+
+## Phase 15 — clawback settlement (refund debts recovered through the cycle)
+
+A refund after a payout leaves the vendor in debt to the platform. The
+refund journal already debits `vendor_payable` by the vendor's drained share;
+the payout side carries the debt as a **negative line** (clawback) that
+offsets the vendor's next cycle:
+
+- `computeCycleForVendor` — when the cycle's raw net is negative (or below
+  the payout floor) it creates a zero-net batch and records the residual as
+  `carryForwardPaise`. **The carried debt moves into the new batch's opening
+  and is cleared on the old batch** — a later cycle can never take the same
+  debt a second time. `submitForApproval` refuses zero-net batches
+  (`PAYOUT_NOTHING_TO_PAY`); with `negativeBalanceCarryForward: false` a
+  negative cycle is refused outright (`PAYOUT_NEGATIVE_BALANCE`).
+- `cancel` / `markFailed` release a batch's lines under one rule:
+  - `carryForwardPaise !== 0` → the batch's net was recorded as carry-forward,
+    so its lines are **consumed** (PAID, nothing moved for them) — releasing
+    them back would double-charge (or double-pay) the same amounts.
+  - `carryForwardPaise === 0` → nothing was carried, every line returns to
+    the eligible pool (including negative clawback lines, whose offset is
+    still pending — the refund journal already holds the debt).
+- `markFailed` now releases its lines (a rejected payout moved no money — the
+  next cycle pays the lines again; previously they were pinned to the failed
+  batch until an operator cancelled it).
+## Phase 17 — vendor ledger integrity (`vendor_payable` is a real ledger account)
+
+The payout lines **are** the ledger for what is owed to vendors. Every
+`vendor_payable:{vendor}` entry must equal the sum of the vendor's payout
+lines' book views (gross − GST − commission, signed by line type), the
+adjustments pinned to its batches, the book face of its carry-forward
+batches, and the book openings of batches that have not yet settled:
+
+    vendor_payable:{v}  =  Σ lineLedgerView(counted lines)
+                         + Σ adjustments (counted)
+                         + Σ carryLedgerViewPaise (carry batches, carry ≠ 0)
+                         + Σ openingLedgerViewPaise (settled-out batches)
+
+A **counted** line is any ACCRUED / ELIGIBLE / HELD line, plus a BATCHED line
+whose batch journal is not live yet (not submitted / not paid) and which
+carried nothing — a line is never counted twice, and a carried batch's lines
+are **consumed** (PAID) at absorption so the debt is counted exactly once, in
+the new batch's opening.
+
+Carry-forward is **dual-face**: `carryForwardPaise` is the cash face (what the
+next cycle's bank transfer nets) and `carryLedgerViewPaise` is the book face
+(what the journals still owe). `cancel` / `markFailed` / `markReversed` on a
+settling batch re-park **both** faces into the next cycle's opening; absorbing
+a carry into a larger cycle clears **both** on the old batch.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/vendor-reconcile` | SUPER_ADMIN | platform reconcile: every vendor with lines/batches → `{ vendorsChecked, drifted, driftedSample, totalDifferencePaise, ok, vendors[{vendorId, expectedPaise, actualPaise, differencePaise, balanced}] }`. `?id={vendorId}` scopes to one vendor (full single-vendor report incl. `balanced`) |
+| `POST` | `/payouts/admin/vendor-reconcile/repair` | SUPER_ADMIN | body `{ id: vendorId }` (required — a blind platform-wide repair would post an unknown number of journals): posts **one** signed `vendor_backfill` journal for the difference (books under-stated → DR `gateway_clearing` / CR `vendor_payable`; over-stated → the reverse) + a `vendor_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null, balanced:true}`) when balanced. Without `id` while a vendor is drifted → 400 `VENDOR_RECONCILE_NEEDS_ID` |
+
+The backfill amount is **not re-derivable** from any aggregate, so `replay`
+refuses it with `VENDOR_BACKFILL_NOT_REPLAYABLE` — the audit event (keyed to
+the journal) records exactly what was backfilled and by which repair.
+
+The integrity report's new `checks.vendors` row (platform-scoped — vendors are
+platform-global) feeds the platform **Ledger** page, which gained a
+**Vendor payable** subsystem row: drift to the paise, the drifted vendor
+sample, a per-vendor reconcile drill-down, and a repair action that posts the
+signed backfill.
+
+Pre-Phase-17 data: carry batches created before this phase carry no book face.
+`scripts/seed-vendor-carry-views.mjs` is a one-off, idempotent migration that
+recovers `carryLedgerViewPaise` from each such batch's consumed lines (book
+view + opening face + pinned adjustments). Run `DRY_RUN=true` first.
+## Phase 18 — statutory ledger integrity (`tcs_payable` / `tds_payable` are real accounts)
+
+TCS (GST s.52) and TDS (IT s.194-O) are withheld from vendor payouts when the
+batch journal is posted, credited to `tcs_payable` / `tds_payable`, and
+discharged by deposits to the government (Phase 13). Phase 18 reconciles those
+accounts against the domain facts that created them:
+
+    {statute}_payable  =  withheld − net deposits
+
+where **withheld** = Σ `batch.{tcs,tds}Paise` over batches whose payout
+journal is live (state PROCESSING / PAID — the journal credits the payable at
+submission), and **net deposits** = recorded deposits − reverts. A REVERSED
+or FAILED batch booked the credit AND posted the mirror unwind, so it nets to
+zero and is not withheld. The payable accounts are platform-global (no
+tenant in the code), so the reconcile is platform-scoped.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/statutory-reconcile` | SUPER_ADMIN | both statutes → `{ statutes[{statute, accountCode, withheldPaise, netDepositedPaise, expectedPaise, booksPaise, differencePaise, balanced}], drifted, totalDifferencePaise, ok }`; `?statute=tcs\|tds` → the single statute row |
+| `POST` | `/payouts/admin/statutory-reconcile/repair` | SUPER_ADMIN | body `{ statute }` (required — repair is per-statute by design): posts **one** signed `statutory_backfill` journal for the difference (under-stated → DR `bank` / CR `{statute}_payable`; over-stated → the mirror) + a `statutory_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null, balanced:true}`) when balanced. Without `statute` while a statute is drifted → 400 `STATUTORY_RECONCILE_NEEDS_STATUTE`. Zero-difference backfills are refused (`STATUTORY_BACKFILL_EMPTY`) |
+
+The backfill amount is the measured *difference* — not re-derivable — so
+`replay` refuses it with `STATUTORY_BACKFILL_NOT_REPLAYABLE`, exactly like
+the wallet and vendor backfills. The integrity report gained `checks.statutory`,
+and the platform Ledger page gained a **Statutory payable (TCS/TDS)** row
+(drift to the paise + per-statute backfill action; A38 now requires all
+10 subsystems).
+
+## Phase 19 — GST output payable integrity (seller + platform GST accounts are real accounts)
+
+A vendor sale's GST is the *seller's* output liability: `buildSaleLines`
+credits `gst_output_payable:{vendor}` the item's `taxAmount`, a SUCCESS refund
+debits back the refunded slice, and a submitted payout batch drains the
+batch's aggregated `sellerGstPaise` (the GST leaves the seller's obligation
+when the platform remits it on their behalf). The platform itself also owes
+GST on its commission — `gst_output_payable:platform` is credited the batch's
+`gstOnCommissionPaise` when the payout journal posts. Phase 19 reconciles
+every one of those accounts to the paise against the domain facts that
+created them:
+
+```
+gst_output_payable:{vendor}  =  sale credits − refund debits − live payout drains
+    sale credits     =  Σ item.taxAmount (paise) over the vendor's items on
+                        PAID orders (the books were credited at sale time)
+    refund debits    =  per SUCCESS refund, the vendor's share of
+                        allocatePaise(toPaise(refund.amount), credit lines) —
+                        the exact same allocation the refund journal used
+    live drains      =  Σ max(0, batch.sellerGstPaise) over batches in
+                        PROCESSING / PAID (the payout journal is live)
+
+gst_output_payable:platform  =  Σ batch.gstOnCommissionPaise over the same
+                        live batches (commission GST leaves with the payout)
+```
+
+A REVERSED batch is not live: its payout journal was unwound by the reversal
+journal, so it drains nothing — the same subtlety as Phases 17 and 18. A
+partial refund marks the whole original line reversed in the *view* but the
+journal debited only the proportional slice; the invariant is on the journal
+basis, which is what the books actually moved.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/gst-reconcile` | SUPER_ADMIN | all owners → `{ vendors[{vendorId, accountCode, saleCreditsPaise, refundDebitsPaise, payoutDrainsPaise, expectedPaise, booksPaise, differencePaise, balanced}], platform{…}, checked, drifted, driftedSample[≤5], totalDifferencePaise, ok }`; `?vendor=<id>` → the single vendor row |
+| `POST` | `/payouts/admin/gst-reconcile/repair` | SUPER_ADMIN | body `{ owner }` (vendor id or `"platform"`; repair is per-owner by design): posts **one** signed `gst_backfill` journal for the difference (under-stated → DR `gateway_clearing` / CR `gst_output_payable:{owner}`; over-stated → the mirror) + a `gst_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null, balanced:true}`) when balanced. Without `owner` while something is drifted → 400 `GST_RECONCILE_NEEDS_OWNER`. Zero-difference backfills are refused (`GST_BACKFILL_EMPTY`) |
+
+The backfill amount is the measured *difference* — not re-derivable — so
+`replay` refuses it with `GST_BACKFILL_NOT_REPLAYABLE`, exactly like the
+wallet, vendor, and statutory backfills. The integrity report gained
+`checks.gst`, and the platform Ledger page gained a **GST output payable**
+row (drift to the paise + per-owner backfill action; A38 now requires all
+11 subsystems).
+
+## Phase 20 — bank cash position integrity (the settlement bank is a real account)
+
+The settlement bank is where the money physically is: PSP settlements move
+captured cash in (`psp_settled`: DR bank / CR gateway_clearing), live payout
+batches move vendor cash out (the `payout_initiated` journal credits the
+bank the batch's `netPaise` — net of commission, platform commission GST and
+TCS/TDS), and statutory deposits leave for the government (CR bank). Phase
+20 reconciles the bank's book balance to the paise against the domain facts
+that moved it:
+
+```
+books(bank)  =  Σ psp_settled (signed — the PSP nets refunds in as negative
+                settlement rows; final once posted)
+             −  Σ batch.netPaise over LIVE batches (PROCESSING / PAID — the
+                payout journal is live)
+             −  Σ statutory deposits (recorded, not reverted)
+             +  bank_backfill journals (self-corrections, excluded)
+```
+
+Refunds never touch the bank — they go back out through the gateway
+(`gateway_clearing`), which is why a refund of a settled order leaves the
+bank books exactly where they were. A REVERSED batch posted its credit AND
+its unwind, so it nets to zero and is excluded, like every prior phase.
+
+The bank statement (Phase 14) is the independent egress cross-check: an
+UNMATCHED statement line is money the bank moved with no known batch UTR.
+The check is `ok` only when the books balance AND the unmatched queue is
+empty — unexplained egress keeps the platform red until it is explained.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/bank-reconcile` | SUPER_ADMIN | `{ expectedPaise, booksPaise, differencePaise, settlements{count, paise}, payouts{count, paise}, deposits{count, paise}, statement{unmatchedLines, unmatchedPaiseAbs}, balanced, ok }` |
+| `POST` | `/payouts/admin/bank-reconcile/repair` | SUPER_ADMIN | body `{ note? }`: posts **one** signed `bank_backfill` journal for the difference (under-stated → DR `bank` / CR `gateway_clearing` — the unexplained-cash bucket absorbs the correction; over-stated → the mirror) + a `bank_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null}`) when balanced |
+| `DELETE` | `/payouts/admin/statement/lines/:ref/:lineNo` | SUPER_ADMIN | operator correction for a bad ingestion — deletes a statement line. Only **unmatched** lines may be deleted; matched lines already drove a money movement and are immutable (`STATEMENT_LINE_MATCHED`) |
+
+The backfill amount is the measured *difference* — not re-derivable — so
+`replay` refuses it with `BANK_BACKFILL_NOT_REPLAYABLE`, exactly like the
+wallet, vendor, statutory, and GST backfills. Zero-difference backfills are
+refused (`BANK_BACKFILL_EMPTY`). The integrity report gained `checks.bank`
+(12th subsystem), and the platform Ledger page gained a **Bank cash
+position** row (books vs facts + settlement/payout/deposit counts + the
+unmatched statement count, with a single backfill action; A38 now requires
+all 12 subsystems).

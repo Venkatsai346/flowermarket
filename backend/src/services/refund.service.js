@@ -5,6 +5,7 @@ import walletService from './wallet.service.js';
 import paymentProvider from './paymentProvider.service.js';
 import ledgerPostingService from './ledgerPosting.service.js';
 import payoutService from './payout.service.js';
+import domainEventService from './domainEvent.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { roundMoney, moneySum } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
@@ -16,6 +17,8 @@ import {
   PAYMENT_PROVIDER,
   PAYMENT_STATUS,
   WALLET_TXN_REASON,
+  DOMAIN_EVENT_TYPE,
+  LEDGER_JOURNAL_KIND,
 } from '../constants/enums.js';
 
 /** Refunds above this amount go through the gateway (slower) instead of wallet. */
@@ -80,6 +83,7 @@ class RefundService {
       amount: value, currency: order.currency || 'INR',
       reason, destination: dest, status: REFUND_TRANSACTION_STATUS.PENDING,
       idempotencyKey: key, initiatedBy,
+      traceId: order.traceId || null,
       ...comps,
     });
 
@@ -110,6 +114,18 @@ class RefundService {
 
       await txn.save();
       await this.syncPaymentRefundState({ tenantId, orderId, paymentId });
+
+      // ---- Phase 10: record the refund FACT in the audit backbone first ----
+      //      (event before journal, so a crash-window is visible + replayable)
+      //      Awaits: the journal below must land on the chain AFTER this fact.
+      await domainEventService.append({
+        tenantId, traceId: txn.traceId, kind: DOMAIN_EVENT_TYPE.REFUND_ISSUED,
+        aggregateType: 'refund', aggregateId: txn._id,
+        idempotencyKey: `${LEDGER_JOURNAL_KIND.REFUND_ISSUED}:refund:${txn._id}`,
+        occurredAt: txn.completedAt,
+        refType: 'order', refId: orderId,
+        payload: { orderId, orderNumber: order.orderNumber, amountPaise: Math.round(value * 100), destination: dest },
+      });
 
       // ---- Phase 6.1: reverse a proportional slice of the sale journal ----
       //      We reverse what the sale actually credited (vendor payable,
@@ -185,6 +201,74 @@ class RefundService {
     const txn = await RefundTransaction.findOne(q);
     if (!txn) throw notFound('Refund transaction not found', 'REFUND_NOT_FOUND');
     return txn;
+  }
+
+  /**
+   * Reconcile in-flight GATEWAY refunds. Refunds are async on real gateways
+   * (Razorpay processes after the call returns), so a PENDING row with a
+   * gatewayRef asks the gateway for the authoritative outcome:
+   *   processed → SUCCESS + payment state re-synced (wallet/gateway refunds
+   *   above threshold flow back this way even if our process died mid-init)
+   *   failed    → FAILED with the gateway's reason
+   * Wallet refunds are synchronous and never pending — they are skipped.
+   */
+  async reconcileRefunds({ olderThanMinutes = 10, limit = 50 }) {
+    const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
+    const pending = await RefundTransaction.find({
+      status: REFUND_TRANSACTION_STATUS.PENDING,
+      destination: REFUND_DESTINATION.ORIGINAL_METHOD,
+      gatewayRef: { $ne: null },
+      initiatedAt: { $lte: cutoff },
+    }).sort({ initiatedAt: 1 }).limit(limit);
+
+    const resolved = [];
+    for (const txn of pending) {
+      let remote = null;
+      try {
+        remote = await paymentProvider.fetchRefundStatus({ gatewayRef: txn.gatewayRef });
+      } catch (e) {
+        // transient — try again next sweep
+        // eslint-disable-next-line no-console
+        console.error(`[refunds] reconcile fetch failed for ${txn._id}:`, e?.message);
+        continue;
+      }
+      if (remote?.state === 'processed') {
+        txn.status = REFUND_TRANSACTION_STATUS.SUCCESS;
+        txn.completedAt = new Date();
+        txn.rawGatewayResponse = { ...(txn.rawGatewayResponse || {}), reconciled: true, source: remote.raw || null };
+        await txn.save();
+
+        // ---- Phase 10: record the refund FACT now that the gateway attests
+        //      it. Covers the crash window "gateway refund created, process
+        //      died before initiate() finished" — the row sat PENDING with a
+        //      gatewayRef and never got its event. Idempotent: the same
+        //      idempotencyKey as the initiate() path, so a refund that was
+        //      already recorded is a no-op. The JOURNAL is deliberately not
+        //      posted here — if it is missing, the nightly integrity report
+        //      sees the event without its journal and the replay re-derives
+        //      it (postRefund, which only runs for SUCCESS refunds).
+        // Awaits: without it the reconcile report could claim a resolution
+        // whose fact is still in flight (idempotent under the same key).
+        await domainEventService.append({
+          tenantId: txn.tenantId, traceId: txn.traceId, kind: DOMAIN_EVENT_TYPE.REFUND_ISSUED,
+          aggregateType: 'refund', aggregateId: txn._id,
+          idempotencyKey: `${LEDGER_JOURNAL_KIND.REFUND_ISSUED}:refund:${txn._id}`,
+          occurredAt: txn.completedAt,
+          refType: 'order', refId: txn.orderId,
+          payload: { orderId: txn.orderId, amountPaise: Math.round(moneySum(txn.amount) * 100), destination: txn.destination, reconciled: true },
+        });
+
+        await this.syncPaymentRefundState({ tenantId: txn.tenantId, orderId: txn.orderId, paymentId: txn.paymentId });
+        resolved.push({ refundId: txn._id, state: 'success' });
+      } else if (remote?.state === 'failed') {
+        txn.status = REFUND_TRANSACTION_STATUS.FAILED;
+        txn.failureReason = 'Gateway reported refund failed (reconciled)';
+        await txn.save();
+        resolved.push({ refundId: txn._id, state: 'failed' });
+      }
+      // pending → leave for the next sweep
+    }
+    return { scanned: pending.length, resolved };
   }
 }
 

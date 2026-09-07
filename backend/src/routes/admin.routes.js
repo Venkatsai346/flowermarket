@@ -1,5 +1,8 @@
 import { Router } from 'express';
+import Joi from 'joi';
 import AdminController from '../controllers/admin.controller.js';
+import TraceController from '../controllers/trace.controller.js';
+import PeriodController from '../controllers/period.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
@@ -108,5 +111,17 @@ router.post('/exports/run', validate(runDueExportsSchema), AdminController.runDu
 
 // ---- Phase 4b: nightly maintenance pipeline ----
 router.post('/maintenance/nightly', validate(nightlySchema), AdminController.nightly);
+
+// ---- Phase 10: money audit backbone (tenant-scoped) ----
+//   GET /admin/integrity            "is MY store consistent?" (ledger + index + slots + ...)
+//   GET /admin/traces/:traceId      follow one transaction end to end
+router.get('/integrity', AdminController.integrity);
+router.get('/traces/:traceId', TraceController.getTrace);
+
+// Phase 11 — fiscal periods (tenant-scoped, READ for store admins; only
+// super_admin closes/reopens via /ledger/periods*)
+const periodKeyParam = Joi.object({ periodKey: Joi.string().pattern(/^\d{4}-\d{2}$/).max(7).required() }).unknown();
+router.get('/periods', PeriodController.list);
+router.get('/periods/:periodKey', validate(periodKeyParam, 'params'), PeriodController.report);
 
 export default router;

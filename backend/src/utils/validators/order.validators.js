@@ -162,3 +162,8 @@ export const forecastBodySchema = Joi.object({
   riderCount: Joi.number().integer().min(0).allow(null).optional(),
   dryRun: Joi.boolean().optional(),
 });
+
+// ---- Wallet top-up ----
+export const walletTopupSchema = Joi.object({
+  amount: Joi.number().positive().required(),
+});

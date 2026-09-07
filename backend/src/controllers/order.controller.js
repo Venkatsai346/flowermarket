@@ -21,6 +21,14 @@ class OrderController {
     res.status(200).json(success(result, { message: 'Order timeline fetched' }));
   });
 
+  /** Polling endpoint for async gateway payments (see orderService.paymentStatus). */
+  paymentStatus = asyncHandler(async (req, res) => {
+    const result = await orderService.paymentStatus({
+      tenantId: req.tenantId, orderId: req.params.id, userId: req.auth.userId,
+    });
+    res.status(200).json(success(result, { message: 'Payment status fetched' }));
+  });
+
   listMine = asyncHandler(async (req, res) => {
     const result = await orderService.listMine({
       tenantId: req.tenantId, userId: req.auth.userId, query: req.query,

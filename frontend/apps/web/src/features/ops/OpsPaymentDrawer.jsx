@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { fmtDateTime, inr, num, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
@@ -5,7 +7,7 @@ import Badge from '../../components/ui/Badge.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import {
-  PAYMENT_METHOD_META, PAYMENT_PROVIDER_META, PAYMENT_STATUS_META,
+  PAYMENT_METHOD_META, PAYMENT_PROVIDER_META, PAYMENT_STATUS_META, WEBHOOK_EVENT_STATUS_META,
 } from './opsMeta.js';
 
 const TXN_STATUS_META = {
@@ -24,6 +26,65 @@ function Tile({ label, value }) {
     <div className="rounded-xl bg-slate-50 p-3.5">
       <p className="text-[11px] font-semibold uppercase text-slate-400">{label}</p>
       <p className="mt-0.5 truncate text-sm font-medium text-slate-800">{value}</p>
+    </div>
+  );
+}
+
+function RawPayload({ raw }) {
+  const [open, setOpen] = useState(false);
+  if (!raw) return null;
+  const text = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2);
+  return (
+    <div className="mt-1">
+      <button type="button" onClick={() => setOpen(!open)} className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-700">
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        raw payload
+      </button>
+      {open && <pre className="mt-1 max-h-40 overflow-auto rounded-lg bg-slate-900 p-2.5 text-[10px] leading-relaxed text-slate-100">{text}</pre>}
+    </div>
+  );
+}
+
+/** The "who moved the money, and why" log for this payment. */
+function WebhookEvents({ events }) {
+  if (!events.length) return null;
+  const mismatches = events.filter((e) => e.status === 'mismatch');
+  return (
+    <div>
+      <p className="label">Webhook events <span className="ml-1 text-slate-400">({events.length})</span></p>
+      {mismatches.length > 0 && (
+        <div className="mb-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+          <span className="font-semibold">{mismatches.length} mismatch{mismatches.length > 1 ? 'es' : ''}:</span>{' '}
+          gateway-reported amount did not match the recorded payment — the payment was left untouched. Investigate before releasing.
+        </div>
+      )}
+      <div className="overflow-hidden rounded-xl border border-slate-200">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-left text-xs text-slate-500">
+            <tr>
+              <th className="px-3 py-2 font-semibold">Event</th>
+              <th className="px-3 py-2 font-semibold">Status</th>
+              <th className="px-3 py-2 text-right font-semibold">Deliveries</th>
+              <th className="px-3 py-2 font-semibold">Received</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {events.map((e, i) => (
+              <tr key={e.id || i} className={e.status === 'mismatch' ? 'bg-rose-50/40' : ''}>
+                <td className="px-3 py-2">
+                  <span className="font-mono text-xs text-slate-700">{e.eventType}</span>
+                  <span className="ml-2 text-[11px] text-slate-400">{e.provider}</span>
+                  {e.note && <p className="mt-0.5 text-[11px] text-rose-600">{e.note}</p>}
+                  <RawPayload raw={e.raw} />
+                </td>
+                <td className="px-3 py-2"><Badge tone={pickMeta(WEBHOOK_EVENT_STATUS_META, e.status).tone} dot>{pickMeta(WEBHOOK_EVENT_STATUS_META, e.status).label}</Badge></td>
+                <td className="px-3 py-2 text-right text-xs text-slate-500">{e.deliveries}</td>
+                <td className="px-3 py-2 text-xs text-slate-400">{fmtDateTime(e.processedAt || e.createdAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -86,6 +147,8 @@ export default function OpsPaymentDrawer({ payment, onClose }) {
             </table>
           </div>
         </div>
+
+        <WebhookEvents events={data?.events || []} />
 
         <div className="grid grid-cols-2 gap-3 rounded-xl bg-slate-50 p-4 text-xs text-slate-500">
           <p>Idempotency key <span className="block font-mono font-medium text-slate-700">{p.idempotencyKey || '—'}</span></p>

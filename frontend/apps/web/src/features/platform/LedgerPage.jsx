@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  BookOpenCheck, CheckCircle2, Landmark, RefreshCw, Scale, ShieldAlert, Wrench,
+  AlertTriangle, BookOpenCheck, CheckCircle2, Landmark, Lock, LockOpen, RefreshCw, Scale, ShieldAlert, Wrench,
 } from 'lucide-react';
 import { inr, fmtDateTime } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -73,6 +73,382 @@ function StatementModal({ accountCode, onClose }) {
         />
       </div>
     </Modal>
+  );
+}
+
+/** One subsystem row of the integrity report. */
+function CheckRow({ name, check, detail }) {
+  const okState = check?.ok === undefined ? null : !!check.ok;
+  return (
+    <div className={cn(
+      'flex items-start gap-3 rounded-lg border px-3 py-2.5',
+      okState === null ? 'border-slate-200 bg-white'
+        : okState ? 'border-emerald-100 bg-emerald-50/40' : 'border-rose-200 bg-rose-50',
+    )}>
+      {okState === null
+        ? <span className="mt-0.5 h-4 w-4 rounded-full border-2 border-slate-300" />
+        : okState
+          ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+          : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />}
+      <div className="min-w-0">
+        <p className="text-sm font-medium text-slate-800">{name}</p>
+        {detail && <p className="mt-0.5 break-words text-xs text-slate-500">{detail}</p>}
+      </div>
+    </div>
+  );
+}
+
+function IntegrityCard() {
+  const { data, loading, refetch } = useApi(() => api.ledger.integrity(), []);
+  const { busy, run } = useAction();
+  const report = data;
+  const c = report?.checks || {};
+
+  const replay = async () => {
+    try {
+      const r = await run(() => api.ledger.replay());
+      if (r.data) {
+        toast.success(`Replay: ${r.data.journalsReposted} journal(s) re-posted, ${r.data.eventsRestored} audit row(s) restored`);
+        refetch();
+      }
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const coverage = c.ledger?.eventJournalCoverage;
+  const driftCount =
+    (coverage?.missingJournals || 0) + (coverage?.missingEvents || 0) + (c.payouts?.missingJournals || 0);
+
+  return (
+    <Card
+      className="mb-5"
+      title="System integrity"
+      subtitle="Cross-subsystem consistency: the journal, the audit store, the indexes, slots, payouts and webhooks — one report."
+      actions={
+        <>
+          <Button variant="secondary" icon={RefreshCw} onClick={refetch}>Re-check</Button>
+          <Button
+            variant={driftCount > 0 ? 'danger' : 'secondary'}
+            icon={Wrench}
+            loading={busy}
+            disabled={!driftCount}
+            onClick={replay}
+          >
+            Replay{driftCount > 0 ? ` (${driftCount})` : ''}
+          </Button>
+        </>
+      }
+    >
+      {loading && !report ? (
+        <p className="text-sm text-slate-400">Running the checks…</p>
+      ) : !report ? (
+        <p className="text-sm text-slate-400">No report yet.</p>
+      ) : (
+        <div className="space-y-3">
+          <div className={cn(
+            'flex items-center gap-3 rounded-xl border px-4 py-3',
+            report.overall === 'ok' ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50',
+          )}>
+            {report.overall === 'ok'
+              ? <Scale className="h-5 w-5 text-emerald-600" />
+              : <ShieldAlert className="h-5 w-5 text-rose-600" />}
+            <div>
+              <p className={cn('text-sm font-semibold', report.overall === 'ok' ? 'text-emerald-900' : 'text-rose-900')}>
+                {report.overall === 'ok' ? 'All subsystems consistent' : 'DRIFT DETECTED'}
+              </p>
+              <p className={cn('text-xs', report.overall === 'ok' ? 'text-emerald-700' : 'text-rose-700')}>
+                {c.ledger?.ok
+                  ? `${coverage?.eventsScanned ?? 0} audit events ↔ journals matched · trial ${c.ledger?.trial?.balanced ? 'balanced' : 'UNBALANCED'}`
+                  : `${driftCount} posting(s) need replay`}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <CheckRow name="Ledger" check={c.ledger} detail={c.ledger ? `${c.ledger.trial?.entries ?? 0} entries · trial ${c.ledger.trial?.balanced ? 'balanced' : 'unbalanced'} · ${c.ledger.balances?.ok ? 'balances match' : 'balances drifted'} · ${coverage?.missingJournals || 0} missing journals / ${coverage?.missingEvents || 0} missing audit rows` : ''} />
+            <CheckRow name="Search index" check={c.searchIndex} detail={c.searchIndex ? `${c.searchIndex.indexedDocuments} indexed · ${c.searchIndex.missing} listing(s) not in index · ${c.searchIndex.orphanDocuments} orphan doc(s)` : ''} />
+            <CheckRow name="Delivery slots" check={c.slots} detail={c.slots ? `${c.slots.checked} slot(s) checked · ${c.slots.overReserved} over-reservation(s)` : ''} />
+            <CheckRow name="Payments & webhooks" check={c.payments} detail={c.payments ? `${c.payments.total} webhook event(s) · ${c.payments.processed} processed · ${c.payments.duplicate} duplicate · ${c.payments.mismatches} mismatch(es)` : ''} />
+            <CheckRow name="Payouts" check={c.payouts} detail={c.payouts ? `${c.payouts.batchesChecked} batch(es) · ${c.payouts.missingJournals} missing payout journal(s)` : ''} />
+            <CheckRow name="Wallet ledger" check={c.wallet} detail={c.wallet ? `${c.wallet.wallets} wallet(s) · balances ${inr(c.wallet.walletTotalPaise)} vs liability ${inr(c.wallet.ledgerPaise)} · difference ${inr(Math.abs(c.wallet.differencePaise))}` : ''} />
+            <CheckRow name="Vendor ledger" check={c.vendors} detail={c.vendors ? `${c.vendors.vendorsChecked} vendor(s) checked · ${c.vendors.drifted} drifted · total difference ${inr(c.vendors.totalDifferencePaise)}` : ''} />
+            <CheckRow name="Statutory payable (TCS/TDS)" check={c.statutory} detail={c.statutory ? `${c.statutory.statutes?.length ?? 0} payable(s) checked · ${c.statutory.drifted ?? 0} drifted · total difference ${inr(c.statutory.totalDifferencePaise ?? 0)}` : ''} />
+            <CheckRow name="GST output payable" check={c.gst} detail={c.gst ? `${c.gst.checked ?? 0} payable(s) checked · ${c.gst.drifted ?? 0} drifted · total difference ${inr(c.gst.totalDifferencePaise ?? 0)}` : ''} />
+            <CheckRow name="Bank cash position" check={c.bank} detail={c.bank ? `books ${inr(c.bank.booksPaise)} vs facts ${inr(c.bank.expectedPaise)} (settlements ${c.bank.settlements?.count ?? 0} · payouts ${c.bank.payouts?.count ?? 0} · deposits ${c.bank.deposits?.count ?? 0}) · ${c.bank.statement?.unmatchedLines ?? 0} unmatched statement line(s)` : ''} />
+            <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
+            <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
+            <CheckRow name="Audit chain (tamper-evidence)" check={c.auditChain} detail={c.auditChain ? `${c.auditChain.eventsVerified} event(s) re-hashed · ${c.auditChain.unanchored} unanchored · ${c.auditChain.breaks.length} break(s)` : ''} />
+            {c.wallet && !c.wallet.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  Wallet balances and the customer-wallet-liability account disagree by {inr(Math.abs(c.wallet.differencePaise))}.
+                  Backfill posts one `wallet_backfill` journal for the difference — it is recorded in the audit store and cannot be replayed (the amount is not re-derivable), so do it deliberately.
+                </p>
+                <Button
+                  variant="secondary"
+                  icon={Wrench}
+                  className="mt-2"
+                  loading={busy}
+                  onClick={async () => {
+                    const r = await run(() => api.wallet.walletReconcileRepair());
+                    if (r?.data) { toast.success('Wallet ledger backfilled'); refetch(); }
+                  }}
+                >
+                  Backfill ledger from wallet balances
+                </Button>
+              </div>
+            )}
+            {c.vendors && !c.vendors.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  {c.vendors.drifted} vendor payable account(s) disagree with the payout lines owed to them
+                  (total {inr(c.vendors.totalDifferencePaise)}). A backfill posts one signed
+                  `vendor_backfill` journal per drifted vendor — it is recorded in the audit store and cannot be
+                  replayed (the amount is not re-derivable), so pick the vendor deliberately.
+                </p>
+                <div className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                  {c.vendors.driftedSample.slice(0, 5).map((d) => (
+                    <li key={d.vendorId}>{d.vendorId}: books {inr(d.actualPaise)} vs owed {inr(d.expectedPaise)} (diff {inr(d.differencePaise)})</li>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {c.vendors.driftedSample.slice(0, 5).map((d) => (
+                    <Button
+                      key={d.vendorId}
+                      variant="secondary"
+                      icon={Wrench}
+                      loading={busy}
+                      onClick={async () => {
+                        const r = await run(() => api.payouts.admin.vendorReconcileRepair({ id: d.vendorId }));
+                        if (r?.data) { toast.success('Vendor payable backfilled'); refetch(); }
+                      }}
+                    >
+                      Backfill {d.vendorId.slice(0, 8)}…
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {c.statutory && !c.statutory.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  {c.statutory.drifted} TCS/TDS payable account(s) disagree with what was withheld from payouts and deposited
+                  (total {inr(c.statutory.totalDifferencePaise)}). A backfill posts one signed `statutory_backfill`
+                  journal per drifted statute — it is recorded in the audit store and cannot be replayed (the amount is
+                  not re-derivable), so pick the statute deliberately.
+                </p>
+                <div className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                  {(c.statutory.statutes || []).filter((d) => !d.balanced).slice(0, 2).map((d) => (
+                    <li key={d.statute}>{d.statute.toUpperCase()} payable: books {inr(d.booksPaise)} vs owed {inr(d.expectedPaise)} (diff {inr(d.differencePaise)} · withheld {inr(d.withheldPaise)} − deposited {inr(d.netDepositedPaise)})</li>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(c.statutory.statutes || []).filter((d) => !d.balanced).slice(0, 2).map((d) => (
+                    <Button
+                      key={d.statute}
+                      variant="secondary"
+                      icon={Wrench}
+                      loading={busy}
+                      onClick={async () => {
+                        const r = await run(() => api.payouts.admin.statutoryReconcileRepair({ statute: d.statute }));
+                        if (r?.data) { toast.success('Statutory payable backfilled'); refetch(); }
+                      }}
+                    >
+                      Backfill {d.statute.toUpperCase()}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {c.gst && !c.gst.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  {c.gst.drifted} GST output payable account(s) disagree with the sale / refund / payout facts that
+                  created them (total {inr(c.gst.totalDifferencePaise)}). A backfill posts one signed `gst_backfill`
+                  journal per drifted owner — it is recorded in the audit store and cannot be replayed (the amount is
+                  not re-derivable), so pick the owner deliberately.
+                </p>
+                <div className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                  {(c.gst.driftedSample || []).slice(0, 5).map((d) => (
+                    <li key={d.accountCode}>{d.owner === 'platform' ? 'platform (commission GST)' : `${d.owner} (seller GST)`}: books {inr(d.booksPaise)} vs owed {inr(d.expectedPaise)} (diff {inr(d.differencePaise)})</li>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(c.gst.driftedSample || []).slice(0, 5).map((d) => (
+                    <Button
+                      key={d.accountCode}
+                      variant="secondary"
+                      icon={Wrench}
+                      loading={busy}
+                      onClick={async () => {
+                        const r = await run(() => api.payouts.admin.gstReconcileRepair({ owner: d.owner === 'platform' ? 'platform' : d.owner }));
+                        if (r?.data) { toast.success('GST payable backfilled'); refetch(); }
+                      }}
+                    >
+                      Backfill {d.owner === 'platform' ? 'platform' : d.owner.slice(0, 8) + '…'}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {c.bank && !c.bank.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  The settlement bank books {inr(c.bank.booksPaise)} but the cash facts (settlements − live payout
+                  outflows − net statutory deposits) say {inr(c.bank.expectedPaise)} — difference {inr(c.bank.differencePaise)}
+                  {c.bank.statement?.unmatchedLines > 0 ? ` · ${c.bank.statement.unmatchedLines} statement line(s) moved money with no matching batch` : ''}.
+                  A backfill posts one signed `bank_backfill` journal — recorded in the audit store and not replayable
+                  (the amount is not re-derivable).
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    icon={Wrench}
+                    loading={busy}
+                    onClick={async () => {
+                      const r = await run(() => api.payouts.admin.bankReconcileRepair({}));
+                      if (r?.data) { toast.success('Bank cash position backfilled'); refetch(); }
+                    }}
+                  >
+                    Backfill bank position
+                  </Button>
+                </div>
+              </div>
+            )}
+            {c.auditChain?.breaks?.length > 0 && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-rose-900">Chain breaks — the audit log does not verify. Investigate; a rebuild re-links the chain but is itself recorded.</p>
+                <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-rose-800">
+                  {c.auditChain.breaks.slice(0, 8).map((b, i) => (
+                    <li key={i}>seq {b.seq}: {b.type}{b.idempotencyKey ? ` — ${b.idempotencyKey}` : ''}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+          {coverage?.samples?.length > 0 && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-semibold text-amber-900">Drift samples</p>
+              <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800">
+                {coverage.samples.slice(0, 8).map((s, i) => (
+                  <li key={i} className="truncate">
+                    {s.type === 'journal_missing' ? 'journal' : 'event'} {s.kind}: <span className="text-amber-600">{s.idempotencyKey}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PeriodReport({ periodKey, onClose }) {
+  const { data, loading } = useApi(() => api.ledger.periodReport(periodKey), [periodKey]);
+  if (loading && !data) return <p className="text-xs text-slate-400">Reading the period from the journal…</p>;
+  if (!data) return null;
+  const kindLabel = {
+    sale_captured: 'Sales captured', refund_issued: 'Refunds issued',
+    payout_initiated: 'Payouts initiated', payout_reversed: 'Payouts reversed',
+  };
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-slate-700">Period {periodKey} — from the journal</p>
+        <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">close</button>
+      </div>
+      <div className="mt-2 grid gap-2 text-sm sm:grid-cols-3">
+        <div><p className="text-[11px] uppercase text-slate-400">Gross captured</p><p className="font-semibold text-slate-900">{inr(data.grossCapturedPaise)}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Refunds</p><p className="font-semibold text-slate-900">{inr(data.refundsPaise)}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Net captured</p><p className={cn('font-semibold', data.netCapturedPaise < 0 ? 'text-rose-600' : 'text-slate-900')}>{inr(data.netCapturedPaise)}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Payouts out</p><p className="font-semibold text-slate-900">{inr(data.payoutsInitiatedPaise)}{data.payoutsReversedPaise ? ` (−${inr(data.payoutsReversedPaise)} reversed)` : ''}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Journals</p><p className="font-semibold text-slate-900">{data.journals} · {data.periodBalanced ? 'balanced' : 'UNBALANCED'}</p></div>
+      </div>
+      {Object.keys(data.byKind || {}).length > 0 && (
+        <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
+          {Object.entries(data.byKind).map(([k, v]) => (
+            <li key={k} className="flex justify-between">
+              <span>{kindLabel[k] || k}</span>
+              <span className="tabular-nums">{v.count} · {inr(v.totalPaise)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PeriodsCard() {
+  const { data, loading, refetch } = useApi(() => api.ledger.periods(), []);
+  const { busy, run } = useAction();
+  const [open, setOpen] = useState(null);
+  const items = data?.items || [];
+
+  const act = async (periodKey, fn, verb) => {
+    try {
+      await run(fn);
+      toast.success(`${verb} ${periodKey}`);
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  return (
+    <Card
+      className="mb-5"
+      title="Fiscal periods"
+      subtitle="Close a month to freeze its books — the ledger refuses new journals dated inside it until it is reopened."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading periods…</p>
+      ) : items.length === 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-400">No periods recorded yet. Closing the current month creates the record and freezes its books.</p>
+          <Button variant="danger" icon={Lock} loading={busy}
+            onClick={() => act(new Date().toISOString().slice(0, 7), () => api.ledger.closePeriod(new Date().toISOString().slice(0, 7)), 'Closed')}>
+            Close current month
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {items.map((p) => {
+            const closed = p.state === 'closed';
+            return (
+              <div key={p.id || p.periodKey}>
+                <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5">
+                  {closed ? <Lock className="h-4 w-4 shrink-0 text-rose-500" /> : <LockOpen className="h-4 w-4 shrink-0 text-emerald-500" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-800">{p.periodKey} <Badge tone={closed ? 'rose' : 'emerald'}>{closed ? 'closed' : 'open'}</Badge></p>
+                    <p className="text-[11px] text-slate-400">
+                      {closed ? `closed ${fmtDateTime(p.closedAt)}` : 'accepting postings'}
+                      {p.reopenedAt ? ` · reopened ${fmtDateTime(p.reopenedAt)}` : ''}
+                    </p>
+                  </div>
+                  <Button variant="secondary" icon={open === p.periodKey ? null : BookOpenCheck} onClick={() => setOpen(open === p.periodKey ? null : p.periodKey)}>
+                    Report
+                  </Button>
+                  {closed ? (
+                    <Button variant="secondary" icon={LockOpen} loading={busy}
+                      onClick={() => act(p.periodKey, () => api.ledger.reopenPeriod(p.periodKey), 'Reopened')}>
+                      Reopen
+                    </Button>
+                  ) : (
+                    <Button variant="danger" icon={Lock} loading={busy}
+                      onClick={() => act(p.periodKey, () => api.ledger.closePeriod(p.periodKey), 'Closed')}>
+                      Close
+                    </Button>
+                  )}
+                </div>
+                {open === p.periodKey && <PeriodReport periodKey={p.periodKey} onClose={() => setOpen(null)} />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -150,6 +526,10 @@ export default function LedgerPage() {
           </div>
         </div>
       </div>
+
+      <IntegrityCard />
+
+      <PeriodsCard />
 
       {drift && !drift.ok && (
         <Card className="mb-5 ring-1 ring-amber-200" title="Drifted accounts" subtitle="The journal is the truth — repair rewrites the view from it.">

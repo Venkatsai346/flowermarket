@@ -13,6 +13,7 @@ import Checkout from './pages/Checkout.jsx';
 import Orders from './pages/Orders.jsx';
 import OrderDetail from './pages/OrderDetail.jsx';
 import Returns from './pages/Returns.jsx';
+import Addresses from './pages/Addresses.jsx';
 import Wallet from './pages/Wallet.jsx';
 
 /**
@@ -106,6 +107,7 @@ export default function App() {
           <Route path="/orders/:id" element={<OrderDetail />} />
           <Route path="/returns" element={<Returns />} />
           <Route path="/wallet" element={<Wallet />} />
+          <Route path="/addresses" element={<Addresses />} />
           <Route path="*" element={<Home query={query} />} />
         </Routes>
       </main>

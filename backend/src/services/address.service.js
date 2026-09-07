@@ -2,6 +2,7 @@ import Address from '../models/address.model.js';
 import ServiceablePincode from '../models/serviceablePincode.model.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
 import config from '../config/index.js';
+import serializeList from '../utils/serialize.js';
 
 /**
  * AddressService — CRUD + business rules for saved delivery addresses.
@@ -19,7 +20,8 @@ import config from '../config/index.js';
  */
 class AddressService {
   async list({ userId, tenantId }) {
-    return Address.find({ userId, tenantId }).sort({ isDefault: -1, createdAt: -1 }).lean();
+    const addresses = await Address.find({ userId, tenantId }).sort({ isDefault: -1, createdAt: -1 }).lean();
+    return serializeList(addresses);
   }
 
   async get({ userId, tenantId, addressId }) {

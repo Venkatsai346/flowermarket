@@ -54,7 +54,7 @@ function Timeline({ rows }) {
   );
 }
 
-export default function OrderOpsDrawer({ order, onClose, onChanged }) {
+export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPayment }) {
   const [deliverFormOpen, setDeliverFormOpen] = useState(false);
   const [podType, setPodType] = useState('otp');
   const [podValue, setPodValue] = useState('');
@@ -121,7 +121,13 @@ export default function OrderOpsDrawer({ order, onClose, onChanged }) {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <DetailTile label="Status" value={<Badge tone={pickMeta(OPS_ORDER_STATUS_META, o.status).tone} dot>{pickMeta(OPS_ORDER_STATUS_META, o.status).label}</Badge>} />
             <DetailTile label="Customer" value={o.addressSnapshot?.name || o.customerName || '—'} sub={o.addressSnapshot?.phone || 'no phone'} />
-            <DetailTile label="Payment" value={o.paymentMethod || '—'} sub={`${o.paymentSummary?.status || 'not paid'}`} />
+            <DetailTile label="Payment" value={o.paymentMethod || '—'} sub={
+              o.paymentSummary?.paymentId ? (
+                <button type="button" onClick={() => onOpenPayment?.(o.paymentSummary.paymentId)} className="font-medium text-sky-600 hover:text-sky-700 hover:underline">
+                  {o.paymentSummary.status || 'not paid'} · open in Payments →
+                </button>
+              ) : `${o.paymentSummary?.status || 'not paid'}`
+            } />
             <DetailTile label="Total" value={inr(o.totalAmount)} sub={`${num(o.itemsCount)} items`} />
           </div>
 

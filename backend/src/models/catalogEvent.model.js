@@ -39,6 +39,10 @@ const CatalogEventSchema = new Schema(
     },
     attempts: { type: Number, default: 0, min: 0 },
     lastError: { type: String, default: null },
+    // lease/claim fields — crash-safe consumption (see catalogEvent.service.js)
+    claimedBy: { type: String, default: null },
+    claimedAt: { type: Date, default: null },
+    leaseExpiresAt: { type: Date, default: null },
     availableAt: { type: Date, default: Date.now, index: true }, // supports delayed publish
     publishedAt: { type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
@@ -48,6 +52,8 @@ const CatalogEventSchema = new Schema(
 
 // drain query index
 CatalogEventSchema.index({ status: 1, availableAt: 1 });
+// reaper query index (expired publishing rows)
+CatalogEventSchema.index({ status: 1, leaseExpiresAt: 1 });
 // purge published events after 7 days
 CatalogEventSchema.index(
   { publishedAt: 1 },

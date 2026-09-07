@@ -64,6 +64,60 @@ class LedgerController {
     const rows = await ledgerService.journalsFor({ refType: req.query.refType, refId: req.query.refId });
     res.status(200).json(success(serializeList(rows).map((j) => ({ ...j, total: fromPaise(j.totalPaise) })), { message: 'Journals fetched' }));
   });
+
+  /**
+   * Platform-wide integrity report (Phase 10) — one structured answer for
+   * "is the system consistent?": ledger (trial + balances + event↔journal
+   * coverage), search index, slots, webhook audit, payouts, notification lag.
+   */
+  integrity = asyncHandler(async (req, res) => {
+    const { default: integrityService } = await import('../services/integrity.service.js');
+    const report = await integrityService.report({});
+    res.status(200).json(success(report, {
+      message: report.overall === 'ok' ? 'System consistent' : 'Drift detected — see checks',
+    }));
+  });
+
+  /**
+   * Rebuild the ledger/audit from the domain event store (Phase 10). The ONLY
+   * write path in this controller — and only ever re-posts idempotently what
+   * the event store already promises, so it can never invent money.
+   */
+  replay = asyncHandler(async (req, res) => {
+    const { default: integrityService } = await import('../services/integrity.service.js');
+    const out = await integrityService.replay({ limit: Number(req.body?.limit) || 200 });
+    res.status(200).json(success(out, {
+      message: `Replayed: ${out.journalsReposted} journal(s) re-posted, ${out.eventsRestored} event(s) restored`,
+    }));
+  });
+
+  /**
+   * Phase 11 — anchor unanchored audit rows into the hash chain. Safe and
+   * additive (only touches seq-null rows, stable order). Deliberately does
+   * NOT repair chain breaks: re-linking a broken chain would re-hash the
+   * tampered content and bless it. Breaks stay visible for a human.
+   */
+  replayChain = asyncHandler(async (req, res) => {
+    const { default: domainEventService } = await import('../services/domainEvent.service.js');
+    const out = await domainEventService.repairChain({ limit: Number(req.body?.limit) || 500 });
+    res.status(200).json(success(out, {
+      message: `Chain: ${out.anchored} row(s) anchored`,
+    }));
+  });
+
+  /**
+   * Phase 11 — deliberate re-link of the audit chain after a legitimate
+   * row-set change (e.g. an event restored from its journal). Manual only:
+   * it changes every hash and records a `chain_rebuilt` fact, which is what
+   * keeps it distinct from tampering (an unrepaired break stays visible).
+   */
+  rebuildChain = asyncHandler(async (req, res) => {
+    const { default: domainEventService } = await import('../services/domainEvent.service.js');
+    const out = await domainEventService.rebuildChain({ limit: Number(req.body?.limit) || 100000 });
+    res.status(200).json(success(out, {
+      message: `Chain re-linked: ${out.relinked} row(s)`,
+    }));
+  });
 }
 
 export default new LedgerController();

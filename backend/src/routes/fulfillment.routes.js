@@ -58,6 +58,10 @@ router.post('/reconcile/payments', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_
 
 // ---- payments ops (admin) ----
 router.get('/payments', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.listPayments);
+// NOTE: must be declared BEFORE /payments/:id or 'webhook-events' matches :id
+router.get('/payments/webhook-events', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.listWebhookEvents);
+// dev-only: mock gateway sync/async toggle for exercising the pending flow
+router.post('/payments/mock/force-pending', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.mockForcePending);
 router.get('/payments/:id', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.getPayment);
 
 export default router;

@@ -99,3 +99,30 @@ export const settlementIngestSchema = Joi.object({
     utr: Joi.string().max(40).allow(null, ''),
   }).or('orderId', 'orderNumber')).min(1).required(),
 });
+
+// ---- Phase 13: statutory deposits (TCS/TDS) ----
+const statuteEnum = Joi.string().valid('tcs', 'tds').required();
+
+export const statutoryDepositSchema = Joi.object({
+  statute: statuteEnum,
+  // either one — paise wins if both are sent
+  amount: Joi.number().min(0),
+  amountPaise: Joi.number().integer().min(1),
+  utr: Joi.string().trim().min(3).max(64).required(),
+  reference: Joi.string().max(200).allow(null, ''),
+}).or('amount', 'amountPaise');
+
+export const statutoryRevertSchema = Joi.object({
+  reason: Joi.string().trim().min(3).max(300).required(),
+});
+
+// ---- Phase 14: bank statement reconciliation ----
+export const bankStatementIngestSchema = Joi.object({
+  statementRef: Joi.string().trim().min(3).max(64).required(),
+  lines: Joi.array().items(Joi.object({
+    utr: Joi.string().trim().min(3).max(64).required(),
+    amount: Joi.number().when('amountPaise', { is: Joi.exist(), then: Joi.optional(), otherwise: Joi.required() }),
+    amountPaise: Joi.number().integer(),
+    description: Joi.string().max(300).allow(null, ''),
+  })).min(1).max(500).required(),
+});

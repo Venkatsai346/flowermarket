@@ -129,6 +129,13 @@ export function createEndpoints(client) {
 
       // maintenance
       nightly: (body = {}) => c.post('/admin/maintenance/nightly', body),
+
+      // Phase 10 — money audit backbone
+      integrity: () => c.get('/admin/integrity'),
+      trace: (id) => c.get(`/admin/traces/${id}`),
+      // Phase 11 — fiscal periods (tenant-scoped, read)
+      periods: () => c.get('/admin/periods'),
+      periodReport: (periodKey) => c.get(`/admin/periods/${periodKey}`),
     },
 
     public: {
@@ -216,6 +223,15 @@ export function createEndpoints(client) {
         kyc: (q = {}) => c.get('/payouts/admin/kyc', { query: q }),
         policy: (q = {}) => c.get('/payouts/admin/policy', { query: q }),
         savePolicy: (body) => c.put('/payouts/admin/policy', body),
+        settlements: (q = {}) => c.get('/payouts/admin/settlements', { query: q }),
+        ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
+        // Phase 13 — statutory deposits (TCS/TDS to the government)
+        statutory: (q = {}) => c.get('/payouts/admin/statutory', { query: q }),
+        statutoryDeposit: (body) => c.post('/payouts/admin/statutory/deposit', body),
+        statutoryRevert: (id, body) => c.post(`/payouts/admin/statutory/${id}/revert`, body),
+        // Phase 14 — bank statement reconciliation (the egress truth)
+        statement: (q = {}) => c.get('/payouts/admin/statement', { query: q }),
+        statementIngest: (body) => c.post('/payouts/admin/statement/ingest', body),
         sweepEligibility: () => c.post('/payouts/admin/eligibility/sweep'),
         computeCycle: (body) => c.post('/payouts/admin/cycle/compute', body),
         holdLines: (body) => c.post('/payouts/admin/lines/hold', body),
@@ -228,7 +244,20 @@ export function createEndpoints(client) {
         cancel: (id, body) => c.post(`/payouts/admin/${id}/cancel`, body),
         submitToProvider: (id) => c.post(`/payouts/admin/${id}/submit-to-provider`),
         reconcile: (body = {}) => c.post('/payouts/admin/reconcile', body),
-        ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
+
+        // Phase 17 — vendor payable integrity (the payout lines ARE the ledger)
+        vendorReconcile: (q = {}) => c.get('/payouts/admin/vendor-reconcile', { query: q }),
+        vendorReconcileRepair: (body = {}) => c.post('/payouts/admin/vendor-reconcile/repair', body),
+
+        // Phase 18 — statutory payable integrity (TCS/TDS are real accounts)
+        statutoryReconcile: (q = {}) => c.get('/payouts/admin/statutory-reconcile', { query: q }),
+        statutoryReconcileRepair: (body = {}) => c.post('/payouts/admin/statutory-reconcile/repair', body),
+
+        // Phase 19 — GST output payable integrity (the seller's GST is a ledger)
+        gstReconcile: (q = {}) => c.get('/payouts/admin/gst-reconcile', { query: q }),
+        gstReconcileRepair: (body = {}) => c.post('/payouts/admin/gst-reconcile/repair', body),
+        bankReconcile: () => c.get('/payouts/admin/bank-reconcile'),
+        bankReconcileRepair: (body = {}) => c.post('/payouts/admin/bank-reconcile/repair', body),
       },
     },
 
@@ -264,6 +293,8 @@ export function createEndpoints(client) {
       payments: (q = {}) => c.get('/fulfillment/payments', { query: q }),
       payment: (id) => c.get(`/fulfillment/payments/${id}`),
       reconcilePayments: (q = {}) => c.post('/fulfillment/reconcile/payments', undefined, { query: q }),
+      webhookEvents: (q = {}) => c.get('/fulfillment/payments/webhook-events', { query: q }),
+      mockForcePending: (body) => c.post('/fulfillment/payments/mock/force-pending', body),
     },
 
     /** After-sales state machine used by ops/admin. */
@@ -307,6 +338,16 @@ export function createEndpoints(client) {
       trialBalance: () => c.get('/ledger/trial-balance'),
       journals: (q = {}) => c.get('/ledger/journals', { query: q }),
       verify: (body = {}) => c.post('/ledger/verify', body),
+      // Phase 10 — system integrity report + replay (SUPER_ADMIN)
+      integrity: () => c.get('/ledger/integrity'),
+      replay: (body = {}) => c.post('/ledger/integrity/replay', body),
+      // Phase 11 — hash chain ops + fiscal periods (SUPER_ADMIN)
+      replayChain: (body = {}) => c.post('/ledger/integrity/replay-chain', body),
+      rebuildChain: (body = {}) => c.post('/ledger/integrity/rebuild-chain', body),
+      periods: () => c.get('/ledger/periods'),
+      periodReport: (periodKey) => c.get(`/ledger/periods/${periodKey}`),
+      closePeriod: (periodKey) => c.post(`/ledger/periods/${periodKey}/close`),
+      reopenPeriod: (periodKey) => c.post(`/ledger/periods/${periodKey}/reopen`),
     },
 
     /** Phase 6.2 — GST registration, documents and rate policy. */
@@ -379,6 +420,7 @@ export function createEndpoints(client) {
       orders: (q = {}) => c.get('/orders', { query: q }),
       order: (id) => c.get(`/orders/${id}`),
       orderTimeline: (id) => c.get(`/orders/${id}/timeline`),
+      orderPayment: (id) => c.get(`/orders/${id}/payment`),
       cancelOrder: (id, body) => c.post(`/orders/${id}/cancel`, body),
 
       // addresses
@@ -393,8 +435,12 @@ export function createEndpoints(client) {
       createReturn: (body) => c.post('/returns', body),
       returnDetail: (id) => c.get(`/returns/${id}`),
       wallet: () => c.get('/wallet'),
+      walletTopup: (body) => c.post('/wallet/topup', body),
       walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
       walletRefunds: (q = {}) => c.get('/wallet/refunds', { query: q }),
+      // Phase 16 — wallet ledger reconcile + backfill (SUPER_ADMIN)
+      walletReconcile: () => c.get('/wallet/admin/reconcile'),
+      walletReconcileRepair: () => c.post('/wallet/admin/reconcile/repair'),
     },
 
     /** Phase 6.5 — search tuning (store admin). */

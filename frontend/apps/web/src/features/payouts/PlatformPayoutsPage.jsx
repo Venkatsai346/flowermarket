@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, Ban, BadgeCheck, Banknote, CalendarClock, CheckCircle2, Eye,
-  RefreshCw, Send, ShieldAlert, ThumbsDown, Wallet,
+  AlertTriangle, ArrowDownLeft, ArrowUpRight, Ban, BadgeCheck, Banknote, CalendarClock,
+  CheckCircle2, CircleDollarSign, Eye, FileInput, Landmark, RefreshCw, Scale, Send,
+  ShieldAlert, ThumbsDown, ToggleLeft, ToggleRight, Undo2, Wallet,
 } from 'lucide-react';
 import { inr, fmtDate } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -254,6 +255,422 @@ function ComputeCycleModal({ onClose, onDone }) {
   );
 }
 
+/**
+ * The cash gate (Phase 12): where the customer money actually is.
+ * `gateway_clearing` holds captured-but-unsettled sales; ingesting the PSP's
+ * settlement report moves it into `bank` and — with the gate ON — is the only
+ * thing that lets a vendor line for that order become payable.
+ */
+
+/**
+ * Bank reconciliation (Phase 14): the bank statement is the independent
+ * egress truth. Ingest signed lines (UTR, amount) — debits confirm what the
+ * provider said it paid (or settle what it never confirmed); credits reverse
+ * PAID batches (bank returns / NSF). Whatever does not UTR-match a live batch
+ * is queued, visible, and never guessed at.
+ */
+function StatementCard() {
+  const { data, loading, refetch } = useApi(() => api.payouts.admin.statement(), []);
+  const { busy, run } = useAction();
+  const [ref, setRef] = useState(() => `BS-${new Date().toISOString().slice(0, 10)}-${Math.floor(Math.random() * 900 + 100)}`);
+  const [lines, setLines] = useState('');
+
+  const parseLines = () =>
+    lines
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => {
+        const [utr, amt, ...rest] = l.split(',').map((s) => s.trim());
+        const amount = Number(amt);
+        if (!utr || !amt || !Number.isFinite(amount) || amount === 0) return null;
+        return { utr, amount, description: rest.join(', ') || null };
+      })
+      .filter(Boolean);
+
+  const doIngest = async () => {
+    const parsed = parseLines();
+    if (!parsed.length) {
+      toast.error('Each line must look like:  UTR, ±amount  (e.g. ABC123, -1234.56)');
+      return;
+    }
+    try {
+      const res = await run(() => api.payouts.admin.statementIngest({ statementRef: ref, lines: parsed }));
+      const d = res?.data ?? res;
+      toast.success(`${d.confirmed ?? 0} confirmed · ${d.returned ?? 0} returned · ${d.queued ?? 0} queued`);
+      setLines('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  return (
+    <Card
+      className="mb-5"
+      title="Bank reconciliation — the egress truth"
+      subtitle="The bank statement is an independent source of truth. Debit lines confirm payouts (and settle ones the provider never confirmed); credit lines on a PAID batch are bank returns and reverse it. UTR-exact only — anything else is queued for a human, never guessed."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading the reconciliation picture…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+              <span className="text-sm font-semibold tabular-nums text-emerald-800">{data?.confirmed ?? 0}</span>
+              <span className="text-xs text-emerald-700">confirmed</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+              <Undo2 className="h-4 w-4 text-rose-600" />
+              <span className="text-sm font-semibold tabular-nums text-rose-800">{data?.returned ?? 0}</span>
+              <span className="text-xs text-rose-700">returned (reversed)</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              <AlertTriangle className="h-4 w-4 text-amber-600" />
+              <span className="text-sm font-semibold tabular-nums text-amber-800">{data?.unmatched ?? 0}</span>
+              <span className="text-xs text-amber-700">in the queue</span>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[1fr_1.4fr]">
+            <div>
+              <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Statement ref</label>
+              <input
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                value={ref}
+                onChange={(e) => setRef(e.target.value)}
+                placeholder="BS-2026-09-07"
+              />
+              <p className="mt-1 text-[11px] text-slate-400">Re-ingesting the same ref + lines is a no-op.</p>
+            </div>
+            <div>
+              <label className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Lines — one per line: UTR, ±amount</label>
+              <textarea
+                className="mt-1 h-24 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs"
+                value={lines}
+                onChange={(e) => setLines(e.target.value)}
+                placeholder={'e.g.  ABC1234, -1234.56, payout out\n      DEF5678, +1234.56, NSF return'}
+              />
+              <div className="mt-2 flex items-center gap-2">
+                <Button icon={FileInput} loading={busy} onClick={doIngest}>
+                  Ingest &amp; match
+                </Button>
+                <span className="text-[11px] text-slate-400">negative = money out · positive = money back</span>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Unmatched queue — needs a human</p>
+            {(data?.queued || []).length === 0 ? (
+              <p className="mt-1 text-xs text-slate-400">Nothing is waiting. Every ingested line matched or was ignored.</p>
+            ) : (
+              <div className="mt-1 divide-y divide-slate-100 rounded-lg border border-slate-200">
+                {data.queued.map((q, i) => (
+                  <div key={`${q.statementRef}-${q.lineNo}-${i}`} className="flex items-center justify-between px-3 py-2 text-sm">
+                    <span className="flex items-center gap-2">
+                      {q.amountPaise < 0 ? <ArrowUpRight className="h-3.5 w-3.5 text-rose-500" /> : <ArrowDownLeft className="h-3.5 w-3.5 text-emerald-500" />}
+                      <span className="font-mono text-xs text-slate-700">{q.utr}</span>
+                      <span className="text-[11px] text-slate-400">{q.statementRef} · line {q.lineNo}</span>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      {q.description && <span className="hidden max-w-[220px] truncate text-[11px] text-slate-400 sm:inline">{q.description}</span>}
+                      <span className={cn('tabular-nums text-xs font-semibold', q.amountPaise < 0 ? 'text-rose-600' : 'text-emerald-600')}>
+                        {q.amountPaise < 0 ? '−' : '+'}{inr(Math.abs(q.amountPaise) / 100)}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function SettlementCard() {
+  const { data, loading, refetch } = useApi(() => api.payouts.admin.settlements(), []);
+  const { busy, run } = useAction();
+  const [lines, setLines] = useState('');
+  const [result, setResult] = useState(null);
+
+  const toggleGate = async () => {
+    const on = !data?.policy?.requirePspSettlement;
+    try {
+      await run(() => api.payouts.admin.savePolicy({ scope: 'platform', requirePspSettlement: on }));
+      toast.success(on
+        ? 'Cash gate ON — vendors are paid only after the PSP settles the cash to us'
+        : 'Cash gate OFF — the return window is the only gate');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const ingest = async () => {
+    const rows = lines.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [orderNumber, amount, utr] = l.split(',').map((s) => s?.trim());
+      const row = { orderNumber };
+      if (amount) row.amount = Number(amount);
+      if (utr) row.utr = utr;
+      return row;
+    });
+    if (!rows.length) return;
+    try {
+      const r = await run(() => api.payouts.admin.ingestSettlements({ rows, reference: 'payout-console' }));
+      const d = r.data || {};
+      setResult(d);
+      toast.success(`Settlement ingested — ${d.posted ?? 0} posted, ${d.skipped ?? 0} skipped, ${(d.unmatched || []).length} unmatched`);
+      setLines('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const gateOn = Boolean(data?.policy?.requirePspSettlement);
+
+  return (
+    <Card
+      className="mb-5"
+      title="Settlement — the cash gate"
+      subtitle="Customer money sits in gateway_clearing until the PSP settles it to our bank. With the gate on, a vendor is paid for an order only after that order's cash is in."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading the settlement picture…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-slate-400"><CircleDollarSign className="h-3.5 w-3.5" /> Gateway clearing</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.gatewayClearingPaise || 0) / 100)}</p>
+              <p className="text-[11px] text-slate-400">captured, not yet settled in</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-slate-400"><Landmark className="h-3.5 w-3.5" /> Our bank</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.bankPaise || 0) / 100)}</p>
+              <p className="text-[11px] text-slate-400">settled in, before payouts</p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Settled in</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.settledPaise || 0) / 100)} <span className="text-xs font-normal text-slate-400">· {data?.settledOrders ?? 0} order(s)</span></p>
+            </div>
+            <div className="rounded-lg border border-slate-200 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400">Waiting to settle</p>
+              <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">{inr((data?.unsettledPaise || 0) / 100)} <span className="text-xs font-normal text-slate-400">· {data?.unsettledOrders ?? 0} of {data?.paidOrders ?? 0} paid</span></p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+            <button
+              type="button"
+              onClick={toggleGate}
+              disabled={busy}
+              className={cn('inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ring-inset transition',
+                gateOn ? 'bg-emerald-50 text-emerald-700 ring-emerald-200' : 'bg-slate-100 text-slate-500 ring-slate-200')}
+            >
+              {gateOn ? <ToggleRight className="h-4 w-4" /> : <ToggleLeft className="h-4 w-4" />}
+              Cash gate {gateOn ? 'ON' : 'OFF'}
+            </button>
+            <p className="text-xs text-slate-500">
+              {gateOn
+                ? 'Payout lines for an order only become eligible once its settlement is ingested.'
+                : 'Only the return window gates payout eligibility.'}
+            </p>
+          </div>
+
+          <div>
+            <Field label="Ingest a PSP settlement report" hint="One order per line — FM-YYMMDD-##### [, amount in ₹] [, UTR]. Amount defaults to the order total.">
+              <textarea
+                value={lines}
+                onChange={(e) => setLines(e.target.value)}
+                rows={3}
+                placeholder={'FM-260907-00045\nFM-260907-00046, 249.00, UTR123456'}
+                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-700 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+              />
+            </Field>
+            <div className="mt-2 flex items-center gap-3">
+              <Button icon={FileInput} loading={busy} disabled={!lines.trim()} onClick={ingest}>
+                Ingest settlement
+              </Button>
+              {result && (
+                <p className="text-xs text-slate-500">
+                  {result.posted} posted · {result.skipped} skipped · {(result.unmatched || []).length} unmatched
+                  {(result.unmatched || []).length > 0 && (
+                    <span className="text-rose-600">
+                      {' '}({(result.unmatched || []).map((u) => (typeof u === 'string' ? u : u.order)).join(', ')})
+                    </span>
+                  )}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {(data?.unsettledSample || []).length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Oldest paid, not yet settled
+              </p>
+              <ul className="space-y-0.5">
+                {data.unsettledSample.slice(0, 5).map((o) => (
+                  <li key={o.orderNumber} className="flex justify-between text-xs text-slate-500">
+                    <span className="font-mono">{o.orderNumber}</span>
+                    <span className="tabular-nums">{inr((o.totalPaise || 0) / 100)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/**
+ * Statutory deposits (Phase 13): the closing entry for TCS (GST s.52) and
+ * TDS (IT s.194-O) withheld from vendor payouts. Paid out to the government
+ * with the deposit-channel UTR on the record; reverts (operator corrections)
+ * are journaled, never deleted.
+ */
+function StatutoryCard() {
+  const { data, loading, refetch } = useApi(() => api.payouts.admin.statutory(), []);
+  const { busy, run } = useAction();
+  const [statute, setStatute] = useState('tcs');
+  const [amount, setAmount] = useState('');
+  const [utr, setUtr] = useState('');
+  const [confirmingRevert, setConfirmingRevert] = useState(null);
+  const [revertReason, setRevertReason] = useState('');
+
+  const doDeposit = async () => {
+    try {
+      await run(() => api.payouts.admin.statutoryDeposit({ statute, amount: Number(amount), utr }));
+      toast.success(`${String(statute).toUpperCase()} deposit recorded`);
+      setAmount('');
+      setUtr('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const doRevert = async () => {
+    try {
+      await run(() => api.payouts.admin.statutoryRevert(confirmingRevert, { reason: revertReason }));
+      toast.success('Deposit reverted — the reversal is journaled and the liability is back');
+      setConfirmingRevert(null);
+      setRevertReason('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const rowFor = (statuteKey, label, sub) => {
+    const d = data?.[statuteKey];
+    return (
+      <div className="rounded-lg border border-slate-200 p-3">
+        <p className="flex items-center justify-between text-[11px] uppercase tracking-wide text-slate-400">
+          <span className="flex items-center gap-1.5"><Scale className="h-3.5 w-3.5" /> {label}</span>
+          {d && d.outstandingPaise > 0 && <Badge tone="amber">{sub}</Badge>}
+        </p>
+        <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+          {inr((d?.outstandingPaise || 0) / 100)} <span className="text-xs font-normal text-slate-400">still owed</span>
+        </p>
+        <p className="mt-0.5 text-[11px] text-slate-400">
+          withheld {inr(((d?.depositedPaise || 0) + (d?.outstandingPaise || 0)) / 100)} · deposited (net) {inr((d?.netDepositedPaise || 0) / 100)} · {(d?.revertedPaise || 0) > 0 ? `reverted ${inr((d.revertedPaise || 0) / 100)}` : 'no reverts'}
+        </p>
+      </div>
+    );
+  };
+
+  return (
+    <Card
+      className="mb-5"
+      title="Statutory deposits — TCS & TDS"
+      subtitle="Payouts withhold TCS (GST s.52) and TDS (IT s.194-O). This pays the government — every deposit carries its UTR, sits on the tamper-evident chain, and reverts are journaled, never deleted."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading the statutory picture…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {rowFor('tcs', 'TCS — GST s.52', 'deposit due')}
+            {rowFor('tds', 'TDS — IT s.194-O', 'deposit due')}
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <Field label="Statute" className="w-28!">
+              <Select value={statute} onChange={(e) => setStatute(e.target.value)}>
+                <option value="tcs">TCS</option>
+                <option value="tds">TDS</option>
+              </Select>
+            </Field>
+            <Field label="Amount (₹)" className="w-32!">
+              <Input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
+            </Field>
+            <Field label="Deposit UTR / reference" className="w-52!">
+              <Input value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="CHAVS-… / 26Q-…" />
+            </Field>
+            <Button icon={Banknote} loading={busy} disabled={!Number(amount) || utr.trim().length < 3} onClick={doDeposit}>
+              Record deposit
+            </Button>
+          </div>
+
+          {(data?.recentDeposits || []).length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent deposits</p>
+              <ul className="divide-y divide-slate-100">
+                {data.recentDeposits.slice(0, 8).map((d) => (
+                  <li key={d.id} className="flex flex-wrap items-center gap-3 py-1.5 text-xs">
+                    <Badge tone={d.status === 'reverted' ? 'slate' : 'emerald'}>{d.status}</Badge>
+                    <span className="font-medium uppercase">{d.statute}</span>
+                    <span className="tabular-nums font-semibold">{inr((d.amountPaise || 0) / 100)}</span>
+                    <span className="font-mono text-slate-400">{d.utr}</span>
+                    <span className="text-slate-400">{fmtDate(d.createdAt)}</span>
+                    {d.status === 'reverted' ? (
+                      <span className="text-slate-400">— {d.revertReason}</span>
+                    ) : (
+                      <button type="button" className="ml-auto text-slate-400 hover:text-rose-600" onClick={() => setConfirmingRevert(d.id)}>
+                        <Undo2 className="h-3.5 w-3.5" /> revert
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {confirmingRevert && (
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <p className="text-sm font-semibold text-slate-800">Revert this deposit?</p>
+              <p className="text-xs text-slate-500">
+                A reversal journal (DR bank / CR payable) is posted — the liability returns to the balance and the
+                deposit stays on the trail, marked reverted with your reason.
+              </p>
+              <Field label="Why is this reverted?" required>
+                <Input value={revertReason} onChange={(e) => setRevertReason(e.target.value)} placeholder="Recorded on the audit trail" />
+              </Field>
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" onClick={() => { setConfirmingRevert(null); setRevertReason(''); }}>Back</Button>
+                <Button variant="danger" loading={busy} disabled={revertReason.trim().length < 3} onClick={doRevert}>
+                  Confirm revert
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function PlatformPayoutsPage() {
   const [page, setPage] = useState(1);
   const [state, setState] = useState('');
@@ -277,7 +694,8 @@ export default function PlatformPayoutsPage() {
       if (kind === 'sweep') {
         const r = await run(() => api.payouts.admin.sweepEligibility());
         const d = r.data || {};
-        toast.success(`Eligibility swept — ${d.promoted || 0} promoted, ${d.waiting || 0} still in the return window`);
+        const blocked = d.blocked || 0;
+        toast.success(`Eligibility swept — ${d.promoted || 0} promoted, ${d.waiting || 0} in the return window${blocked ? `, ${blocked} blocked (cash not settled — see the settlement gate)` : ''}`);
       } else {
         const r = await run(() => api.payouts.admin.reconcile({}));
         const d = r.data || {};
@@ -308,6 +726,12 @@ export default function PlatformPayoutsPage() {
           </>
         }
       />
+
+      <SettlementCard />
+
+      <StatutoryCard />
+
+      <StatementCard />
 
       {(needsAttention.length > 0 || inFlightTotal > 0) && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2">

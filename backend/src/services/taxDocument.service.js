@@ -105,15 +105,30 @@ class TaxDocumentService {
     const prefix = docType === TAX_DOC_TYPE.CREDIT_NOTE ? config.tax.creditNotePrefix : config.tax.invoicePrefix;
     const width = config.tax.numberWidth;
 
-    const series = await TaxDocumentSeries.findOneAndUpdate(
-      { ownerType, ownerId: toId(ownerId), docType, fyLabel: fy, seriesCode },
-      {
-        $inc: { lastValue: 1 },
-        $set: { lastIssuedAt: new Date() },
-        $setOnInsert: { prefix, width, status: 'active' },
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true, ...(session ? { session } : {}) }
-    );
+    // Concurrent reservations against the same series are a normal busy-store
+    // scenario. findAndModify upserts are not guaranteed to absorb the
+    // insert-vs-insert race: two callers can both miss the (not-yet) series
+    // row and both try to insert it, one of which gets E11000. Retry the
+    // atomic $inc — by the second attempt the row exists, so the upsert takes
+    // the update path and sequences stay gapless.
+    let series = null;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        series = await TaxDocumentSeries.findOneAndUpdate(
+          { ownerType, ownerId: toId(ownerId), docType, fyLabel: fy, seriesCode },
+          {
+            $inc: { lastValue: 1 },
+            $set: { lastIssuedAt: new Date() },
+            $setOnInsert: { prefix, width, status: 'active' },
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true, ...(session ? { session } : {}) }
+        );
+        break;
+      } catch (err) {
+        if (err?.code === 11000 && attempt < 5) continue;
+        throw err;
+      }
+    }
 
     const sequence = series.lastValue;
     const number = `${series.prefix}/${fy}/${String(sequence).padStart(series.width, '0')}`;
@@ -531,7 +546,9 @@ class TaxDocumentService {
       };
     }).filter(Boolean);
 
-    const totals = summariseInvoice(lines);
+    // No s.170 round-off: the note must reconcile exactly with the refund
+    // amount allocated to this invoice (a partial credit is not a payable).
+    const totals = summariseInvoice(lines, { roundOff: false });
     const ownerId = invoice.supplierType === TAX_OWNER_TYPE.VENDOR ? invoice.vendorId : invoice.tenantId;
 
     const doc = await ledgerService.withOptionalTransaction(async (session) => {

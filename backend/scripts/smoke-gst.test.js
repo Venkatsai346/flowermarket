@@ -12,6 +12,7 @@
  * invoice↔order↔credit-note relationships.
  */
 
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import mongoose from 'mongoose';
 import config from '../src/config/index.js';
 
@@ -169,12 +170,12 @@ async function main() {
   section('3. issuing an invoice from an order');
   // ---------------------------------------------------------------------
   const masterFlower = await ProductMaster.create({
-    skuGlobal: `SKU-F-${Date.now()}`, type: 'flower', title: 'Red Rose Bunch',
+    skuGlobal: `SKU-F-${Date.now()}`, type: 'fresh_flower', title: 'Red Rose Bunch',
     slug: `red-rose-${Date.now()}`, categoryId: catFlowers._id, status: 'active',
     defaultSellingUnit: 'bunch', vendorId: vendor._id,
   });
   const masterPot = await ProductMaster.create({
-    skuGlobal: `SKU-P-${Date.now()}`, type: 'accessory', title: 'Ceramic Planter',
+    skuGlobal: `SKU-P-${Date.now()}`, type: 'floral_accessory', title: 'Ceramic Planter',
     slug: `planter-${Date.now()}`, categoryId: catPots._id, status: 'active',
     defaultSellingUnit: 'piece',
   });
@@ -187,7 +188,7 @@ async function main() {
     taxAmount: 120, totalAmount: 1769, currency: 'INR',
     paymentMethod: 'upi', paymentSummary: { status: 'success', paidAt: new Date() },
     addressSnapshot: {
-      name: 'Asha Rao', phone: '9999999999', line1: '4 Lake View',
+      addressId: oid(), name: 'Asha Rao', phone: '9999999999', line1: '4 Lake View',
       city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520010',
     },
   });
@@ -314,7 +315,7 @@ async function main() {
     status: 'confirmed', itemsCount: 1, itemsSubtotal: 100, deliveryFee: 0, discount: 0,
     taxAmount: 0, totalAmount: 100, currency: 'INR', paymentMethod: 'cod',
     paymentSummary: { status: 'success', paidAt: new Date() },
-    addressSnapshot: { line1: 'x', city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520001' },
+    addressSnapshot: { addressId: oid(), line1: 'x', city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520001' },
   });
   await OrderItem.create({
     orderId: spare._id, tenantId: tenant._id, tenantProductId: oid(),
@@ -350,7 +351,7 @@ async function main() {
     status: 'confirmed', itemsCount: 1, itemsSubtotal: 100, deliveryFee: 0, discount: 0,
     taxAmount: 0, totalAmount: 100, currency: 'INR', paymentMethod: 'cod',
     paymentSummary: { status: 'success', paidAt: new Date() },
-    addressSnapshot: { line1: 'x', city: 'Nowhere', state: 'Atlantis', pincode: '000000' },
+    addressSnapshot: { addressId: oid(), line1: 'x', city: 'Nowhere', state: 'Atlantis', pincode: '000000' },
   });
   await OrderItem.create({
     orderId: badOrder._id, tenantId: tenant._id, tenantProductId: oid(),
@@ -375,7 +376,7 @@ async function main() {
     status: 'confirmed', itemsCount: 1, itemsSubtotal: 1000, deliveryFee: 0, discount: 0,
     taxAmount: 180, totalAmount: 1180, currency: 'INR', paymentMethod: 'upi',
     paymentSummary: { status: 'success', paidAt: new Date() },
-    addressSnapshot: { line1: 'y', city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520001' },
+    addressSnapshot: { addressId: oid(), line1: 'y', city: 'Vijayawada', state: 'Andhra Pradesh', pincode: '520001' },
   });
   await OrderItem.create({
     orderId: bigOrder._id, tenantId: tenant._id, tenantProductId: oid(),

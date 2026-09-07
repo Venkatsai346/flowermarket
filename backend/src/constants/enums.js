@@ -478,6 +478,7 @@ export const WALLET_TXN_REASON = Object.freeze({
   REFUND: 'refund',
   GOODWILL: 'goodwill',
   ORDER_PAYMENT: 'order_payment',
+  TOPUP: 'topup',
   ADJUSTMENT: 'adjustment',
 });
 
@@ -628,6 +629,10 @@ export const AUDIT_ACTION = Object.freeze({
   KYC_REVIEW: 'kyc_review',
   BANK_VERIFY: 'bank_verify',
 
+  // ---- Phase 11: fiscal period close ----
+  PERIOD_CLOSE: 'period_close',
+  PERIOD_REOPEN: 'period_reopen',
+
   // ---- Phase 6.4: domains ----
   DOMAIN_ADD: 'domain_add',
   DOMAIN_VERIFY: 'domain_verify',
@@ -681,6 +686,52 @@ export const OUTBOX_STATUS = Object.freeze({
   PUBLISHED: 'published',
   FAILED: 'failed',
 });
+
+// ---- Domain event store (Phase 10 — the money audit backbone) ----
+// Kinds that MOVE money and therefore must be backed by a ledger journal
+// (the idempotencyKey of the event IS the journal's idempotencyKey, so
+// event→journal coverage is an exact join). Kinds without a journal are
+// pure audit (payment outcomes, cancellations).
+export const DOMAIN_EVENT_TYPE = Object.freeze({
+  SALE_CAPTURED: 'sale_captured',
+  REFUND_ISSUED: 'refund_issued',
+  PAYOUT_INITIATED: 'payout_initiated',
+  PAYOUT_REVERSED: 'payout_reversed',
+  PAYMENT_CONFIRMED: 'payment_confirmed',
+  PAYMENT_FAILED: 'payment_failed',
+  ORDER_CANCELLED: 'order_cancelled',
+  // Phase 11 — period close lifecycle (no journal; the close is itself the fact)
+  PERIOD_CLOSED: 'period_closed',
+  PERIOD_REOPENED: 'period_reopened',
+  PSP_SETTLED: 'psp_settled', // PSP settlement ingested: cash reached our bank
+  STATUTORY_DEPOSIT: 'statutory_deposit', // TCS/TDS paid to the government
+  STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted',
+  BANK_STATEMENT_INGESTED: 'bank_statement_ingested', // independent egress truth matched
+  WALLET_TOPUP: 'wallet_topup', // customer money into the wallet (Phase 16)
+  WALLET_BACKFILL: 'wallet_backfill', // pre-ledger wallet balances reconciled
+  VENDOR_BACKFILL: 'vendor_backfill', // vendor payable reconciled to payout lines (Phase 17)
+  STATUTORY_BACKFILL: 'statutory_backfill', // TCS/TDS payable reconciled to withheld + deposits (Phase 18)
+  GST_BACKFILL: 'gst_backfill', // GST output payable reconciled to sale/refund/payout facts (Phase 19)
+  BANK_BACKFILL: 'bank_backfill', // bank cash position reconciled to settled/payout/deposit facts (Phase 20)
+  // Phase 11 — the audit chain was deliberately re-linked after a legitimate
+  // row-set change (e.g. an event restored from its journal). Manual only.
+  CHAIN_REBUILT: 'chain_rebuilt',
+});
+export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
+  DOMAIN_EVENT_TYPE.SALE_CAPTURED,
+  DOMAIN_EVENT_TYPE.REFUND_ISSUED,
+  DOMAIN_EVENT_TYPE.PAYOUT_INITIATED,
+  DOMAIN_EVENT_TYPE.PAYOUT_REVERSED,
+  DOMAIN_EVENT_TYPE.PSP_SETTLED,
+  DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT,
+  DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED,
+  DOMAIN_EVENT_TYPE.WALLET_TOPUP,
+  DOMAIN_EVENT_TYPE.WALLET_BACKFILL,
+  DOMAIN_EVENT_TYPE.VENDOR_BACKFILL,
+  DOMAIN_EVENT_TYPE.STATUTORY_BACKFILL,
+  DOMAIN_EVENT_TYPE.GST_BACKFILL,
+  DOMAIN_EVENT_TYPE.BANK_BACKFILL,
+]);
 
 // ---- Price history ----
 export const PRICE_CHANGE_REASON = Object.freeze({
@@ -802,6 +853,20 @@ export const LEDGER_JOURNAL_KIND = Object.freeze({
   TDS_DEDUCTED: 'tds_deducted',
   COMMISSION_INVOICED: 'commission_invoiced',
   ADJUSTMENT: 'adjustment',             // manual, reason-coded, audited
+  STATUTORY_DEPOSIT: 'statutory_deposit',       // TCS/TDS paid to the government
+  STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted', // operator correction,
+  WALLET_TOPUP: 'wallet_topup', // customer money in via the gateway
+  WALLET_BACKFILL: 'wallet_backfill', // one-time reconciliation of pre-ledger wallets
+  VENDOR_BACKFILL: 'vendor_backfill', // one-time reconciliation of pre-ledger vendor payables
+  STATUTORY_BACKFILL: 'statutory_backfill', // one-time reconciliation of TCS/TDS payables
+  GST_BACKFILL: 'gst_backfill', // one-time reconciliation of GST output payables
+  BANK_BACKFILL: 'bank_backfill', // one-time reconciliation of the bank cash position
+});
+
+/** Which statutes the platform withholds from vendor payouts. */
+export const STATUTORY_STATUTE = Object.freeze({
+  TCS: 'tcs', // GST s.52 — e-commerce operator, deposited via CHAVS (GSTR-8)
+  TDS: 'tds', // IT s.194-O — deposited with Form 26Q
 });
 
 /**
@@ -817,6 +882,7 @@ export const LEDGER_ACCOUNT = Object.freeze({
   TCS_PAYABLE: 'tcs_payable',                           // liability: collected u/s 52
   TDS_PAYABLE: 'tds_payable',                           // liability: deducted u/s 194-O
   CUSTOMER_WALLET_LIABILITY: 'customer_wallet_liability',
+  WALLET_GOODWILL_EXPENSE: 'wallet_goodwill_expense',  // expense: platform money given away
   ROUNDING_DIFFERENCE: 'rounding_difference',           // expense: never expected to be non-zero
 });
 

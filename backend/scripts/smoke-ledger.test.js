@@ -12,6 +12,7 @@
  * by `scripts/money.test.js`, which always runs.
  */
 
+import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import mongoose from 'mongoose';
 import config from '../src/config/index.js';
 
@@ -286,7 +287,10 @@ async function main() {
   );
   const v2 = await ledgerService.verifyBalances();
   check('injected drift is detected', v2.drifted.length === 1, JSON.stringify(v2.drifted));
-  eq('drift amount reported exactly', v2.drifted[0]?.driftPaise, -777);
+  // convention: driftPaise = computed net debit − stored net debit.
+  // the view's credit was inflated by 777 → its net debit is 777 BELOW the
+  // entries → drift reports +777 (the view is 777 paise "light").
+  eq('drift amount reported exactly', v2.drifted[0]?.driftPaise, 777);
 
   const v3 = await ledgerService.verifyBalances({ repair: true });
   eq('repair rewrote one account', v3.repaired, 1);

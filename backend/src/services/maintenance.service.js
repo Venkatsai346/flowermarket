@@ -118,8 +118,54 @@ class MaintenanceService {
     //    finds and repairs them rather than waiting for a customer to notice.
     try {
       out.searchIndex = await searchIndexer.freshnessCheck({ repair: true, limit: 200 });
+      // A MISSING document (handler never ran, index truncated, fresh seed
+      // pre-reindex) can't be found by staleness alone — backfill it.
+      if (out.searchIndex && out.searchIndex.missing > 0) {
+        out.searchIndexBackfill = await searchIndexer.reindexAll({ tenantId });
+      }
     } catch (err) {
       out.searchIndex = { error: err?.message || String(err) };
+    }
+
+    // 10. Phase 10 — money audit backbone self-heal. Verify that every money
+    //     fact in the domain event store has its ledger journal (and vice
+    //     versa) and that the materialized balances match the entries. Any
+    //     crash window (fact recorded, journal not yet posted) is repaired
+    //     idempotently here rather than discovered by an auditor.
+    try {
+      const { default: integrityService } = await import('./integrity.service.js');
+      const report = await integrityService.report({ tenantId });
+      const ledgerDrift = !report.checks.ledger.ok;
+      if (ledgerDrift) {
+        out.integrityReplay = await integrityService.replay({ limit: 200 });
+        // balances may have drifted while the journal was missing; re-verify
+        out.balanceRepair = await ledgerService.verifyBalances({ repair: true });
+      }
+      out.integrity = {
+        overall: report.overall,
+        ledgerOk: report.checks.ledger.ok,
+        missingJournals: report.checks.ledger.eventJournalCoverage.missingJournals,
+        missingEvents: report.checks.ledger.eventJournalCoverage.missingEvents,
+        balanceDrift: report.checks.ledger.balances.drifted,
+        searchIndexMissing: report.checks.searchIndex.missing,
+        // Phase 11 — tamper-evidence. Breaks are NEVER auto-healed (healing
+        // a break would bless the tamper); they are surfaced here and in the
+        // integrity report for a human. Unanchored rows ARE auto-repaired —
+        // they are stored events awaiting a chain slot, not evidence issues.
+        chainBreaks: report.checks.auditChain.breaks.length,
+        chainUnanchored: report.checks.auditChain.unanchored,
+      };
+    } catch (err) {
+      out.integrity = { error: err?.message || String(err) };
+    }
+
+    // 11. Phase 11 — fold unanchored audit rows into the hash chain. Safe to
+    //     run always: it only touches rows with seq null, in stable order.
+    try {
+      const { default: domainEventService } = await import('./domainEvent.service.js');
+      out.chainRepair = await domainEventService.repairChain({ tenantId, limit: 500 });
+    } catch (err) {
+      out.chainRepair = { error: err?.message || String(err) };
     }
 
     await auditService.record({

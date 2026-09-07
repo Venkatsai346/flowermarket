@@ -1,5 +1,6 @@
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
+import Payment from '../models/payment.model.js';
 import OrderStatusHistory from '../models/orderStatusHistory.model.js';
 import CartItem from '../models/cartItem.model.js';
 import Address from '../models/address.model.js';
@@ -14,11 +15,12 @@ import pricingPolicyService from './pricingPolicy.service.js';
 import slotForecastingService from './slotForecasting.service.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
+import domainEventService from './domainEvent.service.js';
 import ledgerPostingService from './ledgerPosting.service.js';
 import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
-import { roundMoney, moneySum } from '../utils/money.js';
+import { roundMoney, moneySum, toPaise } from '../utils/money.js';
 import { notFound, badRequest, conflict, unauthorized } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import {
@@ -28,6 +30,7 @@ import {
   REFUND_REASON,
   AUDIT_ACTOR_TYPE,
   DELIVERY_ASSIGNMENT_STATUS,
+  DOMAIN_EVENT_TYPE,
 } from '../constants/enums.js';
 
 const MAX_DELIVERY_RETRIES = 2;
@@ -71,9 +74,9 @@ class OrderService {
     if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
 
     // ---- 4. create order + items ----
-    const { cart, items } = await cartService.getCart({ tenantId, userId });
+    const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     const order = await this.createOrderDoc({
-      tenantId, userId, cart, items, hold, address, paymentMethod, source,
+      tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
     });
 
     // ---- 5. charge (idempotent) ----
@@ -82,7 +85,7 @@ class OrderService {
 
     const { payment, chargeResult } = await paymentService.charge({
       tenantId, userId, orderId: order._id, amount: order.totalAmount,
-      method: paymentMethod, idempotencyKey: key,
+      method: paymentMethod, idempotencyKey: key, traceId: order.traceId,
     });
     order.paymentSummary.paymentId = payment._id;
     order.paymentSummary.status = payment.status;
@@ -165,6 +168,25 @@ class OrderService {
     if (order.cartId) {
       await cartService.markCheckedOut({ cartId: order.cartId, orderId: order._id });
     }
+
+    // ---- Phase 10: record the money FACT in the audit backbone FIRST ----
+    //      The event is appended before the journal post, so a crash between
+    //      the two is VISIBLE (event present, journal missing) and the
+    //      integrity replay re-posts the journal exactly. Never blocks the
+    //      confirmation itself (the audit store aids, it does not gate).
+    domainEventService.append({
+      tenantId, traceId: order.traceId, kind: DOMAIN_EVENT_TYPE.SALE_CAPTURED,
+      aggregateType: 'order', aggregateId: order._id,
+      idempotencyKey: ledgerPostingService.saleKey(order._id),
+      occurredAt: order.paymentSummary?.paidAt || new Date(),
+      refType: 'order', refId: order._id,
+      payload: {
+        orderNumber: order.orderNumber,
+        totalPaise: toPaise(order.totalAmount),
+        paymentMethod: order.paymentMethod,
+        paymentId: order.paymentSummary?.paymentId || null,
+      },
+    });
 
     // ---- Phase 6.1: recognise the money in the double-entry ledger ----
     //      DR gateway_clearing / CR vendor+store payable, commission, GST.
@@ -250,6 +272,43 @@ class OrderService {
       OrderStatusHistory.find({ orderId: order._id }).sort({ createdAt: 1 }).lean(),
     ]);
     return { order, items: serializeList(items), timeline: serializeList(timeline) };
+  }
+
+  /**
+   * Payment state for one order (customer-scoped). For ASYNC gateway flows
+   * (Razorpay), the client polls this after completing payment on the
+   * gateway side. The webhook is the source of truth; polling is fast UX —
+   * so this returns only safe, non-sensitive fields (no gateway tokens, no
+   * raw gateway payloads).
+   */
+  async paymentStatus({ tenantId, orderId, userId = null, isAdmin = false }) {
+    const order = await this.getOrder({ tenantId, orderId, userId: isAdmin ? null : userId });
+    const payments = await Payment.find({ orderId: order._id }).sort({ createdAt: -1 }).lean();
+    const latest = payments[0] || null;
+    const safe = latest
+      ? {
+          id: latest.id || String(latest._id),
+          status: latest.status,
+          method: latest.method,
+          provider: latest.provider,
+          amount: latest.amount,
+          currency: latest.currency,
+          gatewayOrderId: latest.gatewayOrderId || null,
+          paidAt: latest.paidAt || null,
+          failedAt: latest.failedAt || null,
+          failureReason: latest.status === 'failed' ? (latest.failureReason || null) : null,
+          attempts: payments.length,
+        }
+      : null;
+    return {
+      order: {
+        id: order.id || String(order._id),
+        orderNumber: order.orderNumber,
+        status: order.status,
+        totalAmount: order.totalAmount,
+      },
+      payment: safe,
+    };
   }
 
   async listMine({ tenantId, userId, query = {} }) {
@@ -619,7 +678,7 @@ class OrderService {
     const address = await Address.findOne({ _id: addressId, tenantId, userId });
     if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
 
-    const { cart, items } = await cartService.getCart({ tenantId, userId });
+    const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
     const { charges, slotDoc } = await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
 
@@ -637,7 +696,7 @@ class OrderService {
     };
   }
 
-  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source }) {
+  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null }) {
     const { charges, slotDoc, categoryByMaster, vendorByMaster } = await this.computeOrderChargesForCart({
       tenantId, userId, cart, items, hold,
     });
@@ -651,6 +710,9 @@ class OrderService {
       tenantId, userId,
       orderNumber: await nextOrderNumber({ tenantId }),
       status: ORDER_STATUS.CREATED,
+      // end-to-end correlation: this order's payment, journals, domain
+      // events and any gateway webhook all share this trace (Phase 10)
+      traceId: req?.traceId || null,
       source,
       itemsCount: items.reduce((a, i) => a + i.qty, 0),
       itemsSubtotal: charges.itemSubtotal,
@@ -756,6 +818,21 @@ class OrderService {
       fromStatus, toStatus: ORDER_STATUS.CANCELLED,
       actorType, actorId: cancelledBy, note: reason || null,
     });
+    // audit backbone: cancellation is a money-relevant fact (it can reverse a
+    // sale journal) — record it on the order's trace
+    domainEventService.append({
+      tenantId: order.tenantId, traceId: order.traceId,
+      kind: DOMAIN_EVENT_TYPE.ORDER_CANCELLED,
+      aggregateType: 'order', aggregateId: order._id,
+      idempotencyKey: `order_cancelled:${order._id}`,
+      occurredAt: order.cancellation?.cancelledAt,
+      refType: 'order', refId: order._id,
+      payload: {
+        orderNumber: order.orderNumber, reason,
+        refundTransactionId: order.cancellation?.refundTransactionId || null,
+        fromStatus,
+      },
+    });
   }
 
   /** Validate + apply a status transition and record history. */
@@ -764,6 +841,12 @@ class OrderService {
     const from = order.status;
     order.status = toStatus;
     order.version += 1;
+    // Stamp the actual delivery moment (payout eligibility and the return
+    // window are computed from this, not from updatedAt which drifts on any
+    // later save). Stamped once — never overwritten by re-transitions.
+    if (toStatus === ORDER_STATUS.DELIVERED && !order.deliveredAt) {
+      order.deliveredAt = new Date();
+    }
     await order.save();
     if (!skipHistory) {
       await OrderStatusHistory.create({

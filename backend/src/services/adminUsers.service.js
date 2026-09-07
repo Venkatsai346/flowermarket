@@ -98,7 +98,10 @@ export class AdminUsersService {
       rider: role === USER_ROLES.RIDER ? { availability: 'available', currentHubId: payload.hubId || null } : undefined,
       accountMeta: { source: 'admin', createdBy: actorId },
     });
-    if (payload.password) await user.setPassword(payload.password);
+    if (payload.password) {
+      await user.setPassword(payload.password);
+      await user.save(); // setPassword only sets the hash — persist it (see store.service)
+    }
 
     await auditService.record({
       action: 'create', entityType: 'user', entityId: user._id,

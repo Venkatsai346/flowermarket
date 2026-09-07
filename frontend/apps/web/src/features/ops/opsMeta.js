@@ -9,6 +9,17 @@ export {
   PAYMENT_STATUS_META, SLOT_STATUS_META, TASK_STATUS_META,
 };
 
+// Gateway webhook dispositions — `mismatch` (gateway amount ≠ ours) is the
+// fraud/misrouting signal an operator pages on; `duplicate` = retried
+// delivery that never re-entered the state machine.
+export const WEBHOOK_EVENT_STATUS_META = {
+  received: { label: 'Received', tone: 'slate' },
+  processed: { label: 'Processed', tone: 'emerald' },
+  duplicate: { label: 'Duplicate', tone: 'sky' },
+  mismatch: { label: 'Mismatch', tone: 'rose' },
+  ignored: { label: 'Ignored', tone: 'amber' },
+};
+
 export const POD_OPTIONS = [
   ['otp', 'OTP'],
   ['photo', 'Photo URL'],

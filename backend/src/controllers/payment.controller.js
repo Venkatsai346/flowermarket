@@ -1,7 +1,8 @@
+import crypto from 'node:crypto';
+import Payment from '../models/payment.model.js';
 import paymentService from '../services/payment.service.js';
 import paymentProvider from '../services/paymentProvider.service.js';
-import orderService from '../services/order.service.js';
-import { ORDER_CANCELLATION_REASON } from '../constants/enums.js';
+import config from '../config/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 import { badRequest, unauthorized } from '../utils/ApiError.js';
@@ -23,73 +24,31 @@ class PaymentController {
   webhookRazorpay = asyncHandler(async (req, res) => {
     const rawBody = req.body; // Buffer (express.raw)
     const signature = req.headers['x-razorpay-signature'] || '';
-    const event = JSON.parse(rawBody.toString('utf8') || '{}');
 
+    // 1. VERIFY BEFORE PARSING — untrusted bytes never reach state logic
     const verified = paymentProvider.verifyWebhook('razorpay', rawBody, signature);
     if (!verified.ok) {
       throw unauthorized('Webhook signature verification failed', 'WEBHOOK_SIGNATURE_INVALID');
     }
 
-    const { event: eventName, payload } = event;
-    if (eventName === 'payment.captured' || eventName === 'payment.authorized' || eventName === 'order.paid') {
-      const paymentEntity = payload?.payment?.entity || payload?.order?.entity || {};
-      const gatewayPaymentId = paymentEntity.id || null;
-      const gatewayOrderId = paymentEntity.order_id || paymentEntity.receipt || null;
-
-      const payment = gatewayPaymentId
-        ? await paymentService.findByGatewayPaymentId({ gatewayPaymentId }).catch(() => null)
-        : null;
-      const paymentByOrder = !payment && gatewayOrderId
-        ? await paymentService.findByGatewayOrderId({ gatewayOrderId }).catch(() => null)
-        : null;
-      const target = payment || paymentByOrder;
-
-      if (!target) {
-        // unknown order id — maybe a different tenant's payment; ack anyway
-        return res.status(200).json(success(null, { message: 'Webhook received (unknown payment)' }));
-      }
-
-      await paymentService.confirmSuccess({
-        paymentId: target._id,
-        gatewayPaymentId: gatewayPaymentId || null,
-        raw: event,
-      });
-      const order = await orderService.confirmPayment({ paymentId: target._id });
-      return res.status(200).json(success({ orderId: order.order?.id || order.order?._id, status: order.order?.status }, { message: 'Payment confirmed' }));
-    }
-
-    // payment.failed — the customer's attempt failed at the gateway: mark the
-    // payment failed and cancel the PAYMENT_PENDING order (compensation A).
-    // Idempotent: cancelOrder is safe on an already-CANCELLED order.
-    if (eventName === 'payment.failed') {
-      const entity = payload?.payment?.entity || {};
-      const gatewayPaymentId = entity.id || null;
-      const gatewayOrderId = entity.order_id || null;
-      const payment = gatewayPaymentId
-        ? await paymentService.findByGatewayPaymentId({ gatewayPaymentId }).catch(() => null)
-        : null;
-      const target = payment || (gatewayOrderId
-        ? await paymentService.findByGatewayOrderId({ gatewayOrderId }).catch(() => null)
-        : null);
-      if (target) {
-        await paymentService.markFailed({
-          paymentId: target._id,
-          reason: entity.error_description || 'Payment failed at gateway',
-          gatewayPaymentId: gatewayPaymentId || null,
-        });
-        try {
-          await orderService.cancelOrder({
-            tenantId: target.tenantId, orderId: target.orderId,
-            reason: ORDER_CANCELLATION_REASON.PAYMENT_FAILED,
-            actorType: 'system', refund: false,
-          });
-        } catch { /* already cancelled / not cancel-able — ack anyway */ }
-      }
-      return res.status(200).json(success(null, { message: 'Payment failure recorded' }));
-    }
-
-    // other events — ack, no action
-    return res.status(200).json(success(null, { message: 'Webhook received' }));
+    // 2. route through the single event pipeline (dedupe + amount check +
+    //    state machine + audit) — see paymentService.applyWebhookEvent
+    const event = JSON.parse(rawBody.toString('utf8') || '{}');
+    const { event: eventName, id: eventId, payload } = event;
+    const entity = payload?.payment?.entity || payload?.order?.entity || {};
+    const result = await paymentService.applyWebhookEvent({
+      provider: 'razorpay',
+      eventId: eventId || `rzp_${rawBody.length}_${eventName}`,
+      eventType: eventName,
+      gatewayPaymentId: entity.id || null,
+      gatewayOrderId: entity.order_id || entity.receipt || null,
+      amountPaise: entity.amount ?? null,
+      currency: entity.currency || null,
+      raw: event,
+    });
+    // always ack 200 (except bad signature): 4xx makes the gateway storm
+    // retries on states only an operator can fix (mismatches, unknowns)
+    return res.status(200).json(success({ result: result.status }, { message: `Webhook ${result.status}` }));
   });
 
   /**
@@ -98,32 +57,48 @@ class PaymentController {
    * payment is confirmed exactly like a real webhook would.
    */
   webhookMock = asyncHandler(async (req, res) => {
-    // raw body route -> parse the buffer like a real gateway payload
-    const parsed = typeof req.body === 'string' ? JSON.parse(req.body || '{}')
-      : Buffer.isBuffer(req.body) ? JSON.parse(req.body.toString('utf8') || '{}')
-      : (req.body || {});
-    const { gatewayOrderId, gatewayPaymentId, amountPaise } = parsed;
+    // raw body route -> same contract as Razorpay: raw bytes + HMAC signature
+    const rawBody = req.body;
+    const signature = req.headers['x-mock-signature'] || '';
+    const verified = paymentProvider.verifyWebhook('mock', rawBody, signature);
+    if (!verified.ok) {
+      throw unauthorized('Webhook signature verification failed', 'WEBHOOK_SIGNATURE_INVALID');
+    }
+    const parsed = JSON.parse(rawBody.toString('utf8') || '{}');
+    const { gatewayOrderId, gatewayPaymentId, amountPaise, eventId } = parsed;
+
+    // the deterministic decline hook (amounts ending in paise '13') needs the
+    // recorded amount, so resolve the payment here and choose the event type
     const payment = gatewayPaymentId
-      ? await paymentService.findByGatewayPaymentId({ gatewayPaymentId }).catch(() => null)
+      ? await Payment.findOne({ gatewayPaymentId }).lean()
       : null;
     const target = payment || (gatewayOrderId
-      ? await paymentService.findByGatewayOrderId({ gatewayOrderId }).catch(() => null)
+      ? await Payment.findOne({ gatewayOrderId }).lean()
       : null);
-    if (!target) throw badRequest('No payment found for the given gateway refs', 'PAYMENT_NOT_FOUND');
 
-    // honor the deterministic decline hook so the async path is testable
-    if (amountPaise == null && String(Math.round(target.amount * 100)).endsWith('13')) {
-      await paymentService.markFailed({ paymentId: target._id, reason: 'Declined (mock webhook)' });
-      return res.status(200).json(success({ status: 'failed' }, { message: 'Mock payment failed' }));
+    let eventType = 'payment.captured';
+    let eventAmount = amountPaise;
+    if (target && eventAmount == null && String(Math.round(target.amount * 100)).endsWith('13')) {
+      eventType = 'payment.failed';
+      eventAmount = null; // failure carries no capture amount
     }
 
-    await paymentService.confirmSuccess({
-      paymentId: target._id,
-      gatewayPaymentId: gatewayPaymentId || `mpay_webhook_${target._id}`,
-      raw: { mockWebhook: true },
+    const result = await paymentService.applyWebhookEvent({
+      provider: 'mock',
+      eventId: eventId || `mock_${crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 24)}`,
+      eventType,
+      gatewayPaymentId: gatewayPaymentId || (target?.gatewayPaymentId || null),
+      gatewayOrderId: gatewayOrderId || (target?.gatewayOrderId || null),
+      amountPaise: eventAmount ?? null,
+      currency: target?.currency || null,
+      raw: { mockWebhook: true, ...parsed },
     });
-    const order = await orderService.confirmPayment({ paymentId: target._id });
-    return res.status(200).json(success({ orderId: order.order?.id || order.order?._id, status: order.order?.status }, { message: 'Mock payment confirmed' }));
+    if (!target && result.status === 'ignored') {
+      throw badRequest('No payment found for the given gateway refs', 'PAYMENT_NOT_FOUND');
+    }
+    return res.status(200).json(
+      success({ result: result.status, orderId: result.order?.order?.id || null }, { message: `Mock webhook ${result.status}` }),
+    );
   });
 
   // ---------------- ops reads ----------------
@@ -135,6 +110,28 @@ class PaymentController {
   getPayment = asyncHandler(async (req, res) => {
     const detail = await paymentService.getPayment({ paymentId: req.params.id });
     res.status(200).json(success(detail, { message: 'Payment fetched' }));
+  });
+
+  listWebhookEvents = asyncHandler(async (req, res) => {
+    const result = await paymentService.listWebhookEvents({ tenantId: req.tenantId, query: req.query });
+    res.status(200).json(success(result.items, { message: 'Webhook events fetched', meta: result.meta }));
+  });
+
+  /**
+   * DEV ONLY — flips the in-process mock gateway between sync and async
+   * (pending) charge modes, so the storefront's awaiting-payment flow
+   * (banner + 5s polling of /orders/:id/payment) and the webhook-confirm
+   * path can be exercised against the LIVE running stack without real
+   * gateway keys. Hard-gated on config.isDev (404-equivalent 400 in prod)
+   * and the ADMIN/SUPER_ADMIN route guard.
+   */
+  mockForcePending = asyncHandler(async (req, res) => {
+    if (!config.isDev) throw badRequest('Development-only endpoint', 'DEV_ONLY');
+    const enabled = Boolean(req.body?.enabled);
+    paymentProvider.forcePending(enabled);
+    res.status(200).json(success({ mockPending: enabled }, {
+      message: enabled ? 'Mock gateway set to async (pending) mode' : 'Mock gateway restored to sync mode',
+    }));
   });
 }
 

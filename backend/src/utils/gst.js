@@ -297,8 +297,17 @@ export function roundOffPaise(totalPaise) {
   return remainder === 0 ? 0 : (remainder < 50 ? -remainder : 100 - remainder);
 }
 
-/** Sum a set of computed lines into invoice totals (with round-off applied). */
-export function summariseInvoice(lines) {
+/**
+ * Sum a set of computed lines into document totals.
+ *
+ * @param {boolean} [opts.roundOff=true] Apply the s.170 round-off (payable
+ *   total rounded to the nearest rupee). Correct for INVOICES, which are the
+ *   payable documents. CREDIT NOTES must pass `roundOff: false`: a partial
+ *   credit note is not a new payable — it must reconcile EXACTLY with the
+ *   refund amount it documents, and a rupee round-off would silently shift
+ *   the credited amount by up to 5 paise per note.
+ */
+export function summariseInvoice(lines, { roundOff = true } = {}) {
   const acc = {
     taxableValuePaise: 0, cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
     discountPaise: 0, grossPaise: 0,
@@ -314,7 +323,7 @@ export function summariseInvoice(lines) {
   }
   const totalTaxPaise = acc.cgstPaise + acc.sgstPaise + acc.igstPaise + acc.cessPaise;
   const beforeRounding = acc.taxableValuePaise + totalTaxPaise;
-  const rounding = roundOffPaise(beforeRounding);
+  const rounding = roundOff ? roundOffPaise(beforeRounding) : 0;
   return {
     ...acc,
     totalTaxPaise,

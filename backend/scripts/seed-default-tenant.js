@@ -283,6 +283,14 @@ async function seed() {
   });
   console.log('Catalog demo data seeded: 5 products across 3 categories');
 
+  // ---- Search index — a fresh store must ship with its FULL catalogue in the
+  //      ranked index. Without this, /catalog serves the legacy fallback until
+  //      the first outbox event, then a PARTIAL index (only event-touched
+  //      listings) silently shadows the rest of the catalogue. ----
+  const { default: searchIndexer } = await import('../src/services/searchIndexer.service.js');
+  const indexOut = await searchIndexer.reindexAll({ tenantId: tenant._id });
+  console.log(`Search index built: ${indexOut.indexed} documents from ${indexOut.scanned} listings`);
+
   // ---- GST per category (legal classification — must run AFTER categories
   //      exist; tax is computed on the pre-discount line total) ----
   const gstBySlug = { 'fresh-flowers': [5, '0603'], bouquets: [12, '0603'], plants: [5, '0602'] };
