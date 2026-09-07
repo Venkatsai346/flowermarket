@@ -718,8 +718,9 @@ async function main() {
   await payoutService.submit({ batchId: cbBatch3._id, actorId: approver1 });
   eq('the reduced payout is paid', (await PayoutBatch.findById(cbBatch3._id)).state, PAYOUT_STATE.PAID);
   eq('★ the bank is debited by exactly the reduced net', (await ledgerService.balance(ledgerAccounts.bank())).balancePaise, bankBefore3 - cbBatch3.netPaise);
-  const drain3 = cbBatch3.grossPaise - cbBatch3.sellerGstPaise - cbBatch3.commissionPaise + cbBatch3.openingBalancePaise;
-  eq('the journal drains the payable by (new sale − debt)', (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor3._id))).balancePaise, payableBefore3 - drain3);
+  const drain3 = cbBatch3.grossPaise - cbBatch3.sellerGstPaise - cbBatch3.commissionPaise + cbBatch3.openingLedgerViewPaise;
+  eq('the journal drains the payable by (new sale − debt) in BOOK units', (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor3._id))).balancePaise, payableBefore3 - drain3);
+  eq('★ the debt is recovered TO THE PAISE — zero residue on the payable (Phase 17)', (await ledgerService.balance(ledgerAccounts.vendorPayable(vendor3._id))).balancePaise, 0);
   eq('each line is settled exactly once (3 PAID lines: 2 payouts + the consumed clawback)',
     await PayoutLineItem.countDocuments({ vendorId: vendor3._id, state: PAYOUT_LINE_STATE.PAID }), 3);
 

@@ -38,9 +38,11 @@ const PayoutBatchSchema = new Schema(
     tcsPaise: { type: Number, default: 0 },
     tdsPaise: { type: Number, default: 0 },
     adjustmentsPaise: { type: Number, default: 0 }, // signed
-    openingBalancePaise: { type: Number, default: 0 }, // carried from last cycle (signed)
+    openingBalancePaise: { type: Number, default: 0 }, // carried from last cycle (signed, CASH units)
+    openingLedgerViewPaise: { type: Number, default: 0 }, // Phase 17 — same carry in vendor_payable units (net + withholdings); the payout journal's drain uses THIS
     netPaise: { type: Number, default: 0 },
-    carryForwardPaise: { type: Number, default: 0 }, // below floor / negative → next cycle
+    carryForwardPaise: { type: Number, default: 0 }, // below floor / negative → next cycle (cash units)
+    carryLedgerViewPaise: { type: Number, default: 0 }, // Phase 17 — the carry in vendor_payable units (what the books actually owe)
 
     // ---- destination snapshot (never a live reference) ----
     payoutAccount: {

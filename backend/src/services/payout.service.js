@@ -448,6 +448,9 @@ class PayoutService {
     }).sort({ 'cycle.to': -1 }).lean();
 
     const openingBalancePaise = carried?.carryForwardPaise || 0;
+    // Phase 17: the carry has two faces — CASH units (drives the net the bank
+    // sees) and vendor_payable units (drives the books). Both travel together.
+    const openingLedgerViewPaise = carried?.carryLedgerViewPaise || 0;
     const adjustmentsPaise = sumPaise(...adjustments.map((a) => a.amountPaise));
 
     if (!lines.length && adjustmentsPaise === 0 && openingBalancePaise === 0) {
@@ -479,6 +482,14 @@ class PayoutService {
       carryForwardPaise = rawNet; // below the floor — roll it forward
     }
 
+    // Phase 17: what this carry represents ON THE BOOKS — the pinned lines'
+    // ledger view + the opening's ledger view + the adjustments. When the
+    // carry is later absorbed, its payout journal drains vendor_payable by
+    // exactly this, so the books settle the debt to the paise.
+    const carryLedgerViewPaise = carryForwardPaise === 0
+      ? 0
+      : sumPaise(...lines.map((l) => this.lineLedgerViewPaise(l)), openingLedgerViewPaise, adjustmentsPaise);
+
     if (netPaise > policy.maxBatchPaise) {
       throw conflict(
         `Batch of ₹${fromPaise(netPaise)} exceeds the ₹${fromPaise(policy.maxBatchPaise)} ceiling — split the cycle or raise the limit`,
@@ -498,8 +509,10 @@ class PayoutService {
       ...totals,
       adjustmentsPaise,
       openingBalancePaise,
+      openingLedgerViewPaise,
       netPaise,
       carryForwardPaise,
+      carryLedgerViewPaise,
       payoutAccount: account ? {
         accountId: account._id,
         method: account.method,
@@ -517,12 +530,22 @@ class PayoutService {
 
     // A carried debt moves INTO this batch's opening the moment the batch
     // is created — clear it on the old batch so a later cycle cannot take
-    // the same debt a second time. (If we crash in the tiny window between
-    // the two writes, the operator can cancel the new DRAFT batch, which
-    // releases its lines and leaves the old carry intact — the debt stays
-    // counted exactly once either way it is recovered.)
+    // the same debt a second time. The old batch's lines were ALREADY
+    // COUNTED (they pushed the cycle to zero, or are the negative offsets
+    // behind the debt) — consume them, exactly as cancel() does for a
+    // carry batch, or the next reconcile would count them twice (once as
+    // pinned lines, once inside the opening). (If we crash in the tiny
+    // window between the writes, the integrity report flags the resulting
+    // drift and the backfill closes it — never a silent double count.)
     if (carried && openingBalancePaise !== 0) {
-      await PayoutBatch.updateOne({ _id: carried._id }, { $set: { carryForwardPaise: 0 } });
+      await PayoutBatch.updateOne(
+        { _id: carried._id },
+        { $set: { carryForwardPaise: 0, carryLedgerViewPaise: 0 } }
+      );
+      await PayoutLineItem.updateMany(
+        { payoutBatchId: carried._id, state: PAYOUT_LINE_STATE.BATCHED },
+        { $set: { state: PAYOUT_LINE_STATE.PAID, paidAt: new Date() } }
+      );
     }
 
     // pin the lines and adjustments to this batch so nothing is ever counted twice
@@ -669,7 +692,29 @@ class PayoutService {
     }
     await this.transition(batch, PAYOUT_STATE.CANCELLED, { actorId, note: reason });
     await this.releaseBatchLines(batch);
+    await this.preserveOpeningOnExit(batch); // an absorbed debt must not die with the batch
     return batch;
+  }
+
+  /**
+   * A batch that absorbed a carry (openingBalancePaise ≠ 0) but carried
+   * nothing of its own (carryForwardPaise = 0) would LOSE that debt if it
+   * exits without a live journal: the refund that created the debt already
+   * debited the vendor payable, and the only place the recovery is owed is
+   * this batch's opening. Re-park the opening as carry-forward so the next
+   * cycle absorbs it exactly once. (If the batch has its own carry, that
+   * carry already includes the opening — nothing to do.)
+   */
+  async preserveOpeningOnExit(batch) {
+    if ((batch.openingBalancePaise || 0) === 0) return;
+    if ((batch.carryForwardPaise || 0) !== 0) return; // already counted
+    batch.carryForwardPaise = batch.openingBalancePaise;
+    batch.carryLedgerViewPaise = batch.openingLedgerViewPaise || 0;
+    // the debt now lives in the carry — clear the opening so it is not
+    // counted twice (carry and opening are two views of the same money)
+    batch.openingBalancePaise = 0;
+    batch.openingLedgerViewPaise = 0;
+    await batch.save();
   }
 
   /**
@@ -745,8 +790,10 @@ class PayoutService {
    */
   async postPayoutJournal(batch) {
     const v = batch.vendorId;
+    // Phase 17: drain the books in vendor_payable units (net + withholdings).
+    // The CASH unit (openingBalancePaise) drives netPaise — what the bank sees.
     const drainPayable = batch.grossPaise - batch.sellerGstPaise - batch.commissionPaise
-      + batch.adjustmentsPaise + batch.openingBalancePaise;
+      + batch.adjustmentsPaise + (batch.openingLedgerViewPaise || 0);
 
     const lines = [
       { accountCode: ledgerAccounts.vendorPayable(v), debitPaise: Math.max(0, drainPayable) },
@@ -942,6 +989,7 @@ class PayoutService {
     // carryForward 0 — only zero-net batches carry, and those cannot be
     // submitted — so every line is released, negative offsets included.)
     await this.releaseBatchLines(batch);
+    await this.preserveOpeningOnExit(batch); // the unwound journal's opening was a debt — re-park it
     return batch;
   }
 
@@ -963,6 +1011,7 @@ class PayoutService {
       { payoutBatchId: batch._id, state: { $in: [PAYOUT_LINE_STATE.BATCHED, PAYOUT_LINE_STATE.PAID] } },
       { $set: { state: PAYOUT_LINE_STATE.ELIGIBLE, payoutBatchId: null, paidAt: null } }
     );
+    await this.preserveOpeningOnExit(batch); // the unwound journal's opening was a debt — re-park it
 
     await auditService.record({
       action: AUDIT_ACTION.PAYOUT_REVERSE, entityType: 'payout_batch', entityId: batch._id,
@@ -1364,12 +1413,200 @@ class PayoutService {
       vendorId: toId(vendorId), amountPaise: Math.round(amountPaise), reasonCode, note,
       orderId: toId(orderId), createdByUserId: toId(actorId),
     });
+    // Phase 17: an adjustment is a money fact the moment it is recorded —
+    // the books must show it immediately (the payout journal drains it later)
+    const { default: ledgerPosting } = await import('./ledgerPosting.service.js');
+    await ledgerPosting.postAdjustment({ adjustment: doc });
     await auditService.record({
       action: AUDIT_ACTION.PAYOUT_ADJUST, entityType: 'payout_adjustment', entityId: doc._id,
       actorId, actorType: 'admin',
       after: { vendorId: String(vendorId), amount: fromPaise(amountPaise), reasonCode, note }, req,
     }).catch(() => {});
     return doc;
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 17 — vendor payable integrity: the payout lines ARE the ledger
+  // -------------------------------------------------------------------------
+
+  /**
+   * The amount a payout line represents ON THE BOOKS — i.e. exactly what the
+   * sale journal credited to `vendor_payable` for it (net of commission,
+   * before the statutory withholdings and the GST pass-through that the
+   * payout journal handles separately):
+   *
+   *   netPayable + gstOnCommission + tcs + tds − sellerGst + shipping
+   *     = (gross − commission − gstOnCommission − tcs − tds − shipping)
+   *       + gstOnCommission + tcs + tds − sellerGst + shipping
+   *     = (taxable + sellerGst) − commission − sellerGst = taxable − commission
+   */
+  lineLedgerViewPaise(l) {
+    return l.netPayablePaise + l.gstOnCommissionPaise + l.tcsPaise + l.tdsPaise
+      - l.sellerGstPaise + (l.shippingSharePaise || 0);
+  }
+
+  /**
+   * A batch's payout journal is live (posted, not yet unwound) only while the
+   * batch is PROCESSING or PAID. In every other state the vendor payable has
+   * NOT been drained by that batch, so its lines are still "on the books".
+   */
+  batchJournalLive(state) {
+    return state === PAYOUT_STATE.PROCESSING || state === PAYOUT_STATE.PAID;
+  }
+
+  /**
+   * Reconcile ONE vendor: the `vendor_payable:{v}` ledger account must equal
+   *   Σ unsettled lines (ledger view) + pending/unposted adjustments
+   *   + surviving carry-forward,
+   * to the paise. Unsettled = accrued/eligible/held, or batched into a batch
+   * whose journal is not live (draft/approved/queued, or unwound).
+   *
+   * `repair: true` posts ONE signed `vendor_backfill` journal (+ event) for
+   * the difference — the amount is a measured fact, so replay deliberately
+   * refuses to re-post it (VENDOR_BACKFILL_NOT_REPLAYABLE).
+   */
+  async reconcileVendor({ vendorId, repair = false } = {}) {
+    const v = toId(vendorId);
+    const code = ledgerAccounts.vendorPayable(v);
+
+    // ---- lines ----
+    const lines = await PayoutLineItem.find({ vendorId: v }).lean();
+    const batchedIds = lines.filter((l) => l.state === PAYOUT_LINE_STATE.BATCHED).map((l) => l.payoutBatchId);
+    const batches = batchedIds.length
+      ? await PayoutBatch.find({ _id: { $in: batchedIds } }).select('_id state carryForwardPaise').lean()
+      : [];
+    const batchById = new Map(batches.map((b) => [String(b._id), b]));
+
+    // ---- adjustments ----
+    const adjustments = await PayoutAdjustment.find({ vendorId: v }).lean();
+    const appliedIds = [...new Set(adjustments.filter((a) => a.appliedInBatchId).map((a) => a.appliedInBatchId))];
+    const appliedBatches = appliedIds.length
+      ? await PayoutBatch.find({ _id: { $in: appliedIds } }).select('_id state carryForwardPaise').lean()
+      : [];
+    const appliedById = new Map(appliedBatches.map((b) => [String(b._id), b]));
+
+    // A pinned line (or adjustment) is COUNTED separately only while its batch
+    // is not a live journal AND the batch does not carry its net forward —
+    // a carry batch has already folded its lines into the carry, which is
+    // counted once as `carryLedgerViewPaise`.
+    const pinnedCounted = (b) => b
+      && !this.batchJournalLive(b.state)
+      && (b.carryForwardPaise || 0) === 0;
+
+    let linesPaise = 0;
+    let openLines = 0;
+    for (const l of lines) {
+      if (l.state === PAYOUT_LINE_STATE.PAID || l.state === PAYOUT_LINE_STATE.REVERSED) continue;
+      if (l.state === PAYOUT_LINE_STATE.BATCHED) {
+        const b = batchById.get(String(l.payoutBatchId));
+        if (this.batchJournalLive(b?.state)) continue; // drained by the journal
+        if (!pinnedCounted(b)) continue; // folded into the batch's carry
+        linesPaise += this.lineLedgerViewPaise(l); openLines += 1;
+      } else {
+        linesPaise += this.lineLedgerViewPaise(l); openLines += 1;
+      }
+    }
+
+    let adjustmentsPaise = 0;
+    for (const a of adjustments) {
+      if (!a.appliedInBatchId) { adjustmentsPaise += a.amountPaise; continue; } // pending
+      const b = appliedById.get(String(a.appliedInBatchId));
+      if (this.batchJournalLive(b?.state)) continue; // already in the journal
+      if (!pinnedCounted(b)) continue; // folded into the batch's carry
+      adjustmentsPaise += a.amountPaise;
+    }
+
+    // ---- carry: the debt, once, in book units ----
+    const carryBatches = await PayoutBatch.find({ vendorId: v, carryForwardPaise: { $ne: 0 } })
+      .select('carryForwardPaise carryLedgerViewPaise').lean();
+    const carryPaise = sumPaise(...carryBatches.map((b) => b.carryForwardPaise));
+    const carryLedgerViewPaise = sumPaise(...carryBatches.map((b) => b.carryLedgerViewPaise || 0));
+
+    // ---- an absorbed-but-unposted opening is still a debt ----
+    // (carryForwardPaise = 0: a carry batch has folded its opening into the
+    // carry's ledger view — counting both would double the debt)
+    const openingBatches = await PayoutBatch.find({
+      vendorId: v, openingLedgerViewPaise: { $ne: 0 }, carryForwardPaise: 0,
+      state: { $nin: [PAYOUT_STATE.PROCESSING, PAYOUT_STATE.PAID] },
+    }).select('openingLedgerViewPaise').lean();
+    const openingLedgerViewPaise = sumPaise(...openingBatches.map((b) => b.openingLedgerViewPaise));
+
+    const expectedPaise = linesPaise + adjustmentsPaise + carryLedgerViewPaise + openingLedgerViewPaise;
+    const actualPaise = (await ledgerService.balance(code)).balancePaise;
+    const differencePaise = expectedPaise - actualPaise;
+
+    let repaired = null;
+    if (repair && differencePaise !== 0) {
+      // ONE key for event AND journal — the backbone chain is the shared key
+      const key = `vendor_backfill:${v}:${new Date().toISOString()}`;
+      await domainEventService.append({
+        tenantId: null,
+        kind: DOMAIN_EVENT_TYPE.VENDOR_BACKFILL,
+        aggregateType: 'vendor',
+        aggregateId: v,
+        idempotencyKey: key,
+        occurredAt: new Date(),
+        refType: 'vendor',
+        refId: v,
+        payload: { differencePaise },
+      });
+      const post = await this.postVendorBackfill({ vendorId: v, differencePaise, idempotencyKey: key });
+      repaired = { idempotencyKey: key, differencePaise, posted: post.created };
+      // report the POST-repair state (re-read the books) but keep the receipt
+      const after = await this.reconcileVendor({ vendorId: v, repair: false });
+      return { ...after, repaired };
+    }
+
+    return {
+      vendorId: String(v),
+      accountCode: code,
+      openLines,
+      linesPaise,
+      adjustmentsPaise,
+      carryPaise,
+      carryLedgerViewPaise,
+      openingLedgerViewPaise,
+      expectedPaise,
+      actualPaise,
+      differencePaise,
+      balanced: differencePaise === 0,
+      repaired,
+    };
+  }
+
+  /**
+   * Reconcile every vendor that has anything to reconcile: lines, adjustments,
+   * carry, or a non-zero ledger balance. Platform-scoped (vendors and their
+   * payable accounts are platform-global, not per-tenant).
+   */
+  async reconcileVendors({ repair = false } = {}) {
+    const [lineVendors, batchVendors] = await Promise.all([
+      PayoutLineItem.distinct('vendorId'),
+      PayoutBatch.distinct('vendorId'),
+    ]);
+    const vendorIds = [...new Set([...lineVendors, ...batchVendors])];
+    const results = [];
+    for (const v of vendorIds) {
+      // eslint-disable-next-line no-await-in-loop
+      const r = await this.reconcileVendor({ vendorId: v, repair });
+      results.push(r);
+    }
+    const drifted = results.filter((r) => !r.balanced);
+    return {
+      vendorsChecked: results.length,
+      drifted: drifted.length,
+      driftedSample: drifted.slice(0, 5).map((r) => ({ vendorId: r.vendorId, differencePaise: r.differencePaise, actualPaise: r.actualPaise, expectedPaise: r.expectedPaise })),
+      totalDifferencePaise: drifted.reduce((a, r) => a + Math.abs(r.differencePaise), 0),
+      ok: drifted.length === 0,
+      // full per-vendor detail (platform-admin surface — the UI drills into it)
+      vendors: results.map((r) => ({ vendorId: r.vendorId, expectedPaise: r.expectedPaise, actualPaise: r.actualPaise, differencePaise: r.differencePaise, balanced: r.balanced })),
+    };
+  }
+
+  /** Post a signed vendor_backfill journal for one drifted vendor (repair). */
+  async postVendorBackfill({ vendorId, differencePaise, note = null, idempotencyKey = null }) {
+    const { default: ledgerPosting } = await import('./ledgerPosting.service.js');
+    return ledgerPosting.postVendorBackfill({ vendorId, differencePaise, note, idempotencyKey });
   }
 }
 

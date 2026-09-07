@@ -758,3 +758,47 @@ offsets the vendor's next cycle:
 - `markFailed` now releases its lines (a rejected payout moved no money — the
   next cycle pays the lines again; previously they were pinned to the failed
   batch until an operator cancelled it).
+## Phase 17 — vendor ledger integrity (`vendor_payable` is a real ledger account)
+
+The payout lines **are** the ledger for what is owed to vendors. Every
+`vendor_payable:{vendor}` entry must equal the sum of the vendor's payout
+lines' book views (gross − GST − commission, signed by line type), the
+adjustments pinned to its batches, the book face of its carry-forward
+batches, and the book openings of batches that have not yet settled:
+
+    vendor_payable:{v}  =  Σ lineLedgerView(counted lines)
+                         + Σ adjustments (counted)
+                         + Σ carryLedgerViewPaise (carry batches, carry ≠ 0)
+                         + Σ openingLedgerViewPaise (settled-out batches)
+
+A **counted** line is any ACCRUED / ELIGIBLE / HELD line, plus a BATCHED line
+whose batch journal is not live yet (not submitted / not paid) and which
+carried nothing — a line is never counted twice, and a carried batch's lines
+are **consumed** (PAID) at absorption so the debt is counted exactly once, in
+the new batch's opening.
+
+Carry-forward is **dual-face**: `carryForwardPaise` is the cash face (what the
+next cycle's bank transfer nets) and `carryLedgerViewPaise` is the book face
+(what the journals still owe). `cancel` / `markFailed` / `markReversed` on a
+settling batch re-park **both** faces into the next cycle's opening; absorbing
+a carry into a larger cycle clears **both** on the old batch.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/vendor-reconcile` | SUPER_ADMIN | platform reconcile: every vendor with lines/batches → `{ vendorsChecked, drifted, driftedSample, totalDifferencePaise, ok, vendors[{vendorId, expectedPaise, actualPaise, differencePaise, balanced}] }`. `?id={vendorId}` scopes to one vendor (full single-vendor report incl. `balanced`) |
+| `POST` | `/payouts/admin/vendor-reconcile/repair` | SUPER_ADMIN | body `{ id: vendorId }` (required — a blind platform-wide repair would post an unknown number of journals): posts **one** signed `vendor_backfill` journal for the difference (books under-stated → DR `gateway_clearing` / CR `vendor_payable`; over-stated → the reverse) + a `vendor_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null, balanced:true}`) when balanced. Without `id` while a vendor is drifted → 400 `VENDOR_RECONCILE_NEEDS_ID` |
+
+The backfill amount is **not re-derivable** from any aggregate, so `replay`
+refuses it with `VENDOR_BACKFILL_NOT_REPLAYABLE` — the audit event (keyed to
+the journal) records exactly what was backfilled and by which repair.
+
+The integrity report's new `checks.vendors` row (platform-scoped — vendors are
+platform-global) feeds the platform **Ledger** page, which gained a
+**Vendor payable** subsystem row: drift to the paise, the drifted vendor
+sample, a per-vendor reconcile drill-down, and a repair action that posts the
+signed backfill.
+
+Pre-Phase-17 data: carry batches created before this phase carry no book face.
+`scripts/seed-vendor-carry-views.mjs` is a one-off, idempotent migration that
+recovers `carryLedgerViewPaise` from each such batch's consumed lines (book
+view + opening face + pinned adjustments). Run `DRY_RUN=true` first.

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import Joi from 'joi';
 import PayoutController from '../controllers/payout.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
@@ -12,6 +13,10 @@ import {
 } from '../utils/validators/payout.validators.js';
 
 const router = Router();
+
+// Phase 17 — optional vendor scoping for the reconcile endpoints
+const vendorReconcileQuery = Joi.object({ id: Joi.string().hex().length(24).optional() });
+const vendorReconcileBody = Joi.object({ id: Joi.string().hex().length(24).optional() });
 
 /**
  * /payouts — vendor disbursement (Phase 6.3).
@@ -57,6 +62,9 @@ router.post('/admin/statutory/:id/revert', platformAdmin, validate(payoutIdParam
 // Phase 14 — bank statement reconciliation (the egress truth)
 router.get('/admin/statement', platformAdmin, PayoutController.statementSummary);
 router.post('/admin/statement/ingest', platformAdmin, validate(bankStatementIngestSchema), PayoutController.statementIngest);
+// Phase 17 — vendor payable integrity (the payout lines ARE the ledger)
+router.get('/admin/vendor-reconcile', platformAdmin, validate(vendorReconcileQuery, 'query'), PayoutController.vendorReconcile);
+router.post('/admin/vendor-reconcile/repair', platformAdmin, validate(vendorReconcileBody, 'body'), PayoutController.vendorReconcileRepair);
 router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.getPayout);
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);

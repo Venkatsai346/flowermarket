@@ -287,6 +287,34 @@ class PayoutController {
     res.status(200).json(success(deposit, { message: 'Deposit reverted (reversal journaled)' }));
   });
 
+  // ---- Phase 17: vendor payable integrity (the payout lines ARE the ledger) ----
+
+  vendorReconcile = asyncHandler(async (req, res) => {
+    const vendorId = req.query.id || null;
+    const result = vendorId
+      ? await payoutService.reconcileVendor({ vendorId })
+      : await payoutService.reconcileVendors({});
+    res.status(200).json(success(result, { message: 'Vendor payable reconciliation' }));
+  });
+
+  vendorReconcileRepair = asyncHandler(async (req, res) => {
+    const vendorId = req.body?.id || null;
+    if (!vendorId) {
+      // repair requires a specific vendor — a blind platform-wide repair
+      // would post an unknown number of journals at once
+      const all = await payoutService.reconcileVendors({});
+      if (all.drifted === 0) {
+        res.status(200).json(success({ repaired: null, balanced: true }, { message: 'Already balanced' }));
+        return;
+      }
+      const err = badRequest('Pass {"id": vendorId} to repair a specific vendor — repair is per-vendor by design', 'VENDOR_RECONCILE_NEEDS_ID');
+      res.status(err.status).json({ success: false, message: err.message, code: err.code });
+      return;
+    }
+    const result = await payoutService.reconcileVendor({ vendorId, repair: true });
+    res.status(200).json(success(result, { message: result.repaired ? 'Vendor payable backfilled' : 'Vendor payable already balanced' }));
+  });
+
   // ---- Phase 14: bank statement reconciliation (the egress truth) ----
 
   statementSummary = asyncHandler(async (req, res) => {

@@ -438,6 +438,29 @@ section('15. wallet ledger integrity (Phase 16)');
   check('15.6', 'no-op repair: already balanced, nothing posted', repair.status === 200 && repair.data?.data?.balanced === true && repair.data?.data?.repaired === null, j(repair.data?.data).slice(0, 160));
 }
 
+section('16. vendor payable integrity (Phase 17)');
+{
+  const vrecon = await api('/payouts/admin/vendor-reconcile', { token: adminTok });
+  check('16.1', 'platform vendor reconcile: payable = payout lines, no drift', vrecon.status === 200 && vrecon.data?.data?.ok === true && vrecon.data?.data?.drifted === 0 && Array.isArray(vrecon.data?.data?.vendors), j(vrecon.data?.data).slice(0, 160));
+
+  const vinteg = await api('/ledger/integrity', { token: adminTok });
+  check('16.2', 'integrity report: vendors check present and ok', vinteg.status === 200 && vinteg.data?.data?.checks?.vendors?.ok === true, j(vinteg.data?.data?.checks?.vendors).slice(0, 160));
+
+  const vrbac1 = await api('/payouts/admin/vendor-reconcile', { token: custTok });
+  const vrbac2 = await api('/payouts/admin/vendor-reconcile/repair', { method: 'POST', token: custTok });
+  check('16.3', 'vendor reconcile endpoints are platform-admin only', vrbac1.status === 403 && vrbac2.status === 403, `reconcile=${vrbac1.status} repair=${vrbac2.status}`);
+
+  const vrepair = await api('/payouts/admin/vendor-reconcile/repair', { method: 'POST', token: adminTok });
+  check('16.4', 'no-op repair: already balanced, nothing posted', vrepair.status === 200 && vrepair.data?.data?.balanced === true && vrepair.data?.data?.repaired === null, j(vrepair.data?.data).slice(0, 160));
+
+  const listed = Boolean(vrecon.data?.data?.vendors?.[0]?.vendorId);
+  const vid = listed ? vrecon.data.data.vendors[0].vendorId : '6a9e00000000000000000001';
+  const vs = await api('/payouts/admin/vendor-reconcile?id=' + vid, { token: adminTok });
+  // a listed vendor reconciles balanced; an unknown vendor answers a clean
+  // zero report (0 lines, 0 due, balanced) — never a 500
+  check('16.5', 'per-vendor scope: single vendor reconciles balanced', vs.status === 200 && vs.data?.data?.balanced === true && (!listed || (vs.data?.data?.openLines === 0 && vs.data?.data?.expectedPaise === 0)), j(vs.data?.data).slice(0, 160));
+}
+
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);
 console.log(`E2E-LIVE: ${passed}/${results.length} cases passed`);

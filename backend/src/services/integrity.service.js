@@ -1,5 +1,6 @@
 import ledgerService from './ledger.service.js';
 import walletService from './wallet.service.js';
+import payoutService from './payout.service.js';
 import domainEventService from './domainEvent.service.js';
 import searchIndexer from './searchIndexer.service.js';
 import DeliverySlot from '../models/deliverySlot.model.js';
@@ -38,7 +39,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -51,6 +52,7 @@ class IntegrityService {
       this._notificationCheck(scope),
       domainEventService.verifyChains({ tenantId }).catch((e) => ({ error: e?.message || String(e), ok: false })),
       this._walletCheck(scope),
+      this._vendorCheck(),
     ]);
 
     const ledger = {
@@ -84,6 +86,10 @@ class IntegrityService {
       events: { ...events, ok: true }, // the audit store has no "drift" — it is the reference
       notifications,
       wallet,
+      // Phase 17: the vendor payable is a real ledger account — every vendor's
+      // account must equal its unsettled payout lines + adjustments + carry.
+      // Platform-scoped (vendors and payable accounts are platform-global).
+      vendors,
       // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
       // deleted or re-ordered rows) are a DRIFT — the strongest signal in
       // the report. Unanchored rows are normal while repairChain catches up.
@@ -118,6 +124,16 @@ class IntegrityService {
     try {
       const r = await walletService.ledgerReconcile({ tenantId: scope.tenantId || null });
       return { ...r, ok: r.balanced };
+    } catch (e) {
+      return { error: e?.message || String(e), ok: false };
+    }
+  }
+
+  /** Phase 17: vendor payables must equal the payout lines owed to them. */
+  async _vendorCheck() {
+    try {
+      const r = await payoutService.reconcileVendors({});
+      return { ...r, ok: r.ok };
     } catch (e) {
       return { error: e?.message || String(e), ok: false };
     }

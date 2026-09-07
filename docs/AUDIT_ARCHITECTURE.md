@@ -652,3 +652,88 @@ reconcile, integrity, e2e — agreed the books were balanced.
   types, drift → detect → signed backfill → balanced, journal deletion →
   findDrift → replay restores exact paise, backfill replay refusal, trial
   balance + audit chain with wallet journals mixed in.
+## Part 8 — Phase 17: vendor ledger integrity (`vendor_payable` is a real ledger account)
+
+Phases 12–16 made the platform side honest: every paisa that enters (PSP
+settlement), leaves (bank transfer, refunds, wallet credit), or is owed
+(statutory, wallet liability) has exactly one journal owner. Phase 17 turns
+the same lens on the **payables side** — the `vendor_payable:{vendor}`
+accounts that sale/refund/clawback journals have been moving all along.
+Before this phase nothing ever asked *do the books match what the payout
+lines say we owe?* — a vendor's payable could drift from its own payout
+history (a lost journal, a manual edit, a bug that double-posts or
+forgets) and the only way to notice was a vendor complaining.
+
+### The invariant
+
+For every vendor, to the paise, at all times:
+
+```
+vendor_payable:{v}  =  Σ lineLedgerView (counted lines)
+                    +  Σ adjustments      (counted)
+                    +  Σ carryLedgerViewPaise   (carry-forward batches, carry ≠ 0)
+                    +  Σ openingLedgerViewPaise (settled-out batches)
+```
+
+where `lineLedgerView` is the line's **book face** — gross − GST − commission,
+signed by line type (sales positive, clawbacks negative) — and "counted"
+means: any ACCRUED / ELIGIBLE / HELD line, plus a BATCHED line whose batch
+journal is not live (not yet submitted/paid) and which carried nothing.
+
+The subtlety this phase had to get right: **a line is counted exactly once,
+in exactly one place.** When a cycle carries a debt forward, the old batch's
+`carryForwardPaise` moves into the new batch's opening — and at absorption
+the old batch's lines are **consumed** (PAID) and its carry zeroed. Zero the
+carry but leave the lines BATCHED and the debt is counted twice (once "pinned
+in a zero-carry batch", once in the new opening) — a permanent ghost drift of
+exactly the debt. The hermetic §4 of `smoke-vendors` proves the full
+cancel → fail → reverse → pay journey leaves **zero** residue.
+
+Carry is therefore **dual-face**: the cash face (`carryForwardPaise`) is what
+the next bank transfer nets; the book face (`carryLedgerViewPaise`) is what
+the journals still owe. Every settle-out path (`cancel`, `markFailed`,
+`markReversed`) re-parks **both** faces into the next cycle's opening;
+absorption clears **both** on the source batch and consumes its lines.
+
+### The ledger view is a cache — drift is injected at the right layer
+
+`AccountBalance` rows are materialized (only `$inc`'d at post). Deleting a
+journal **does not** roll the balance back — so a white-box "the journal was
+lost" test must also roll the view, exactly as the crash-window that lost the
+journal would have left it. The smoke suite's §6/§7 do precisely that and
+watch detection, repair, and refusal behave at the paise.
+
+### Backfill — signed, audited, never guessed
+
+`reconcileVendor({repair: true})` on a drifted vendor posts **one**
+`vendor_backfill` journal, signed by the direction of the difference
+(under-stated: DR `gateway_clearing` / CR `vendor_payable`; over-stated: the
+reverse), with a `vendor_backfill` domain event appended **first** carrying
+the difference in its payload and **the journal's own idempotency key**
+(`vendor_backfill:{vendorId}:{ts}`) — so the event↔journal chain and
+`findDrift` see one fact, not two. Like the wallet backfill, the amount is
+the *difference* — a measured fact, not re-derivable — so `replay` refuses it
+with `VENDOR_BACKFILL_NOT_REPLAYABLE`. Repair is **per-vendor by design**:
+the platform endpoint without an `id` reports drift but refuses to post
+(`VENDOR_RECONCILE_NEEDS_ID`), because a blind platform-wide repair would
+post an unknown number of journals at once.
+
+### Where it shows up
+
+- `GET /payouts/admin/vendor-reconcile` (SUPER_ADMIN) — platform reconcile
+  (per-vendor detail) or `?id=` single-vendor report.
+- `POST /payouts/admin/vendor-reconcile/repair` (SUPER_ADMIN) — the
+  one-journal, per-vendor repair.
+- Integrity report `checks.vendors` (platform-scoped — vendors are
+  platform-global) → the ledger page's **Vendor payable** row (A38 now
+  requires all 9 subsystems), with drift to the paise and a repair action.
+- `smoke-vendors` (90 checks): the invariant after every lifecycle step,
+  debt-loss regression (cancel/fail/reverse of a carrying batch re-parks,
+  absorption consumes, zero residue), adjustments posted at creation and
+  drained at pay, drift → signed backfill → balanced → no-op second repair,
+  journal loss → findDrift → replay refused → manual signed re-post, trial
+  balance + audit chain with vendor journals mixed in.
+- `scripts/seed-vendor-carry-views.mjs` — one-off, idempotent recovery of
+  `carryLedgerViewPaise` for pre-Phase-17 carry batches from their consumed
+  lines (the live tenant needed no run: its one legacy carry had already
+  been absorbed).

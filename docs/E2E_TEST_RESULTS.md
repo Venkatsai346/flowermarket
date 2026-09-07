@@ -48,14 +48,17 @@ updated, and log/tenant discovery in the e2e scripts is now dynamic.)
 | smoke-marketplace | 14/14 |
 | smoke-media | 8/8 |
 | smoke-gst | 58/58 |
-| smoke-payouts | 58/58 |
+| smoke-payouts | 143/143 (grew through Phases 11–17: bank settlement, statutory, statement, clawback, refund/carry integrity) |
+| smoke-wallet (Phase 16) | 57/57 |
+| smoke-vendors (Phase 17) | 90/90 |
 | smoke-worker (leased claims, reaper, backoff/DLQ, single-flight) | 6/6 |
 | smoke-observability (healthz/readyz/metrics, outbox lag, heartbeat, jobs) | 7/7 |
 | smoke-payments (webhook idempotency, amount verify, reconciliation, metrics) | 13/13 |
 | smoke-audit (trace propagation, exactly-once append, crash-window replay, orphan restore, refund/cancel chain) | 15/15 |
 
 ### C. Live E2E (`backend/scripts/e2e-live.mjs`, real HTTP against :4000)
-**79/79 cases passed.** Covers: ranked search + catalog + categories/brands/
+**104/104 cases passed** (current — see the Phase re-verification sections below; the per-phase sections are the authoritative record). Snapshot text below:
+**79/79 cases passed** (Phase 10 snapshot). Covers: ranked search + catalog + categories/brands/
 product/stock + suggest + plans + default-tenant fallback; phone-OTP auth
 (verify + wrong-OTP reject + 401); addresses + wallet; cart → slot →
 server-quoted checkout (UPI mock, charged==quote, order-number format); admin
@@ -458,3 +461,20 @@ one `wallet_backfill` journal (now visible in the journal list + audit
 store), after which every layer agreed the books were balanced.
 
 CI counts synced in `.github/workflows/ci.yml`: live 99 checks, admin browser 44.
+## Phase 17 re-verification — vendor ledger integrity (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-vendors` (NEW) | **90/90** — `vendor_payable:{vendor}` treated as a real ledger account: invariant `books == Σ line views + Σ adjustments + Σ carry + Σ openings` holds after every lifecycle step (accrue, refund-before-batch, clawback to the paise, cancel/fail/reverse of a carrying batch re-parks the debt, next cycle absorbs it and pays the reduced net); dual-face carry (cash face for the bank + book face for the journal) survives absorption without double-count; adjustments post at creation and drain at pay time; white-box drift → exact paise detected → signed non-replayable backfill (DR clearing / CR vendor payable when under-stated, reversed when over) → balanced → no-op second repair; deleting the backfill journal → `findDrift` flags it → replay refused with `VENDOR_BACKFILL_NOT_REPLAYABLE` (never guesses) → manual signed re-post restores balance; trial balance + audit chain hold with vendor journals mixed in |
+| `smoke-payouts` | **143/143** (absorption fix re-verified: a carried batch's lines are CONSUMED at absorption, so the debt is counted exactly once — in the new batch's opening — and the books stay balanced) |
+| `smoke:all` (24 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **104/104** (+§16: platform vendor reconcile `ok` with per-vendor detail; integrity `checks.vendors.ok`; 403s for customer on both admin endpoints; no-op repair posts nothing; per-vendor scoped reconcile balanced) |
+| Admin browser UI | **44/44** (A38 now requires the **Vendor payable** row: "all 9 subsystems reported") |
+
+The live stack came in **clean**: 0 zero-face legacy carry batches (the one
+from the Phase 15 run had already been absorbed), so the one-off
+`scripts/seed-vendor-carry-views.mjs` migration (recovers `carryLedgerViewPaise`
+from a carry batch's consumed lines for pre-Phase-17 data) found nothing to do
+and the first live reconcile balanced to the paise with no repair.
+
+CI counts synced in `.github/workflows/ci.yml`: live 104 checks, admin browser 44.

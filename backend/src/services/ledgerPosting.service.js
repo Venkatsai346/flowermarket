@@ -286,6 +286,67 @@ class LedgerPostingService {
   }
 
   /**
+   * Phase 17: a manual, reason-coded vendor adjustment is a money fact the
+   * moment it is recorded — post it immediately (DR/CR vendor_payable vs
+   * clearing), signed. The payout journal still drains it when the batch
+   * pays, exactly like a line; this just keeps the books current in between.
+   */
+  async postAdjustment({ adjustment }) {
+    const a = adjustment;
+    const amt = Math.round(Number(a.amountPaise) || 0);
+    if (amt === 0) throw new AppError('Adjustment amount must be non-zero', { status: 422, code: 'ADJUSTMENT_ZERO' });
+    const vCode = ledgerAccounts.vendorPayable(a.vendorId);
+    const lines = amt > 0
+      ? [
+        { accountCode: ledgerAccounts.gatewayClearing(), debitPaise: amt, creditPaise: 0, memo: `adjustment ${a.reasonCode}${a.note ? ` — ${a.note}` : ''}` },
+        { accountCode: vCode, debitPaise: 0, creditPaise: amt, memo: 'adjustment' },
+      ]
+      : [
+        { accountCode: vCode, debitPaise: -amt, creditPaise: 0, memo: `adjustment ${a.reasonCode}${a.note ? ` — ${a.note}` : ''}` },
+        { accountCode: ledgerAccounts.gatewayClearing(), debitPaise: 0, creditPaise: -amt, memo: 'adjustment' },
+      ];
+    return ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.ADJUSTMENT,
+      idempotencyKey: `adjustment:payout_adjustment:${a._id}`,
+      lines,
+      refType: 'payout_adjustment',
+      refId: a._id,
+      tenantId: null,
+      meta: { reasonCode: a.reasonCode, note: a.note || null },
+    });
+  }
+
+  /**
+   * Phase 17: a one-time reconciliation of a vendor's payable against the
+   * payout lines that should be on the books. Signed: `differencePaise > 0`
+   * means the books UNDER-state what we owe (DR clearing / CR vendor_payable);
+   * `< 0` the reverse. Exactly one journal, audited, never replayed.
+   */
+  async postVendorBackfill({ vendorId, differencePaise, note = null, idempotencyKey = null }) {
+    const diff = Math.round(Number(differencePaise) || 0);
+    if (diff === 0) throw new AppError('Backfill difference must be non-zero', { status: 422, code: 'VENDOR_BACKFILL_EMPTY' });
+    const vCode = ledgerAccounts.vendorPayable(vendorId);
+    const lines = diff > 0
+      ? [
+        { accountCode: ledgerAccounts.gatewayClearing(), debitPaise: diff, creditPaise: 0, memo: `vendor backfill: under-stated payable${note ? ` — ${note}` : ''}` },
+        { accountCode: vCode, debitPaise: 0, creditPaise: diff, memo: 'vendor backfill' },
+      ]
+      : [
+        { accountCode: vCode, debitPaise: -diff, creditPaise: 0, memo: `vendor backfill: over-stated payable${note ? ` — ${note}` : ''}` },
+        { accountCode: ledgerAccounts.gatewayClearing(), debitPaise: 0, creditPaise: -diff, memo: 'vendor backfill' },
+      ];
+    return ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.VENDOR_BACKFILL,
+      idempotencyKey: idempotencyKey || `vendor_backfill:${vendorId}:${new Date().toISOString()}`,
+      lines,
+      refType: 'vendor',
+      refId: vendorId,
+      tenantId: null,
+      meta: { differencePaise: diff, note: note || null },
+    });
+  }
+
+  /**
    * Backfill sweep — post sale journals for orders that reached CONFIRMED
    * without one (ledger introduced after the order, or a crash between the
    * saga step and the post). Idempotent, resumable, safe to run nightly.
