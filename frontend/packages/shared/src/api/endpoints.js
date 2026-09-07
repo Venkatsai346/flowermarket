@@ -225,6 +225,10 @@ export function createEndpoints(client) {
         savePolicy: (body) => c.put('/payouts/admin/policy', body),
         settlements: (q = {}) => c.get('/payouts/admin/settlements', { query: q }),
         ingestSettlements: (body) => c.post('/payouts/admin/settlements/ingest', body),
+        // Phase 13 — statutory deposits (TCS/TDS to the government)
+        statutory: (q = {}) => c.get('/payouts/admin/statutory', { query: q }),
+        statutoryDeposit: (body) => c.post('/payouts/admin/statutory/deposit', body),
+        statutoryRevert: (id, body) => c.post(`/payouts/admin/statutory/${id}/revert`, body),
         sweepEligibility: () => c.post('/payouts/admin/eligibility/sweep'),
         computeCycle: (body) => c.post('/payouts/admin/cycle/compute', body),
         holdLines: (body) => c.post('/payouts/admin/lines/hold', body),

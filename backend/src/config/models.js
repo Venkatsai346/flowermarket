@@ -39,6 +39,8 @@ const MODEL_FILES = [
   // ---- Phase 11: tamper-evident audit chain + fiscal periods ----
   'auditChain.model.js',
   'fiscalPeriod.model.js',
+  // ---- Phase 13: statutory deposits (TCS/TDS to the government) ----
+  'statutoryDeposit.model.js',
 ];
 
 export default MODEL_FILES;

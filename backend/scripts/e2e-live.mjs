@@ -353,6 +353,27 @@ section('12. cash gate: PSP settlement (Phase 12)');
   check('12.5', 're-ingesting the same order is idempotent', ing2.data?.data?.posted === 0 && ing2.data?.data?.skipped === 1, JSON.stringify(ing2.data?.data).slice(0, 120));
 }
 
+// Phase 13 — statutory deposits (TCS/TDS to the government)
+section('13. statutory deposits (Phase 13)');
+{
+  const s = await api('/payouts/admin/statutory', { token: adminTok });
+  const d = s.data?.data || {};
+  check('13.1', 'statutory summary: TCS + TDS picture (owed / deposited / reverts)',
+    s.status === 200 && ['tcs', 'tds'].every((k) => d[k] && typeof d[k].outstandingPaise === 'number' && typeof d[k].netDepositedPaise === 'number'),
+    JSON.stringify({ tcs: d.tcs, tds: d.tds }).slice(0, 140));
+  check('13.2', 'nothing is owed on a fresh book (liabilities 0)', d.tcs?.outstandingPaise === 0 && d.tds?.outstandingPaise === 0, JSON.stringify({ tcs: d.tcs?.outstandingPaise, tds: d.tds?.outstandingPaise }));
+
+  // over-deposit guard: you cannot pay the government more than you withheld
+  const over = await api('/payouts/admin/statutory/deposit', { method: 'POST', token: adminTok, body: { statute: 'tcs', amount: 1, utr: 'E2E-CHAVS-0001' } });
+  check('13.3', 'over-deposit refused with the actual balance (409)', over.status === 409 && over.data?.code === 'STATUTORY_OVER_DEPOSIT', `status=${over.status} code=${over.data?.code}`);
+  check('13.4', 'nothing posted by the refused deposit', (await api('/payouts/admin/statutory', { token: adminTok })).data?.data?.tcs?.outstandingPaise === 0, 'tcs unchanged');
+
+  // RBAC: the customer token cannot touch statutory money
+  const r1 = await api('/payouts/admin/statutory', { token: custTok });
+  const r2 = await api('/payouts/admin/statutory/deposit', { method: 'POST', token: custTok, body: { statute: 'tds', amount: 1, utr: 'E2E-26Q-0001' } });
+  check('13.5', 'RBAC: statutory endpoints SUPER_ADMIN-only', r1.status === 403 && r2.status === 403, `summary=${r1.status} deposit=${r2.status}`);
+}
+
 // ===========================================================================
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);

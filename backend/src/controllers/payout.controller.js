@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import payoutService from '../services/payout.service.js';
+import statutoryService from '../services/statutory.service.js';
 import payoutProvider from '../services/payoutProvider.service.js';
 import VendorPayoutAccount from '../models/vendorPayoutAccount.model.js';
 import Vendor from '../models/vendor.model.js';
@@ -252,6 +253,37 @@ class PayoutController {
       tenantId: req.query.tenantId || null,
     });
     res.status(200).json(success(result, { message: 'Settlement summary' }));
+  });
+
+  // ---- Phase 13: statutory deposits (TCS/TDS to the government) ----
+
+  statutorySummary = asyncHandler(async (req, res) => {
+    const result = await statutoryService.summary({
+      tenantId: req.query.tenantId || null,
+      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+    });
+    res.status(200).json(success(result, { message: 'Statutory summary' }));
+  });
+
+  statutoryDeposit = asyncHandler(async (req, res) => {
+    const { statute, amount, amountPaise, utr, reference } = req.body;
+    const deposit = await statutoryService.deposit({
+      statute, amount, amountPaise, utr, reference,
+      tenantId: req.auth.tenantId || null,
+      actorId: req.auth.userId,
+      traceId: req.headers['x-trace-id'] || null,
+    });
+    res.status(201).json(created(deposit, { message: `${String(statute).toUpperCase()} deposit recorded` }));
+  });
+
+  statutoryRevert = asyncHandler(async (req, res) => {
+    const deposit = await statutoryService.revert({
+      depositId: req.params.id,
+      reason: req.body.reason,
+      actorId: req.auth.userId,
+      traceId: req.headers['x-trace-id'] || null,
+    });
+    res.status(200).json(success(deposit, { message: 'Deposit reverted (reversal journaled)' }));
   });
 
   /**

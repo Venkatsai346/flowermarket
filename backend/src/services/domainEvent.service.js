@@ -355,6 +355,8 @@ class DomainEventService {
       LEDGER_JOURNAL_KIND.PAYOUT_INITIATED,
       LEDGER_JOURNAL_KIND.PAYOUT_REVERSED,
       LEDGER_JOURNAL_KIND.PSP_SETTLED,
+      LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT,
+      LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT_REVERTED,
     ];
     const jQ = { kind: { $in: moneyKinds } };
     if (tenantId) jQ.tenantId = tenantId;
@@ -452,6 +454,45 @@ class DomainEventService {
         await payoutService.unwindPayoutJournal(batch, 'replay: restore reversal');
         return;
       }
+      case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT:
+      case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED: {
+        // the StatutoryDeposit doc is the aggregate of record (findDrift does
+        // not project payloads) — re-post the identical move between
+        // {statute}_payable and bank (idempotent on the key)
+        const ledgerMod = await import('./ledger.service.js');
+        const { default: StatutoryDeposit } = await import('../models/statutoryDeposit.model.js');
+        const ledgerSvc = ledgerMod.default;
+        const { ledgerAccounts } = ledgerMod;
+        const deposit = await StatutoryDeposit.findById(id).lean();
+        if (!deposit) throw Object.assign(new Error('statutory deposit missing'), { code: 'AGGREGATE_MISSING' });
+        const account = deposit.statute === 'tds' ? ledgerAccounts.tdsPayable() : ledgerAccounts.tcsPayable();
+        const isRevert = e.kind === DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED;
+        await ledgerSvc.post({
+          kind: isRevert ? LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT_REVERTED : LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT,
+          idempotencyKey: e.idempotencyKey,
+          lines: isRevert
+            ? [
+              { accountCode: ledgerAccounts.bank(), debitPaise: deposit.amountPaise },
+              { accountCode: account, creditPaise: deposit.amountPaise },
+            ]
+            : [
+              { accountCode: account, debitPaise: deposit.amountPaise },
+              { accountCode: ledgerAccounts.bank(), creditPaise: deposit.amountPaise },
+            ],
+          refType: 'statutory_deposit',
+          refId: id,
+          tenantId: e.tenantId || null,
+          occurredAt: e.occurredAt,
+          meta: {
+            statute: deposit.statute,
+            utr: deposit.utr || null,
+            ...(isRevert ? { reason: deposit.revertReason || 'replay' } : { reference: deposit.reference || null }),
+            source: 'replay',
+          },
+          traceId: e.traceId || null,
+        });
+        return;
+      }
       case DOMAIN_EVENT_TYPE.PSP_SETTLED: {
         // the event payload carries the exact settlement amount — re-post the
         // identical clearing→bank move (idempotent on the same key)
@@ -506,6 +547,16 @@ class DomainEventService {
         kind: DOMAIN_EVENT_TYPE.PSP_SETTLED, aggregateType: 'order', aggregateId: j.refId,
         occurredAt: j.occurredAt,
         payload: { orderNumber: j.meta?.orderNumber, amountPaise: j.totalPaise, utr: j.meta?.utr || null, reference: j.meta?.reference || null, source: 'restored_from_journal' },
+      },
+      [LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT]: {
+        kind: DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT, aggregateType: 'statutory_deposit', aggregateId: j.refId,
+        occurredAt: j.occurredAt,
+        payload: { statute: j.meta?.statute, amountPaise: j.totalPaise, utr: j.meta?.utr || null, reference: j.meta?.reference || null, accountCode: j.meta?.statute === 'tds' ? 'tds_payable' : 'tcs_payable', source: 'restored_from_journal' },
+      },
+      [LEDGER_JOURNAL_KIND.STATUTORY_DEPOSIT_REVERTED]: {
+        kind: DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED, aggregateType: 'statutory_deposit', aggregateId: j.refId,
+        occurredAt: j.occurredAt,
+        payload: { statute: j.meta?.statute, amountPaise: j.totalPaise, utr: j.meta?.originalUtr || null, reason: j.meta?.reason || null, accountCode: j.meta?.statute === 'tds' ? 'tds_payable' : 'tcs_payable', source: 'restored_from_journal' },
       },
     }[j.kind];
     if (!map) throw Object.assign(new Error(`no event for journal kind ${j.kind}`), { code: 'NO_MAP' });

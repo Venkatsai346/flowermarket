@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   AlertTriangle, Ban, BadgeCheck, Banknote, CalendarClock, CheckCircle2, CircleDollarSign,
-  Eye, FileInput, Landmark, RefreshCw, Send, ShieldAlert, ThumbsDown, ToggleLeft, ToggleRight, Wallet,
+  Eye, FileInput, Landmark, RefreshCw, Scale, Send, ShieldAlert, ThumbsDown, ToggleLeft, ToggleRight, Undo2, Wallet,
 } from 'lucide-react';
 import { inr, fmtDate } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -400,6 +400,145 @@ function SettlementCard() {
   );
 }
 
+/**
+ * Statutory deposits (Phase 13): the closing entry for TCS (GST s.52) and
+ * TDS (IT s.194-O) withheld from vendor payouts. Paid out to the government
+ * with the deposit-channel UTR on the record; reverts (operator corrections)
+ * are journaled, never deleted.
+ */
+function StatutoryCard() {
+  const { data, loading, refetch } = useApi(() => api.payouts.admin.statutory(), []);
+  const { busy, run } = useAction();
+  const [statute, setStatute] = useState('tcs');
+  const [amount, setAmount] = useState('');
+  const [utr, setUtr] = useState('');
+  const [confirmingRevert, setConfirmingRevert] = useState(null);
+  const [revertReason, setRevertReason] = useState('');
+
+  const doDeposit = async () => {
+    try {
+      await run(() => api.payouts.admin.statutoryDeposit({ statute, amount: Number(amount), utr }));
+      toast.success(`${String(statute).toUpperCase()} deposit recorded`);
+      setAmount('');
+      setUtr('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const doRevert = async () => {
+    try {
+      await run(() => api.payouts.admin.statutoryRevert(confirmingRevert, { reason: revertReason }));
+      toast.success('Deposit reverted — the reversal is journaled and the liability is back');
+      setConfirmingRevert(null);
+      setRevertReason('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const rowFor = (statuteKey, label, sub) => {
+    const d = data?.[statuteKey];
+    return (
+      <div className="rounded-lg border border-slate-200 p-3">
+        <p className="flex items-center justify-between text-[11px] uppercase tracking-wide text-slate-400">
+          <span className="flex items-center gap-1.5"><Scale className="h-3.5 w-3.5" /> {label}</span>
+          {d && d.outstandingPaise > 0 && <Badge tone="amber">{sub}</Badge>}
+        </p>
+        <p className="mt-1 text-lg font-semibold tabular-nums text-slate-900">
+          {inr((d?.outstandingPaise || 0) / 100)} <span className="text-xs font-normal text-slate-400">still owed</span>
+        </p>
+        <p className="mt-0.5 text-[11px] text-slate-400">
+          withheld {inr(((d?.depositedPaise || 0) + (d?.outstandingPaise || 0)) / 100)} · deposited (net) {inr((d?.netDepositedPaise || 0) / 100)} · {(d?.revertedPaise || 0) > 0 ? `reverted ${inr((d.revertedPaise || 0) / 100)}` : 'no reverts'}
+        </p>
+      </div>
+    );
+  };
+
+  return (
+    <Card
+      className="mb-5"
+      title="Statutory deposits — TCS & TDS"
+      subtitle="Payouts withhold TCS (GST s.52) and TDS (IT s.194-O). This pays the government — every deposit carries its UTR, sits on the tamper-evident chain, and reverts are journaled, never deleted."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading the statutory picture…</p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {rowFor('tcs', 'TCS — GST s.52', 'deposit due')}
+            {rowFor('tds', 'TDS — IT s.194-O', 'deposit due')}
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <Field label="Statute" className="w-28!">
+              <Select value={statute} onChange={(e) => setStatute(e.target.value)}>
+                <option value="tcs">TCS</option>
+                <option value="tds">TDS</option>
+              </Select>
+            </Field>
+            <Field label="Amount (₹)" className="w-32!">
+              <Input type="number" min="0" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
+            </Field>
+            <Field label="Deposit UTR / reference" className="w-52!">
+              <Input value={utr} onChange={(e) => setUtr(e.target.value)} placeholder="CHAVS-… / 26Q-…" />
+            </Field>
+            <Button icon={Banknote} loading={busy} disabled={!Number(amount) || utr.trim().length < 3} onClick={doDeposit}>
+              Record deposit
+            </Button>
+          </div>
+
+          {(data?.recentDeposits || []).length > 0 && (
+            <div>
+              <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">Recent deposits</p>
+              <ul className="divide-y divide-slate-100">
+                {data.recentDeposits.slice(0, 8).map((d) => (
+                  <li key={d.id} className="flex flex-wrap items-center gap-3 py-1.5 text-xs">
+                    <Badge tone={d.status === 'reverted' ? 'slate' : 'emerald'}>{d.status}</Badge>
+                    <span className="font-medium uppercase">{d.statute}</span>
+                    <span className="tabular-nums font-semibold">{inr((d.amountPaise || 0) / 100)}</span>
+                    <span className="font-mono text-slate-400">{d.utr}</span>
+                    <span className="text-slate-400">{fmtDate(d.createdAt)}</span>
+                    {d.status === 'reverted' ? (
+                      <span className="text-slate-400">— {d.revertReason}</span>
+                    ) : (
+                      <button type="button" className="ml-auto text-slate-400 hover:text-rose-600" onClick={() => setConfirmingRevert(d.id)}>
+                        <Undo2 className="h-3.5 w-3.5" /> revert
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {confirmingRevert && (
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
+              <p className="text-sm font-semibold text-slate-800">Revert this deposit?</p>
+              <p className="text-xs text-slate-500">
+                A reversal journal (DR bank / CR payable) is posted — the liability returns to the balance and the
+                deposit stays on the trail, marked reverted with your reason.
+              </p>
+              <Field label="Why is this reverted?" required>
+                <Input value={revertReason} onChange={(e) => setRevertReason(e.target.value)} placeholder="Recorded on the audit trail" />
+              </Field>
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" onClick={() => { setConfirmingRevert(null); setRevertReason(''); }}>Back</Button>
+                <Button variant="danger" loading={busy} disabled={revertReason.trim().length < 3} onClick={doRevert}>
+                  Confirm revert
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function PlatformPayoutsPage() {
   const [page, setPage] = useState(1);
   const [state, setState] = useState('');
@@ -457,6 +596,8 @@ export default function PlatformPayoutsPage() {
       />
 
       <SettlementCard />
+
+      <StatutoryCard />
 
       {(needsAttention.length > 0 || inFlightTotal > 0) && (
         <div className="mb-4 grid gap-3 sm:grid-cols-2">

@@ -8,6 +8,7 @@ import {
   payoutListQuerySchema, payoutIdParamSchema, computeCycleSchema, approveSchema,
   reasonSchema, holdSchema, releaseSchema, adjustmentSchema, payoutAccountSchema,
   kycSchema, kycReviewSchema, kycListQuerySchema, payoutPolicySchema, settlementIngestSchema,
+  statutoryDepositSchema, statutoryRevertSchema,
 } from '../utils/validators/payout.validators.js';
 
 const router = Router();
@@ -49,6 +50,10 @@ router.post('/admin/lines/release', platformAdmin, validate(releaseSchema), Payo
 router.post('/admin/adjustments', platformAdmin, validate(adjustmentSchema), PayoutController.addAdjustment);
 router.post('/admin/kyc/:id/review', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(kycReviewSchema), PayoutController.reviewKyc);
 router.get('/admin/settlements', platformAdmin, PayoutController.settlementSummary);
+// Phase 13 — statutory deposits (TCS/TDS to the government)
+router.get('/admin/statutory', platformAdmin, PayoutController.statutorySummary);
+router.post('/admin/statutory/deposit', platformAdmin, validate(statutoryDepositSchema), PayoutController.statutoryDeposit);
+router.post('/admin/statutory/:id/revert', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(statutoryRevertSchema), PayoutController.statutoryRevert);
 router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.getPayout);
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);

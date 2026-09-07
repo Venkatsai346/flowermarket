@@ -440,7 +440,79 @@ async function main() {
   await payoutService.upsertPolicy({ scope: 'platform', payload: { requirePspSettlement: false } });
 
   // -------------------------------------------------------------------------
-  section('12. final integrity');
+  section('13. statutory deposits — TCS/TDS paid to the government (Phase 13)');
+  // -------------------------------------------------------------------------
+  const { default: statutory } = await import('../src/services/statutory.service.js');
+  const { default: StatutoryDepositM } = await import('../src/models/statutoryDeposit.model.js');
+
+  const tcs0 = (await ledgerService.balance(ledgerAccounts.tcsPayable())).balancePaise;
+  const tds0 = (await ledgerService.balance(ledgerAccounts.tdsPayable())).balancePaise;
+  // two paid batches: section 6 (₹25 TCS / ₹5.90 TDS) + the ambiguous one that
+  // reconciliation resolved as PAID (₹2000 sale → ₹10 TCS / ₹2 TDS)
+  eq('TCS liability carried from the paid batches = ₹35', tcs0, toPaise(35));
+  eq('TDS liability carried from the paid batches = ₹7.90', tds0, toPaise(7.9));
+
+  // over-deposit guard: you cannot pay the government more than you withheld
+  let over = null;
+  try { await statutory.deposit({ statute: 'tcs', amountPaise: tcs0 + 1, utr: 'CHAVS-000', tenantId: tenant._id }); } catch (e) { over = e; }
+  check('★ depositing more than withheld is rejected', over?.code === 'STATUTORY_OVER_DEPOSIT', over?.code || 'no error');
+  eq('and nothing moved', (await ledgerService.balance(ledgerAccounts.tcsPayable())).balancePaise, tcs0);
+  const bank0 = (await ledgerService.balance(ledgerAccounts.bank())).balancePaise;
+
+  // deposit the TCS in full — the liability clears, the bank pays out
+  const dep1 = await statutory.deposit({ statute: 'tcs', amountPaise: tcs0, utr: 'CHAVS-1001', reference: 'GSTR-8 / CHAVS 2026-08', tenantId: tenant._id });
+  eq('TCS payable cleared to zero', (await ledgerService.balance(ledgerAccounts.tcsPayable())).balancePaise, 0);
+  eq('bank paid out exactly ₹25', (await ledgerService.balance(ledgerAccounts.bank())).balancePaise, bank0 - tcs0);
+  const ev1 = await DomainEvent.findOne({ idempotencyKey: `statutory_deposit:${dep1._id}` }).lean();
+  check('the deposit event is chained', Boolean(ev1) && typeof ev1.hash === 'string');
+
+  // operator correction: revert — the liability returns, zero-net on the bank
+  const rev1 = await statutory.revert({ depositId: dep1._id, reason: 'wrong UTR recorded — redone' });
+  eq('revert restores the TCS liability', (await ledgerService.balance(ledgerAccounts.tcsPayable())).balancePaise, tcs0);
+  eq('revert is zero-net on the bank', (await ledgerService.balance(ledgerAccounts.bank())).balancePaise, bank0);
+  check('the revert carries its reason on the trail', rev1.status === 'reverted' && String(rev1.revertReason).length >= 3);
+  let doubleRevert = null;
+  try { await statutory.revert({ depositId: dep1._id, reason: 'again' }); } catch (e) { doubleRevert = e; }
+  check('double revert is refused', doubleRevert?.code === 'STATUTORY_ALREADY_REVERTED', doubleRevert?.code);
+
+  // re-deposit TCS + clear the whole TDS liability
+  const dep2 = await statutory.deposit({ statute: 'tcs', amountPaise: tcs0, utr: 'CHAVS-1002', tenantId: tenant._id });
+  const dep3 = await statutory.deposit({ statute: 'tds', amountPaise: tds0, utr: '26Q-0007', tenantId: tenant._id });
+  eq('TDS payable cleared to zero', (await ledgerService.balance(ledgerAccounts.tdsPayable())).balancePaise, 0);
+  void dep3;
+
+  // crash window on the TDS deposit journal → replay re-posts it exactly
+  const tdsJournal = await LedgerJournalM.findOne({ kind: 'statutory_deposit', 'meta.statute': 'tds' }).lean();
+  await LedgerEntryM.deleteMany({ journalId: tdsJournal._id });
+  await LedgerJournalM.deleteOne({ _id: tdsJournal._id });
+  await ledgerService.verifyBalances({ repair: true }); // a pre-commit crash never $inc'd
+  const driftS = await domainEvents.findDrift({});
+  check('drift names the missing deposit journal', driftS.missingJournals.some((m) => m.kind === 'statutory_deposit'), JSON.stringify(driftS.missingJournals.map((m) => m.kind)));
+  await domainEvents.replay({ limit: 50 });
+  const tdsJournal2 = await LedgerJournalM.findOne({ kind: 'statutory_deposit', 'meta.statute': 'tds' }).lean();
+  eq('★ replay re-posts the TDS deposit to the exact paise', tdsJournal2 ? tdsJournal2.totalPaise : null, tds0);
+
+  // the other direction: delete the TCS (CHAVS-1002) event → restored from its journal
+  await DomainEvent.deleteOne({ kind: 'statutory_deposit', 'payload.utr': 'CHAVS-1002' });
+  const driftS2 = await domainEvents.findDrift({});
+  check('drift names the missing deposit event', driftS2.missingEvents.some((m) => m.kind === 'statutory_deposit'), JSON.stringify(driftS2.missingEvents.map((m) => m.kind)));
+  await domainEvents.replay({ limit: 50 });
+  const evBack = await DomainEvent.findOne({ kind: 'statutory_deposit', 'payload.utr': 'CHAVS-1002' }).lean();
+  check('replay restored the deposit event', Boolean(evBack));
+  void dep2;
+
+  // the statutory picture
+  const sumS = await statutory.summary({});
+  check('summary: TCS fully deposited (net of the revert)', sumS.tcs.outstandingPaise === 0 && sumS.tcs.netDepositedPaise === tcs0 && sumS.tcs.revertedPaise === tcs0, JSON.stringify(sumS.tcs));
+  check('summary: TDS deposited, nothing owed', sumS.tds.outstandingPaise === 0 && sumS.tds.netDepositedPaise === tds0, JSON.stringify(sumS.tds));
+  check('summary lists the deposits with their UTRs', sumS.recentDeposits.length >= 3 && sumS.recentDeposits.every((d) => d.utr), JSON.stringify(sumS.recentDeposits.map((d) => d.utr)));
+  eq('exactly three deposits recorded', await StatutoryDepositM.countDocuments({}), 3);
+
+  const tbS = await ledgerService.trialBalance();
+  check('★ trial balance still balances after deposits + revert + replay', tbS.balanced, `diff ${tbS.differencePaise}`);
+
+  // -------------------------------------------------------------------------
+  section('14. final integrity');
   // -------------------------------------------------------------------------
   const finalTb = await ledgerService.trialBalance();
   check('★ trial balance across every journal', finalTb.balanced, `diff ${finalTb.differencePaise} paise`);

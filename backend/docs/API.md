@@ -661,3 +661,20 @@ Payouts console), the eligibility sweep only promotes a line to `eligible`
 when its order has a `psp_settled` journal — vendors are paid for an order
 only after the customer's cash has genuinely reached the platform's bank.
 The sweep reports `blocked` for gated lines.
+
+## Phase 13 — statutory deposits (TCS/TDS to the government)
+
+The closing entry for the withholdings: payouts credit `tcs_payable` /
+`tds_payable`; these endpoints pay the government (DR payable / CR bank).
+Balance-guarded (you cannot deposit more than you withheld), UTR-mandatory,
+event-first + chained, reverts journaled never deleted. Full design:
+`docs/AUDIT_ARCHITECTURE.md` (Part 4).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/statutory` | SUPER_ADMIN | `{ tcs, tds: { payableBalancePaise, depositedPaise, netDepositedPaise, revertedPaise, deposits, outstandingPaise }, recentDeposits[{ id, statute, amountPaise, utr, status, createdAt, revertReason }] }` |
+| `POST` | `/payouts/admin/statutory/deposit` | SUPER_ADMIN | body `{ statute: 'tcs'\|'tds', amount \| amountPaise, utr (min 3 chars), reference? }` → 201 the deposit. **409 `STATUTORY_OVER_DEPOSIT`** when the amount exceeds the payable balance (details quote it) |
+| `POST` | `/payouts/admin/statutory/:id/revert` | SUPER_ADMIN | body `{ reason (min 3 chars) }` → posts the mirror journal (DR bank / CR payable), marks the deposit reverted with the reason. 409 `STATUTORY_ALREADY_REVERTED` |
+
+Both journal kinds (`statutory_deposit`, `statutory_deposit_reverted`) are
+chained and covered by the event↔journal drift check in both directions.

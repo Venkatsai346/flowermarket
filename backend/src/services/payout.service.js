@@ -1131,8 +1131,11 @@ class PayoutService {
       status: { $ne: ORDER_STATUS.CANCELLED },
       ...(tenantId ? { tenantId } : {}),
     };
+    const unsettledBase = settledOrderIds.length
+      ? { ...paidBase, _id: { $nin: settledOrderIds.map((s) => new mongoose.Types.ObjectId(s)) } }
+      : paidBase;
     const [orders, ordersTotal, unsettledAgg] = await Promise.all([
-      Order.find(paidBase)
+      Order.find(unsettledBase)
         .select('orderNumber totalAmount paymentSummary')
         .sort({ 'paymentSummary.paidAt': 1 }).limit(50).lean(),
       Order.countDocuments(paidBase),

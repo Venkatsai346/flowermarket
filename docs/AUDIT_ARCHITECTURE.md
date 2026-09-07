@@ -392,3 +392,58 @@ nothing to trust.
 - The gate is per-order, not per-amount: a partially-settled order still
   unlocks the line. Over-settlement shows up as a smaller (or negative)
   `gateway_clearing` balance on the summary — visible, not silently netted.
+
+# Part 4 — Phase 13: statutory deposits (the closing entry)
+
+Payouts withhold TCS (GST s.52) and TDS (IT s.194-O) and credit
+`tcs_payable` / `tds_payable` — money the platform holds **on behalf of the
+government**. Phase 13 pays it out, closing the statutory loop:
+
+```
+payout_initiated:      DR vendor_payable / gst_output_payable
+                          CR bank  +  CR tcs_payable  +  CR tds_payable
+statutory_deposit:     DR tcs_payable / tds_payable
+                          CR bank                     (money leaves for the govt)
+statutory_deposit_reverted:  the mirror (operator correction — never deleted)
+```
+
+## Rules
+
+- **Balance-guarded:** a deposit can never exceed the payable balance —
+  `409 STATUTORY_OVER_DEPOSIT` quoting the actual amount withheld. You cannot
+  pay the government money you did not withhold.
+- **UTR mandatory:** the deposit-channel reference (CHAVS / 26Q ack) is
+  required — a statutory payment without its reference is a compliance gap.
+- **Event-first + chained:** `statutory_deposit:{id}` is appended to the
+  tamper-evident chain before the journal; both deposit and revert are
+  covered by the bidirectional drift check. A deleted deposit journal is
+  re-posted by `replay()` from the `StatutoryDeposit` aggregate (the exact
+  paise); a deleted event is restored from the journal.
+- **Reverts, never deletes:** `revert` posts the mirror journal
+  (`DR bank / CR {statute}_payable`), keeps the original, and stamps the
+  reason on the record. The summary reports `deposited` (every posted
+  deposit journal), `reverted`, `netDeposited` (cash the government kept) and
+  `outstanding` (the payable balance — what is still owed).
+
+## Verification (2026-09-07)
+
+- Hermetic `smoke-payouts` §13 (suite 94/94): the exact carried liability
+  (₹35 TCS / ₹7.90 TDS from the two paid batches, incl. the ambiguous one
+  reconciliation resolved as PAID); over-deposit refused with nothing posted;
+  deposit clears the payable and pays the bank out exactly; the deposit event
+  is chained; revert restores the liability zero-net on the bank with its
+  reason on the trail (double-revert refused); crash-window replay re-posts a
+  deposit to the exact paise; deleted event restored; trial balanced.
+- Live `e2e-live` §13 (89 total): summary shape, zero-liability invariant on
+  a fresh book, over-deposit 409, nothing posted by a refused deposit, RBAC.
+- Browser `ui-admin` A43 (42 total): the card renders both statutes; an
+  impossible deposit through the UI is refused with the real liability.
+
+## Boundary notes
+
+- Deposits are operator-driven against whatever the payable balance is —
+  partial deposits are legitimate (the balance simply stays until paid).
+  Statute-specific filing rhythms (CHAVS monthly, 26Q quarterly) are a
+  reporting concern outside this ledger's scope.
+- A revert is an internal correction, not a government refund request — the
+  audit trail (original + reversal + reason) is what a reviewer needs.

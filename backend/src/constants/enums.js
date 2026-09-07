@@ -704,6 +704,8 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   PERIOD_CLOSED: 'period_closed',
   PERIOD_REOPENED: 'period_reopened',
   PSP_SETTLED: 'psp_settled', // PSP settlement ingested: cash reached our bank
+  STATUTORY_DEPOSIT: 'statutory_deposit', // TCS/TDS paid to the government
+  STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted',
   // Phase 11 — the audit chain was deliberately re-linked after a legitimate
   // row-set change (e.g. an event restored from its journal). Manual only.
   CHAIN_REBUILT: 'chain_rebuilt',
@@ -714,6 +716,8 @@ export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
   DOMAIN_EVENT_TYPE.PAYOUT_INITIATED,
   DOMAIN_EVENT_TYPE.PAYOUT_REVERSED,
   DOMAIN_EVENT_TYPE.PSP_SETTLED,
+  DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT,
+  DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED,
 ]);
 
 // ---- Price history ----
@@ -836,6 +840,14 @@ export const LEDGER_JOURNAL_KIND = Object.freeze({
   TDS_DEDUCTED: 'tds_deducted',
   COMMISSION_INVOICED: 'commission_invoiced',
   ADJUSTMENT: 'adjustment',             // manual, reason-coded, audited
+  STATUTORY_DEPOSIT: 'statutory_deposit',       // TCS/TDS paid to the government
+  STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted', // operator correction
+});
+
+/** Which statutes the platform withholds from vendor payouts. */
+export const STATUTORY_STATUTE = Object.freeze({
+  TCS: 'tcs', // GST s.52 — e-commerce operator, deposited via CHAVS (GSTR-8)
+  TDS: 'tds', // IT s.194-O — deposited with Form 26Q
 });
 
 /**

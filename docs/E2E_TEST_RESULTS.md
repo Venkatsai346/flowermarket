@@ -398,3 +398,14 @@ CI counts synced in `.github/workflows/ci.yml`: live 79 checks, admin browser 40
 | Live proof (manual) | summary → ingest → clearing/bank move + chained event visible in the integrity report |
 
 CI counts synced in `.github/workflows/ci.yml`: live 84 checks, admin browser 41.
+
+## Phase 13 re-verification — statutory deposits (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-payouts` | **94/94** (+§13: exact carried liability; over-deposit refused; deposit clears payable + pays bank exactly; deposit event chained; revert restores zero-net with reason, double-revert refused; crash-window replay to the exact paise; event restore; trial balanced) |
+| `smoke:all` (18 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **89/89** (+§13: summary shape, zero-liability invariant, over-deposit 409 with nothing posted, RBAC 403s) |
+| Admin browser UI | **42/42** (A43: TCS + TDS cards render, impossible deposit refused through the UI quoting the real liability; console-err=1 = the intentional 409, A36's convention) |
+
+CI counts synced in `.github/workflows/ci.yml`: live 89 checks, admin browser 42.
