@@ -629,6 +629,10 @@ export const AUDIT_ACTION = Object.freeze({
   KYC_REVIEW: 'kyc_review',
   BANK_VERIFY: 'bank_verify',
 
+  // ---- Phase 11: fiscal period close ----
+  PERIOD_CLOSE: 'period_close',
+  PERIOD_REOPEN: 'period_reopen',
+
   // ---- Phase 6.4: domains ----
   DOMAIN_ADD: 'domain_add',
   DOMAIN_VERIFY: 'domain_verify',
@@ -696,6 +700,12 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   PAYMENT_CONFIRMED: 'payment_confirmed',
   PAYMENT_FAILED: 'payment_failed',
   ORDER_CANCELLED: 'order_cancelled',
+  // Phase 11 — period close lifecycle (no journal; the close is itself the fact)
+  PERIOD_CLOSED: 'period_closed',
+  PERIOD_REOPENED: 'period_reopened',
+  // Phase 11 — the audit chain was deliberately re-linked after a legitimate
+  // row-set change (e.g. an event restored from its journal). Manual only.
+  CHAIN_REBUILT: 'chain_rebuilt',
 });
 export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
   DOMAIN_EVENT_TYPE.SALE_CAPTURED,

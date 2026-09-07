@@ -233,7 +233,16 @@ async function main() {
   assert.equal(replay2.eventsRestored, 1, `audit row restored (got ${JSON.stringify(replay2)})`);
   report = await integrityService.report({ tenantId: tenant.id });
   assert.equal(report.checks.ledger.ok, true, 'ledger ok after orphan restore');
-  ok('orphan journal → audit row restored by replay (backbone completeness)');
+  // the restored row took a NEW chain slot — the deleted slot left a visible
+  // break (the chain does the right thing: a row-set change is detectable)
+  let v6 = await domainEventService.verifyChain(String(tenant.id));
+  assert.ok(v6.breaks.some((b) => b.type === 'broken_link'), `deleted slot visible to the chain (got ${JSON.stringify(v6.breaks)})`);
+  const rebuilt = await domainEventService.rebuildChain({ tenantId: tenant.id });
+  assert.ok(rebuilt.relinked >= 2, `chain re-linked deliberately (got ${JSON.stringify(rebuilt)})`);
+  v6 = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v6.breaks.length, 0, 'chain clean after deliberate rebuild');
+  assert.ok((await M.DomainEvent.findOne({ kind: 'chain_rebuilt' })), 'the rebuild itself is recorded as a fact');
+  ok('orphan restore: ledger healed; the deleted slot left a visible break; deliberate rebuild re-linked the chain (recorded)');
 
   // ---------- 6b. GATEWAY REFUND CRASH WINDOW ----------
   // gateway refund created, process died before initiate() finished: the row
@@ -305,6 +314,137 @@ async function main() {
   const integNoTok = await call('/admin/integrity', { token: null });
   assert.equal(integNoTok.status, 401, 'integrity requires auth');
   ok('integrity is auth-gated');
+
+  // ---------- 10. PHASE 11: hash chain — anchor, verify, tamper, delete ----------
+  const periodService = (await import('../src/services/period.service.js')).default;
+  const AuditChain = M.AuditChain;
+
+  // events appended above already hold chain slots (append-time chaining);
+  // simulate a CRASHED append — row inserted without a slot (seq null) —
+  // and prove the backfill folds it in, in stable order
+  await M.DomainEvent.create({
+    tenantId: tenant.id, kind: 'payment_failed', aggregateType: 'payment', aggregateId: 'simcrash0000000000001',
+    idempotencyKey: `payment_failed:simcrash:${Date.now()}`, occurredAt: new Date(),
+  });
+  let repair = await domainEventService.repairChain({ tenantId: tenant.id, limit: 200 });
+  assert.equal(repair.anchored, 1, `crashed append folded into the chain (got ${JSON.stringify(repair)})`);
+  let v = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v.breaks.length, 0, `chain verifies after backfill (got ${JSON.stringify(v.breaks)})`);
+  assert.equal(v.unanchored, 0, 'no unanchored rows left');
+  const anchor = await AuditChain.findOne({ tenantId: tenant.id }).lean();
+  const maxSeq = Math.max(...(await M.DomainEvent.find({ tenantId: tenant.id, seq: { $ne: null } }).select('seq').lean()).map((e) => e.seq));
+  assert.equal(anchor.tailSeq, maxSeq, 'anchor tail is the stored chain tail (gaps are legal — deletions are not invisible)');
+  ok(`hash chain: ${v.eventsVerified} events verified, crashed append folded in (backfill works)`);
+
+  // duplicate append must not fork the chain or leave a gap
+  const anchorBefore = await AuditChain.findOne({ tenantId: tenant.id }).lean();
+  const dup2 = await domainEventService.append({
+    tenantId: tenant.id, kind: 'sale_captured', aggregateType: 'order', aggregateId: orderId,
+    idempotencyKey: saleKey,
+  });
+  assert.equal(dup2.duplicate, true);
+  const anchorAfterDup = await AuditChain.findOne({ tenantId: tenant.id }).lean();
+  assert.equal(anchorAfterDup.tailSeq, anchorBefore.tailSeq, 'duplicate append left the chain untouched');
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v.breaks.length, 0, 'still clean after duplicate');
+  ok('chain: duplicate append is gapless (rollback works)');
+
+  // TAMPER: edit a stored event's payload → hash mismatch
+  const victim = await M.DomainEvent.findOne({ tenantId: tenant.id, seq: { $ne: null }, kind: 'sale_captured' }).lean();
+  const originalPayload = victim.payload;
+  await M.DomainEvent.updateOne({ _id: victim._id }, { $set: { payload: { ...originalPayload, amountPaise: 1 } } });
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.ok(v.breaks.some((b) => b.type === 'hash_mismatch' && b.seq === victim.seq), `tamper detected (got ${JSON.stringify(v.breaks)})`);
+  await M.DomainEvent.updateOne({ _id: victim._id }, { $set: { payload: originalPayload } });
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v.breaks.length, 0, 'clean after restore');
+  ok('chain: content tamper detected (hash_mismatch) and cleared on restore');
+
+  // TAIL DELETION: the anchor still points at the deleted row (tail_mismatch
+  // when a predecessor survives, tail_missing when the whole chain vanishes)
+  const tail = await M.DomainEvent.findOne({ tenantId: tenant.id, seq: anchorAfterDup.tailSeq }).lean();
+  await M.DomainEvent.deleteOne({ _id: tail._id });
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.ok(v.breaks.some((b) => b.type === 'tail_mismatch' || b.type === 'tail_missing'), `tail deletion detected (got ${JSON.stringify(v.breaks)})`);
+  await M.DomainEvent.create(tail); // restore the exact row
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v.breaks.length, 0, 'clean after tail restore');
+  ok('chain: tail deletion detected (tail_missing) and cleared on restore');
+
+  // MIDDLE DELETION: the successor's link breaks
+  const seqs = (await M.DomainEvent.find({ tenantId: tenant.id, seq: { $ne: null } }).select('seq').sort({ seq: 1 }).lean()).map((e) => e.seq);
+  const middleSeq = seqs[Math.floor(seqs.length / 2)];
+  const middle = await M.DomainEvent.findOne({ tenantId: tenant.id, seq: middleSeq }).lean();
+  await M.DomainEvent.deleteOne({ _id: middle._id });
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.ok(v.breaks.some((b) => b.type === 'broken_link' && b.seq > middleSeq) || v.breaks.some((b) => b.type === 'broken_front'), `middle deletion detected (got ${JSON.stringify(v.breaks)})`);
+  await M.DomainEvent.create(middle);
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v.breaks.length, 0, 'clean after middle restore');
+  ok('chain: middle deletion detected (broken_link) and cleared on restore');
+
+  // the integrity report carries the chain check
+  report = await integrityService.report({ tenantId: tenant.id });
+  assert.equal(report.checks.auditChain.ok, true, `report auditChain ok (got ${JSON.stringify(report.checks.auditChain)})`);
+  assert.equal(report.overall, 'ok', `overall ok with chain (got ${report.overall})`);
+  ok('integrity report includes the audit chain check');
+
+  // ---------- 11. PHASE 11: fiscal period close makes the ledger immutable ----------
+  const pk = periodService.periodKeyFor(new Date());
+  await periodService.closePeriod({ tenantId: tenant.id, periodKey: pk, req: { userId: admin.id } });
+
+  const guardPost = async () => ledgerService.post({
+    kind: 'sale_captured', idempotencyKey: `period_guard:${Date.now()}`,
+    tenantId: tenant.id,
+    lines: [
+      { accountCode: 'gateway_clearing:platform', debitPaise: 10000 },
+      { accountCode: `tenant_payable:${tenant.id}`, creditPaise: 10000 },
+    ],
+  });
+  let guardErr = null;
+  try { await guardPost(); } catch (e) { guardErr = e; }
+  assert.equal(guardErr?.code, 'PERIOD_CLOSED', `closed period blocks postings (got ${guardErr?.code || 'no error'})`);
+  ok(`closed period ${pk}: new journal postings refused (PERIOD_CLOSED)`);
+
+  // the period report is computed from the journal (what actually posted)
+  const pr = await periodService.periodReport({ tenantId: tenant.id, periodKey: pk });
+  assert.equal(pr.state, 'closed');
+  assert.ok(pr.journals >= 4, `period report covers posted journals (got ${pr.journals})`);
+  assert.ok(pr.grossCapturedPaise > 0, 'gross captured reported');
+  assert.equal(pr.periodBalanced, true, 'period balances');
+  ok(`period report: ${pr.journals} journals, gross ${pr.grossCapturedPaise}p, net ${pr.netCapturedPaise}p, balanced`);
+
+  // the close itself is a chained audit event
+  v = await domainEventService.verifyChain(String(tenant.id));
+  assert.equal(v.breaks.length, 0, 'close event chained cleanly');
+  assert.ok((await M.DomainEvent.findOne({ kind: 'period_closed', refId: pk })), 'period_closed event recorded');
+
+  // reopen → postings flow again
+  await periodService.reopenPeriod({ tenantId: tenant.id, periodKey: pk, req: { userId: admin.id } });
+  const guardKey = `period_guard_reopen:${Date.now()}`;
+  const reopenedPost = await guardPost2(guardKey);
+  assert.equal(reopenedPost.created, true, 'posting allowed after reopen');
+  // keep event↔journal coverage clean for the final report
+  await domainEventService.append({
+    tenantId: tenant.id, kind: 'sale_captured', aggregateType: 'order', aggregateId: orderId,
+    idempotencyKey: guardKey, occurredAt: new Date(),
+    payload: { source: 'period_guard_test' },
+  });
+  assert.ok((await M.DomainEvent.findOne({ kind: 'period_reopened', refId: pk })), 'period_reopened event recorded');
+  report = await integrityService.report({ tenantId: tenant.id });
+  assert.equal(report.overall, 'ok', `overall ok after close/reopen cycle (got ${JSON.stringify(report.checks.ledger?.eventJournalCoverage)})`);
+  ok('reopen restores posting; close/reopen events on the chain; coverage still clean');
+
+  async function guardPost2(key) {
+    return ledgerService.post({
+      kind: 'sale_captured', idempotencyKey: key,
+      tenantId: tenant.id,
+      lines: [
+        { accountCode: 'gateway_clearing:platform', debitPaise: 10000 },
+        { accountCode: `tenant_payable:${tenant.id}`, creditPaise: 10000 },
+      ],
+    });
+  }
 
   console.log(`\n=== smoke-audit: ${passed} checks passed ===`);
 }

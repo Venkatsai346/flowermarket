@@ -229,6 +229,24 @@ class LedgerService {
     const tId = toId(tenantId);
     const vId = toId(vendorId);
 
+    // ---- Phase 11: a closed fiscal period is immutable ----
+    // The journal (already-posted) case short-circuited above, so this only
+    // blocks NEW postings into closed books. While closed, live money facts
+    // accumulate as detectable drift (event w/o journal) until reopen —
+    // the integrity report is the alarm, the reopen is the act.
+    if (tId) {
+      const closedPeriod = await import('../models/fiscalPeriod.model.js')
+        .then((m) => m.default.findOne({
+          tenantId: tId, state: 'closed', start: { $lte: when }, end: { $gt: when },
+        }).lean());
+      if (closedPeriod) {
+        throw new AppError(
+          `Fiscal period ${closedPeriod.periodKey} is closed — reopen it before posting`,
+          { status: 409, code: 'PERIOD_CLOSED', details: { periodKey: closedPeriod.periodKey } }
+        );
+      }
+    }
+
     try {
       const journal = await this.withOptionalTransaction(async (session) => {
         const opts = session ? { session } : {};

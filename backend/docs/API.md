@@ -611,3 +611,33 @@ minted and echoed in the `x-trace-id` response header. Full design:
 **Replay response:** `{ scope, journalsReposted, eventsRestored, failed, errors[] }`.
 
 **Trace chain row:** `{ kind: 'order.created'|'order.status.*'|'order.paid'|'payment.created'|'journal.*'|'event.*'|'payout.*', at, detail?, paise? }` plus `{ traceId, orderCount, events }`.
+
+## Phase 11 — tamper-evident chain + fiscal period close
+
+Every domain event is hash-chained per tenant
+(`hash = sha256(prevHash|canonical-content)`, genesis `'0'×64`, tail anchor
+in the separate `auditchains` collection). A content edit, a deleted row or a
+lost tail all surface as a named break in the integrity report
+(`hash_mismatch`, `broken_front`, `broken_link`, `tail_missing`,
+`tail_mismatch`). **Breaks are never auto-healed** — the only re-link is a
+deliberate, audited `rebuild-chain` that appends a `chain_rebuilt` fact
+event. Full design: `docs/AUDIT_ARCHITECTURE.md` (Part 2).
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `POST` | `/ledger/integrity/replay-chain` | SUPER_ADMIN | anchor **unanchored** rows (crashed appends) in seq order; idempotent; body `{limit?}` (default 500) → `{ anchored, failed[] }` |
+| `POST` | `/ledger/integrity/rebuild-chain` | SUPER_ADMIN | deliberate manual re-link: re-hash the whole chain in seq order (seqs preserved), reset the anchor, append a `chain_rebuilt` fact → `{ relinked, tailHash }`. Use after restoring rows from the source system |
+| `GET` | `/ledger/periods` | SUPER_ADMIN | fiscal period list (all tenants; `?tenantId=` scopes) |
+| `GET` | `/ledger/periods/:periodKey` | SUPER_ADMIN | **period report derived from the journal** for `YYYY-MM`: `{ periodKey, state, closedAt, reopenedAt, journals, grossCapturedPaise, refundsPaise, netCapturedPaise, payoutsInitiatedPaise, payoutsReversedPaise, byKind, periodBalanced }` |
+| `POST` | `/ledger/periods/:periodKey/close` | SUPER_ADMIN | close the month (allowed mid-month — operator freeze); appends a chained `period_closed` event → `{ periodKey, state }` |
+| `POST` | `/ledger/periods/:periodKey/reopen` | SUPER_ADMIN | reopen; appends a chained `period_reopened` event; unblocks posting → `{ periodKey, state }` |
+| `GET` | `/admin/periods` | ADMIN | tenant-scoped period list |
+| `GET` | `/admin/periods/:periodKey` | ADMIN | tenant-scoped period report (same shape) |
+
+**Guard:** `ledger.post()` rejects any **new** journal whose `occurredAt`
+falls inside a closed period with **409 `PERIOD_CLOSED`** (`details.periodKey`).
+Idempotent re-posts (replay of an already-journaled event) pass, so
+self-healing works across a closed boundary.
+
+**Integrity report additions:** `checks.auditChain: { eventsVerified,
+unanchored, breaks: [{ seq, type, idempotencyKey? }], ok }`.

@@ -36,6 +36,9 @@ const MODEL_FILES = [
   'systemHeartbeat.model.js',
   // ---- Phase 10: money audit backbone ----
   'domainEvent.model.js',
+  // ---- Phase 11: tamper-evident audit chain + fiscal periods ----
+  'auditChain.model.js',
+  'fiscalPeriod.model.js',
 ];
 
 export default MODEL_FILES;

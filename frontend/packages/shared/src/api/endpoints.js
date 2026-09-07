@@ -133,6 +133,9 @@ export function createEndpoints(client) {
       // Phase 10 — money audit backbone
       integrity: () => c.get('/admin/integrity'),
       trace: (id) => c.get(`/admin/traces/${id}`),
+      // Phase 11 — fiscal periods (tenant-scoped, read)
+      periods: () => c.get('/admin/periods'),
+      periodReport: (periodKey) => c.get(`/admin/periods/${periodKey}`),
     },
 
     public: {
@@ -316,6 +319,13 @@ export function createEndpoints(client) {
       // Phase 10 — system integrity report + replay (SUPER_ADMIN)
       integrity: () => c.get('/ledger/integrity'),
       replay: (body = {}) => c.post('/ledger/integrity/replay', body),
+      // Phase 11 — hash chain ops + fiscal periods (SUPER_ADMIN)
+      replayChain: (body = {}) => c.post('/ledger/integrity/replay-chain', body),
+      rebuildChain: (body = {}) => c.post('/ledger/integrity/rebuild-chain', body),
+      periods: () => c.get('/ledger/periods'),
+      periodReport: (periodKey) => c.get(`/ledger/periods/${periodKey}`),
+      closePeriod: (periodKey) => c.post(`/ledger/periods/${periodKey}/close`),
+      reopenPeriod: (periodKey) => c.post(`/ledger/periods/${periodKey}/reopen`),
     },
 
     /** Phase 6.2 — GST registration, documents and rate policy. */

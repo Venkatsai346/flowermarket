@@ -37,7 +37,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -48,6 +48,7 @@ class IntegrityService {
       this._payoutCheck(scope),
       domainEventService.stats({ tenantId }),
       this._notificationCheck(scope),
+      domainEventService.verifyChains({ tenantId }).catch((e) => ({ error: e?.message || String(e), ok: false })),
     ]);
 
     const ledger = {
@@ -80,6 +81,17 @@ class IntegrityService {
       payouts: { ...payouts, ok: payouts.missingJournals === 0 },
       events: { ...events, ok: true }, // the audit store has no "drift" — it is the reference
       notifications,
+      // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
+      // deleted or re-ordered rows) are a DRIFT — the strongest signal in
+      // the report. Unanchored rows are normal while repairChain catches up.
+      auditChain: {
+        tenants: chain.tenants ?? 0,
+        eventsVerified: chain.eventsVerified ?? 0,
+        unanchored: chain.unanchored ?? 0,
+        breaks: (chain.breaks || []).slice(0, 10),
+        error: chain.error || null,
+        ok: !chain.error && (chain.breaks?.length ?? 0) === 0 && (chain.unanchored ?? 0) < 100,
+      },
     };
 
     const overall = Object.values(checks)

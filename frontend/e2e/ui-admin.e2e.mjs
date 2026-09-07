@@ -640,6 +640,51 @@ await R.check('A39', 'Follow the money: order drawer assembles the trace timelin
 });
 await shot(page, 'a39-trace');
 
+await R.check('A40', 'Fiscal periods: close month via UI → report from journal → reopen', async () => {
+  await page.goto(BASE + '/platform/ledger', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /Fiscal periods/i, 15000);
+  const month = new Date().toISOString().slice(0, 7);
+  // the state badge is a rounded-full span whose exact text is 'open'|'closed'
+  const badgeState = () => page.evaluate(() => {
+    const b = Array.from(document.querySelectorAll('span'))
+      .find((s) => /^(open|closed)$/.test((s.textContent || '').trim()) && (s.className || '').includes('rounded-full'));
+    return b ? b.textContent.trim() : null;
+  });
+  const clickControl = (verbRx) => page.evaluate((m, v) => {
+    const btns = Array.from(document.querySelectorAll('button'));
+    const rowish = btns.find((b) => {
+      const host = b.closest('div[class*="border"]') || b.parentElement;
+      return new RegExp(v).test(b.textContent) && (host?.textContent || '').includes(m);
+    });
+    const target = rowish || btns.find((b) => /Close current month/i.test(b.textContent) && new RegExp(v).test(b.textContent));
+    if (!target) return null;
+    target.click();
+    return target.textContent.trim();
+  }, month, verbRx);
+  const waitBadge = (want) => page.waitForFunction((w) => {
+    const b = Array.from(document.querySelectorAll('span'))
+      .find((s) => /^(open|closed)$/.test((s.textContent || '').trim()) && (s.className || '').includes('rounded-full'));
+    return b && b.textContent.trim() === w;
+  }, { timeout: 20000 }, want);
+
+  // 1) make sure the month is CLOSED (close it if open/unrecorded)
+  if ((await badgeState()) !== 'closed') {
+    const clicked = await clickControl('Close');
+    if (!clicked) throw new Error('no Close control found on the Fiscal periods card');
+    await waitBadge('closed');
+  }
+  // 2) the period report renders, computed from the journal
+  await clickText(page, 'Report');
+  await waitText(page, /Gross captured/i, 15000);
+  await waitText(page, /balanced/i, 10000);
+  // 3) reopen — the books accept postings again
+  const reopened = await clickControl('Reopen');
+  if (!reopened) throw new Error('no Reopen control found after close');
+  await waitBadge('open');
+  return `${month}: closed via UI, report balanced, reopened`;
+});
+await shot(page, 'a40-periods');
+
 // ---------------------------------------------------------------- RBAC + rider
 await R.check('A34', 'RBAC: store admin blocked from vendor console', async () => {
   await page.goto(BASE + '/vendor', { waitUntil: 'networkidle2', timeout: 30000 });

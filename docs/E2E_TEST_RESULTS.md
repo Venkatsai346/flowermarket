@@ -55,7 +55,7 @@ updated, and log/tenant discovery in the e2e scripts is now dynamic.)
 | smoke-audit (trace propagation, exactly-once append, crash-window replay, orphan restore, refund/cancel chain) | 15/15 |
 
 ### C. Live E2E (`backend/scripts/e2e-live.mjs`, real HTTP against :4000)
-**73/73 cases passed.** Covers: ranked search + catalog + categories/brands/
+**79/79 cases passed.** Covers: ranked search + catalog + categories/brands/
 product/stock + suggest + plans + default-tenant fallback; phone-OTP auth
 (verify + wrong-OTP reject + 401); addresses + wallet; cart → slot →
 server-quoted checkout (UPI mock, charged==quote, order-number format); admin
@@ -66,7 +66,12 @@ return pickup+QC→wallet refund; wallet checkout + debit + pre-pick cancel saga
 **money audit backbone (Phase 10 §11):** `x-trace-id` echo, order traceId
 stamping, full trace chain (sale + refund + cancel on one trace, time-ordered),
 platform integrity report `ok` with 100% event↔journal coverage, tenant-scoped
-report, and SUPER_ADMIN-only RBAC on report/replay.
+report, and SUPER_ADMIN-only RBAC on report/replay;
+**tamper-evident chain + fiscal period close (Phase 11 §11.7–11.12):**
+`replay-chain` backfilled the pre-chain history (idempotent), hash-chain
+verifier green (0 breaks / 0 unanchored), SUPER_ADMIN close of the current
+month, period report (closed state, balanced journals, from the journal),
+reopen restoring posting, and the tenant-scoped period list.
 
 ### D. Frontend unit suites
 | App | Result |
@@ -124,7 +129,7 @@ feature exercised through the frontend, real HTTP through the Vite proxies to
 | Polling flips the page Awaiting payment → Confirmed (no refresh) | P06 |
 | Dev toggle: back to sync mode | P07 |
 
-**Admin web — 39/39** (`frontend/e2e/ui-admin.e2e.mjs`)
+**Admin web — 40/40** (`frontend/e2e/ui-admin.e2e.mjs`)
 | Area | Cases |
 |---|---|
 | Login page renders; admin email+password login → dashboard | A01–A02 |
@@ -152,8 +157,9 @@ feature exercised through the frontend, real HTTP through the Vite proxies to
 | Domains page renders | A24 |
 | Platform console: overview / stores / lifecycle / vendor applications / vendors / billing / plans / payouts / ledger | A25–A33 |
 | Payments ops: live async payment → webhook audit → drawer → reconcile | A37 |
-| System integrity: ledger page reports all 7 subsystems + replay action (live, green) | A38 |
+| System integrity: ledger page reports all subsystems + replay action + **audit chain (tamper-evidence) row** (live, green) | A38 |
 | Follow the money: order drawer assembles the trace timeline (order → payment → journal → audit events) | A39 |
+| Fiscal periods: close month via UI → report rendered from the journal (balanced) → reopen | A40 |
 | RBAC: store admin blocked from vendor console | A34 |
 | Rider session: login as UI-created rider → /rider renders | A35 |
 | No page errors / failed API requests | A36 |
@@ -364,3 +370,19 @@ LD_LIBRARY_PATH=/home/user/.browser-libs node ui-storefront.e2e.mjs       # 29/2
 LD_LIBRARY_PATH=/home/user/.browser-libs node ui-async-payment.e2e.mjs   # 7/7
 LD_LIBRARY_PATH=/home/user/.browser-libs node ui-admin.e2e.mjs           # 37/37
 ```
+## Phase 11 re-verification — tamper-evident chain + fiscal close (2026-09-07)
+
+Full pyramid green after the hash chain + period close shipped:
+
+| Layer | Result |
+|---|---|
+| `npm run smoke:all` (18 suites; `smoke-audit` now **25/25** incl. §10–11: crashed-append backfill, gapless duplicate, content tamper → `hash_mismatch`, tail delete → `tail_mismatch`, middle delete → `broken_link`, orphan-restore scar → manual `rebuildChain` → clean + `chain_rebuilt` fact, close → 409 `PERIOD_CLOSED` → balanced report → reopen) | ALL GREEN |
+| `invariants` (8, incl. "no audit action the model would reject" — caught the new `period_close`/`period_reopen` actions on first run) | 8/8 |
+| `e2e-live.mjs` | **79/79** (+§11.7–11.12: chain backfill, verifier green, close, balanced report, reopen, tenant period list) |
+| `async-payment-live.test.mjs` | 14/14 |
+| Storefront browser UI | 29/29 |
+| Async-payment browser UI | 7/7 |
+| Admin browser UI (incl. **A40** fiscal periods: close → report from journal → reopen; A38 now renders the audit-chain row) | **40/40** (console-err=0) |
+| Live tamper proof (manual, real stack) | `replay-chain` anchored 79 rows → 0 breaks / 0 unanchored; edited one stored event's payload → verifier named `hash_mismatch` at the victim seq; restored → clean; close 2026-09 → report (68 journals, balanced) → reopened |
+
+CI counts synced in `.github/workflows/ci.yml`: live 79 checks, admin browser 40.

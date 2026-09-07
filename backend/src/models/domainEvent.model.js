@@ -64,6 +64,15 @@ const DomainEventSchema = new Schema(
     // business time (paidAt / completedAt), not append time
     occurredAt: { type: Date, default: null },
     createdAt: { type: Date, default: Date.now },
+
+    // ---- Phase 11: hash-chained audit log (tamper-evidence) ----
+    // Position in this tenant's chain (null = not yet anchored — repaired
+    // by `repairChain`). Together with prevHash + hash this makes stored
+    // rows verifiable: re-hash the content, check the link, check the tail
+    // against the AuditChain anchor (see docs/AUDIT_ARCHITECTURE.md).
+    seq: { type: Number, default: null, min: 1 },
+    prevHash: { type: String, default: null },
+    hash: { type: String, default: null },
   },
   { collection: 'domainevents' }
 );
@@ -72,6 +81,9 @@ const DomainEventSchema = new Schema(
 DomainEventSchema.index({ kind: 1, occurredAt: 1 });
 DomainEventSchema.index({ aggregateType: 1, aggregateId: 1, occurredAt: 1 });
 DomainEventSchema.index({ tenantId: 1, kind: 1, occurredAt: 1 });
+// chain verification walks one tenant's events in seq order (sparse: events
+// not yet anchored are invisible to this index, which is the point)
+DomainEventSchema.index({ tenantId: 1, seq: 1 }, { unique: true, sparse: true });
 
 toJSONPlugin(DomainEventSchema);
 

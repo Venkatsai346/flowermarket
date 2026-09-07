@@ -148,9 +148,24 @@ class MaintenanceService {
         missingEvents: report.checks.ledger.eventJournalCoverage.missingEvents,
         balanceDrift: report.checks.ledger.balances.drifted,
         searchIndexMissing: report.checks.searchIndex.missing,
+        // Phase 11 — tamper-evidence. Breaks are NEVER auto-healed (healing
+        // a break would bless the tamper); they are surfaced here and in the
+        // integrity report for a human. Unanchored rows ARE auto-repaired —
+        // they are stored events awaiting a chain slot, not evidence issues.
+        chainBreaks: report.checks.auditChain.breaks.length,
+        chainUnanchored: report.checks.auditChain.unanchored,
       };
     } catch (err) {
       out.integrity = { error: err?.message || String(err) };
+    }
+
+    // 11. Phase 11 — fold unanchored audit rows into the hash chain. Safe to
+    //     run always: it only touches rows with seq null, in stable order.
+    try {
+      const { default: domainEventService } = await import('./domainEvent.service.js');
+      out.chainRepair = await domainEventService.repairChain({ tenantId, limit: 500 });
+    } catch (err) {
+      out.chainRepair = { error: err?.message || String(err) };
     }
 
     await auditService.record({

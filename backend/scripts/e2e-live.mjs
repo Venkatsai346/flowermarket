@@ -311,6 +311,24 @@ r = await api('/ledger/integrity', { token: custTok });
 const replayDenied = await api('/ledger/integrity/replay', { method: 'POST', token: custTok, body: {} });
 check('11.6', 'RBAC: replay/report SUPER_ADMIN-only', r.status === 403 && replayDenied.status === 403, `report=${r.status} replay=${replayDenied.status}`);
 
+// Phase 11 — hash chain + fiscal period close
+r = await api('/ledger/integrity/replay-chain', { method: 'POST', token: adminTok, body: { limit: 1000 } });
+check('11.7', 'chain backfill: unanchored rows anchored (idempotent)', r.status === 200 && typeof r.data?.data?.anchored === 'number', `anchored=${r.data?.data?.anchored} failed=${r.data?.data?.failed?.length}`);
+r = await api('/ledger/integrity', { token: adminTok });
+const chain11 = r.data?.data?.checks?.auditChain;
+check('11.8', 'hash chain verified: no breaks, nothing unanchored', r.status === 200 && chain11?.ok === true && chain11?.breaks?.length === 0 && chain11?.unanchored === 0, JSON.stringify(chain11).slice(0, 160));
+{
+  const pk = new Date().toISOString().slice(0, 7); // current UTC month
+  const close = await api(`/ledger/periods/${pk}/close`, { method: 'POST', token: adminTok });
+  check('11.9', 'fiscal period close (SUPER_ADMIN)', close.status === 200 && close.data?.data?.state === 'closed', `status=${close.status} msg=${close.data?.message}`);
+  const pr = await api(`/ledger/periods/${pk}`, { token: adminTok });
+  check('11.10', 'period report: closed state + balanced journals', pr.status === 200 && pr.data?.data?.state === 'closed' && pr.data?.data?.periodBalanced === true && pr.data?.data?.journals >= 1, JSON.stringify({ state: pr.data?.data?.state, journals: pr.data?.data?.journals, gross: pr.data?.data?.grossCapturedPaise, balanced: pr.data?.data?.periodBalanced }).slice(0, 140));
+  const reopen = await api(`/ledger/periods/${pk}/reopen`, { method: 'POST', token: adminTok });
+  check('11.11', 'period reopen restores posting', reopen.status === 200 && reopen.data?.data?.state === 'open', `status=${reopen.status} msg=${reopen.data?.message}`);
+  const adminPeriods = await api('/admin/periods', { token: adminTok });
+  check('11.12', 'tenant period list (admin, tenant-scoped)', adminPeriods.status === 200 && (adminPeriods.data?.data?.items?.length ?? 0) >= 1, `items=${adminPeriods.data?.data?.items?.length}`);
+}
+
 // ===========================================================================
 const passed = results.filter((x) => x.pass).length;
 console.log(`\n${'═'.repeat(64)}`);

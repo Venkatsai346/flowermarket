@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, BookOpenCheck, CheckCircle2, Landmark, RefreshCw, Scale, ShieldAlert, Wrench,
+  AlertTriangle, BookOpenCheck, CheckCircle2, Landmark, Lock, LockOpen, RefreshCw, Scale, ShieldAlert, Wrench,
 } from 'lucide-react';
 import { inr, fmtDateTime } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -172,6 +172,17 @@ function IntegrityCard() {
             <CheckRow name="Payouts" check={c.payouts} detail={c.payouts ? `${c.payouts.batchesChecked} batch(es) · ${c.payouts.missingJournals} missing payout journal(s)` : ''} />
             <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
             <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
+            <CheckRow name="Audit chain (tamper-evidence)" check={c.auditChain} detail={c.auditChain ? `${c.auditChain.eventsVerified} event(s) re-hashed · ${c.auditChain.unanchored} unanchored · ${c.auditChain.breaks.length} break(s)` : ''} />
+            {c.auditChain?.breaks?.length > 0 && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-rose-900">Chain breaks — the audit log does not verify. Investigate; a rebuild re-links the chain but is itself recorded.</p>
+                <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-rose-800">
+                  {c.auditChain.breaks.slice(0, 8).map((b, i) => (
+                    <li key={i}>seq {b.seq}: {b.type}{b.idempotencyKey ? ` — ${b.idempotencyKey}` : ''}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
           {coverage?.samples?.length > 0 && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -185,6 +196,114 @@ function IntegrityCard() {
               </ul>
             </div>
           )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PeriodReport({ periodKey, onClose }) {
+  const { data, loading } = useApi(() => api.ledger.periodReport(periodKey), [periodKey]);
+  if (loading && !data) return <p className="text-xs text-slate-400">Reading the period from the journal…</p>;
+  if (!data) return null;
+  const kindLabel = {
+    sale_captured: 'Sales captured', refund_issued: 'Refunds issued',
+    payout_initiated: 'Payouts initiated', payout_reversed: 'Payouts reversed',
+  };
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-slate-700">Period {periodKey} — from the journal</p>
+        <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">close</button>
+      </div>
+      <div className="mt-2 grid gap-2 text-sm sm:grid-cols-3">
+        <div><p className="text-[11px] uppercase text-slate-400">Gross captured</p><p className="font-semibold text-slate-900">{inr(data.grossCapturedPaise)}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Refunds</p><p className="font-semibold text-slate-900">{inr(data.refundsPaise)}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Net captured</p><p className={cn('font-semibold', data.netCapturedPaise < 0 ? 'text-rose-600' : 'text-slate-900')}>{inr(data.netCapturedPaise)}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Payouts out</p><p className="font-semibold text-slate-900">{inr(data.payoutsInitiatedPaise)}{data.payoutsReversedPaise ? ` (−${inr(data.payoutsReversedPaise)} reversed)` : ''}</p></div>
+        <div><p className="text-[11px] uppercase text-slate-400">Journals</p><p className="font-semibold text-slate-900">{data.journals} · {data.periodBalanced ? 'balanced' : 'UNBALANCED'}</p></div>
+      </div>
+      {Object.keys(data.byKind || {}).length > 0 && (
+        <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
+          {Object.entries(data.byKind).map(([k, v]) => (
+            <li key={k} className="flex justify-between">
+              <span>{kindLabel[k] || k}</span>
+              <span className="tabular-nums">{v.count} · {inr(v.totalPaise)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function PeriodsCard() {
+  const { data, loading, refetch } = useApi(() => api.ledger.periods(), []);
+  const { busy, run } = useAction();
+  const [open, setOpen] = useState(null);
+  const items = data?.items || [];
+
+  const act = async (periodKey, fn, verb) => {
+    try {
+      await run(fn);
+      toast.success(`${verb} ${periodKey}`);
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  return (
+    <Card
+      className="mb-5"
+      title="Fiscal periods"
+      subtitle="Close a month to freeze its books — the ledger refuses new journals dated inside it until it is reopened."
+      actions={<Button variant="secondary" icon={RefreshCw} onClick={refetch}>Refresh</Button>}
+    >
+      {loading && !data ? (
+        <p className="text-sm text-slate-400">Loading periods…</p>
+      ) : items.length === 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-400">No periods recorded yet. Closing the current month creates the record and freezes its books.</p>
+          <Button variant="danger" icon={Lock} loading={busy}
+            onClick={() => act(new Date().toISOString().slice(0, 7), () => api.ledger.closePeriod(new Date().toISOString().slice(0, 7)), 'Closed')}>
+            Close current month
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {items.map((p) => {
+            const closed = p.state === 'closed';
+            return (
+              <div key={p.id || p.periodKey}>
+                <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 px-3 py-2.5">
+                  {closed ? <Lock className="h-4 w-4 shrink-0 text-rose-500" /> : <LockOpen className="h-4 w-4 shrink-0 text-emerald-500" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-slate-800">{p.periodKey} <Badge tone={closed ? 'rose' : 'emerald'}>{closed ? 'closed' : 'open'}</Badge></p>
+                    <p className="text-[11px] text-slate-400">
+                      {closed ? `closed ${fmtDateTime(p.closedAt)}` : 'accepting postings'}
+                      {p.reopenedAt ? ` · reopened ${fmtDateTime(p.reopenedAt)}` : ''}
+                    </p>
+                  </div>
+                  <Button variant="secondary" icon={open === p.periodKey ? null : BookOpenCheck} onClick={() => setOpen(open === p.periodKey ? null : p.periodKey)}>
+                    Report
+                  </Button>
+                  {closed ? (
+                    <Button variant="secondary" icon={LockOpen} loading={busy}
+                      onClick={() => act(p.periodKey, () => api.ledger.reopenPeriod(p.periodKey), 'Reopened')}>
+                      Reopen
+                    </Button>
+                  ) : (
+                    <Button variant="danger" icon={Lock} loading={busy}
+                      onClick={() => act(p.periodKey, () => api.ledger.closePeriod(p.periodKey), 'Closed')}>
+                      Close
+                    </Button>
+                  )}
+                </div>
+                {open === p.periodKey && <PeriodReport periodKey={p.periodKey} onClose={() => setOpen(null)} />}
+              </div>
+            );
+          })}
         </div>
       )}
     </Card>
@@ -267,6 +386,8 @@ export default function LedgerPage() {
       </div>
 
       <IntegrityCard />
+
+      <PeriodsCard />
 
       {drift && !drift.ok && (
         <Card className="mb-5 ring-1 ring-amber-200" title="Drifted accounts" subtitle="The journal is the truth — repair rewrites the view from it.">

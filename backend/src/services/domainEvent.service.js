@@ -1,9 +1,23 @@
+import crypto from 'node:crypto';
 import DomainEvent from '../models/domainEvent.model.js';
+import AuditChain from '../models/auditChain.model.js';
 import Order from '../models/order.model.js';
 import RefundTransaction from '../models/refundTransaction.model.js';
 import PayoutBatch from '../models/payoutBatch.model.js';
 import LedgerJournal from '../models/ledgerJournal.model.js';
 import { DOMAIN_EVENT_TYPE, DOMAIN_EVENT_JOURNAL_KINDS, LEDGER_JOURNAL_KIND, ORDER_STATUS, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
+
+// the chain starts from a fixed genesis (no prevHash before the first event)
+const GENESIS_HASH = '0'.repeat(64);
+const CAS_ATTEMPTS = 5;
+
+/** Sort-object-keys JSON — the hash must not depend on key order. */
+function canonicalJson(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(',')}]`;
+  const keys = Object.keys(v).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(v[k])}`).join(',')}}`;
+}
 
 /**
  * DomainEventService — the append-only money audit backbone (Phase 10).
@@ -29,8 +43,23 @@ import { DOMAIN_EVENT_TYPE, DOMAIN_EVENT_JOURNAL_KINDS, LEDGER_JOURNAL_KIND, ORD
 
 class DomainEventService {
   /**
-   * Append a domain event exactly once. `idempotencyKey` must be stable for
-   * the fact (for journal-carrying kinds it is the journal's idempotencyKey).
+   * Append a domain event exactly once, chained into the tenant's audit
+   * chain (Phase 11). `idempotencyKey` must be stable for the fact (for
+   * journal-carrying kinds it is the journal's idempotencyKey).
+   *
+   * Chain protocol (per tenant, anchored in `auditchains`):
+   *   1. duplicate pre-check — known keys never touch the chain;
+   *   2. compare-and-set reservation: read the anchor tail, propose
+   *      `seq = tailSeq + 1`, `prevHash = tailHash`, compute `hash` over the
+   *      canonical content, then conditionally advance the anchor — so two
+   *      processes (API + worker) can append concurrently without forking;
+   *   3. insert the event with its seq/prevHash/hash;
+   *   4. on a lost duplicate race, roll the anchor back (no gaps).
+   *
+   * Never throws. If the CAS is lost 5× (pathological contention) or the
+   * insert fails, the row is inserted UNANCHORED (seq null) — the chain
+   * check reports it and `repairChain()` folds it in. The money path is
+   * never gated by the audit layer.
    * @returns {Promise<{created:boolean, duplicate?:boolean, event?:object}>}
    */
   async append({
@@ -38,15 +67,33 @@ class DomainEventService {
     idempotencyKey = null, payload = null, occurredAt = null,
     refType = null, refId = null, schemaVersion = 1,
   }) {
+    let reserved = null;
     try {
-      const event = await DomainEvent.create({
+      if (idempotencyKey) {
+        const existing = await DomainEvent.findOne({ idempotencyKey }).lean();
+        if (existing) return { created: false, duplicate: true, event: existing };
+      }
+      const doc = {
         tenantId, traceId, kind, schemaVersion,
         aggregateType, aggregateId: String(aggregateId),
         refType, refId: refId ? String(refId) : null,
         idempotencyKey, payload, occurredAt: occurredAt ? new Date(occurredAt) : null,
-      });
+      };
+
+      if (tenantId) reserved = await this._reserveChainSlot(String(tenantId), doc);
+      if (reserved) { doc.seq = reserved.seq; doc.prevHash = reserved.prevHash; doc.hash = reserved.hash; }
+
+      const event = await DomainEvent.create(doc);
       return { created: true, event };
     } catch (err) {
+      if (err?.code === 11000 && reserved) {
+        // lost the race on the unique key — roll the anchor back (CAS on the
+        // exact state we proposed) so the chain has no gap
+        await AuditChain.findOneAndUpdate(
+          { tenantId, seq: reserved.seq, tailHash: reserved.hash, tailSeq: reserved.seq },
+          { $set: { seq: reserved.prevSeq, tailHash: reserved.prevTailHash, tailSeq: reserved.prevSeq } }
+        ).catch(() => {});
+      }
       if (err?.code === 11000) {
         const existing = idempotencyKey
           ? await DomainEvent.findOne({ idempotencyKey }).lean()
@@ -57,6 +104,193 @@ class DomainEventService {
       console.error(`[domain-events] append ${kind}/${aggregateId} failed:`, err?.message || err);
       return { created: false, error: err?.message || String(err) };
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Phase 11 — hash chain (tamper-evidence)
+  // -------------------------------------------------------------------------
+
+  /** SHA-256 over the canonical content of one chain event. */
+  _eventHash({ tenantId, seq, prevHash, doc }) {
+    const content = [
+      String(tenantId), String(seq), doc.kind, doc.aggregateType, doc.aggregateId,
+      doc.refType || '', doc.refId || '', doc.idempotencyKey || '',
+      doc.occurredAt ? new Date(doc.occurredAt).toISOString() : '',
+      doc.traceId || '', canonicalJson(doc.payload === undefined ? null : doc.payload),
+    ].join('|');
+    return crypto.createHash('sha256').update(`${prevHash}|${content}`, 'utf8').digest('hex');
+  }
+
+  /**
+   * CAS-reserve the next slot of the tenant chain. Returns
+   * `{seq, prevHash, hash, prevSeq, prevTailHash}` or null when the CAS is
+   * lost `CAS_ATTEMPTS` times in a row (caller inserts unanchored).
+   */
+  async _reserveChainSlot(tenantId, doc) {
+    for (let attempt = 0; attempt < CAS_ATTEMPTS; attempt += 1) {
+      const anchor = await AuditChain.findOne({ tenantId }).lean();
+      const prevSeq = anchor ? anchor.tailSeq : 0;
+      const prevTailHash = anchor ? anchor.tailHash : GENESIS_HASH;
+      const seq = prevSeq + 1;
+      const hash = this._eventHash({ tenantId, seq, prevHash: prevTailHash, doc });
+      const update = { $set: { seq, tailHash: hash, tailSeq: seq } };
+      try {
+        const saved = anchor
+          ? await AuditChain.findOneAndUpdate({ tenantId, tailSeq: prevSeq }, update, { new: true }).lean()
+          : await AuditChain.findOneAndUpdate({ tenantId }, update, { upsert: true, new: true }).lean();
+        if (saved) {
+          return { seq, prevHash: prevTailHash, hash, prevSeq, prevTailHash };
+        }
+      } catch (e) {
+        if (e?.code !== 11000) throw e; // upsert race — retry as normal
+      }
+      // the tail moved under us — retry against the new tail
+    }
+    return null;
+  }
+
+  /**
+   * Verify one tenant's chain. Re-hashes every stored event, walks the
+   * links, and checks the tail against the anchor. Break taxonomy:
+   *   hash_mismatch  — stored content no longer matches its hash (edited)
+   *   broken_front   — first stored event points at a deleted predecessor
+   *   broken_link    — event N+1's prevHash ≠ event N's hash (deleted/moved)
+   *   tail_mismatch  — anchor and stored tail disagree (tail edited/rewritten)
+   *   tail_missing   — anchor points at a seq with no stored event
+   * @returns {Promise<{tenantId, eventsVerified, unanchored, breaks:[]}>}
+   */
+  async verifyChain(tenantId) {
+    const [anchor, events, unanchored] = await Promise.all([
+      AuditChain.findOne({ tenantId }).lean(),
+      DomainEvent.find({ tenantId, seq: { $ne: null } }).sort({ seq: 1 }).lean(),
+      DomainEvent.countDocuments({ tenantId, seq: null }),
+    ]);
+    const breaks = [];
+    let prev = null;
+    for (const e of events) {
+      const recomputed = this._eventHash({ tenantId, seq: e.seq, prevHash: e.prevHash, doc: e });
+      if (recomputed !== e.hash) {
+        breaks.push({ seq: e.seq, type: 'hash_mismatch', idempotencyKey: e.idempotencyKey });
+      }
+      if (!prev && e.prevHash !== GENESIS_HASH) {
+        breaks.push({ seq: e.seq, type: 'broken_front', idempotencyKey: e.idempotencyKey });
+      }
+      if (prev && e.prevHash !== prev.hash) {
+        breaks.push({ seq: e.seq, type: 'broken_link', idempotencyKey: e.idempotencyKey });
+      }
+      prev = e;
+    }
+    const storedTail = events[events.length - 1] || null;
+    if (anchor && anchor.tailSeq > 0 && !storedTail) {
+      breaks.push({ seq: anchor.tailSeq, type: 'tail_missing' });
+    } else if (anchor && storedTail && (storedTail.seq !== anchor.tailSeq || storedTail.hash !== anchor.tailHash)) {
+      breaks.push({ seq: storedTail?.seq, type: 'tail_mismatch', idempotencyKey: storedTail?.idempotencyKey });
+    }
+    return { tenantId: String(tenantId), eventsVerified: events.length, unanchored, breaks };
+  }
+
+  /** Verify every tenant with events (platform scope of the integrity report). */
+  async verifyChains({ tenantId = null } = {}) {
+    if (tenantId) {
+      const one = await this.verifyChain(String(tenantId));
+      return { tenants: 1, eventsVerified: one.eventsVerified, unanchored: one.unanchored, breaks: one.breaks, ok: one.breaks.length === 0 };
+    }
+    const tenantIds = await DomainEvent.distinct('tenantId');
+    const ids = tenantIds.filter(Boolean);
+    const out = { tenants: ids.length, eventsVerified: 0, unanchored: 0, breaks: [] };
+    for (const t of ids) {
+      const one = await this.verifyChain(String(t));
+      out.eventsVerified += one.eventsVerified;
+      out.unanchored += one.unanchored;
+      out.breaks.push(...one.breaks.map((b) => ({ ...b, tenantId: one.tenantId })));
+    }
+    out.ok = out.breaks.length === 0;
+    return out;
+  }
+
+  /**
+   * Re-link the tenant chain: re-hash every stored event in seq order
+   * (genesis → tail) and reset the anchor to the new tail.
+   *
+   * Use this ONLY after a legitimate row-set change — e.g. an event was
+   * deleted and later restored from its journal (the replay's orphan path),
+   * leaving a broken link where the row used to be. Rebuilding is a DELIBERATE
+   * operator act (it changes every hash, so it is recorded as a
+   * `chain_rebuilt` audit event), which is exactly what separates it from
+   * tampering: a tamper that is never rebuilt stays visible as a break.
+   * The nightly job never calls this.
+   * @returns {Promise<{relinked, tailHash}>}
+   */
+  async rebuildChain({ tenantId = null, limit = 100000 } = {}) {
+    const events = await DomainEvent.find({
+      ...(tenantId ? { tenantId } : {}), seq: { $ne: null },
+    }).sort({ seq: 1 }).limit(limit).lean();
+    let prevHash = GENESIS_HASH;
+    for (const e of events) {
+      const hash = this._eventHash({ tenantId: e.tenantId, seq: e.seq, prevHash, doc: e });
+      await DomainEvent.updateOne({ _id: e._id }, { $set: { prevHash, hash } });
+      prevHash = hash;
+    }
+    if (tenantId) {
+      const t = String(tenantId);
+      const tail = events.filter((e) => String(e.tenantId) === t).slice(-1)[0] || null;
+      await AuditChain.findOneAndUpdate(
+        { tenantId: t },
+        { $set: { seq: tail ? tail.seq : 0, tailHash: tail ? prevHash : GENESIS_HASH, tailSeq: tail ? tail.seq : 0 } },
+        { upsert: true }
+      );
+      // the rebuild itself is a fact in the chain (never-throwing append)
+      await this.append({
+        tenantId, kind: DOMAIN_EVENT_TYPE.CHAIN_REBUILT,
+        aggregateType: 'audit_chain', aggregateId: t,
+        idempotencyKey: `chain_rebuilt:${tenantId}:${Date.now()}`,
+        occurredAt: new Date(),
+        payload: { relinked: events.length, tailHash: prevHash },
+      });
+      return { relinked: events.length, tailHash: prevHash };
+    }
+    // platform scope: rebuild each tenant
+    const tenantIds = await DomainEvent.distinct('tenantId');
+    let total = 0;
+    for (const t of tenantIds.filter(Boolean)) {
+      const out = await this.rebuildChain({ tenantId: String(t), limit });
+      total += out.relinked;
+    }
+    return { relinked: total, tailHash: null };
+  }
+
+  /**
+   * Fold UNANCHORED stored events (seq null — failed appends, or restored
+   * rows) into the tenant chain, in (occurredAt, createdAt, _id) order.
+   * Idempotent; anchored events are never touched.
+   * @returns {Promise<{anchored, failed:[]}>}
+   */
+  async repairChain({ tenantId = null, limit = 500 } = {}) {
+    const q = { seq: null, ...(tenantId ? { tenantId } : {}) };
+    const pending = await DomainEvent.find(q)
+      .sort({ occurredAt: 1, createdAt: 1, _id: 1 }).limit(limit).lean();
+    const out = { anchored: 0, failed: [] };
+    for (const e of pending) {
+      const t = e.tenantId ? String(e.tenantId) : null;
+      if (!t) { out.failed.push({ idempotencyKey: e.idempotencyKey, reason: 'no tenant — cannot chain' }); continue; }
+      try {
+        const doc = {
+          kind: e.kind, aggregateType: e.aggregateType, aggregateId: e.aggregateId,
+          refType: e.refType, refId: e.refId, idempotencyKey: e.idempotencyKey,
+          payload: e.payload, occurredAt: e.occurredAt, traceId: e.traceId,
+        };
+        const reserved = await this._reserveChainSlot(t, doc);
+        if (!reserved) throw new Error('chain CAS contention');
+        await DomainEvent.updateOne(
+          { _id: e._id, seq: null },
+          { $set: { seq: reserved.seq, prevHash: reserved.prevHash, hash: reserved.hash } }
+        );
+        out.anchored += 1;
+      } catch (err) {
+        out.failed.push({ idempotencyKey: e.idempotencyKey, reason: err?.message || String(err) });
+      }
+    }
+    return out;
   }
 
   /** All events for one trace (the "follow the money" chain), oldest first. */

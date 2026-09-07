@@ -1,4 +1,4 @@
-# Money Audit Backbone — architecture (Phase 10, "Follow the Money")
+# Money Audit Backbone — architecture (Phase 10 "Follow the Money", Phase 11 "Tamper-evident, closeable ledger")
 
 The ledger (Phase 6.1) proves the numbers balance. It cannot answer the two
 questions an auditor actually asks:
@@ -145,7 +145,142 @@ if `checks.ledger.ok === false` → `replay(limit 200)` +
 healed by Thursday 2 AM without a human, and the run log carries the
 integrity summary. The manual endpoints are the same code path.
 
-## Verification matrix (2026-09-07)
+# Part 2 — Phase 11: hash-chained event log + fiscal period close
+
+Phase 10 made money **auditable** (every journal has its event, every event has
+its journal). Phase 11 makes the audit trail itself **trustworthy**: a
+per-tenant hash chain over the domain event store (tamper-evidence for edits,
+deletions and tail losses) and **fiscal period close** (a month's books can be
+frozen, reported from the ledger, and deliberately reopened).
+
+## The hash chain protocol
+
+Every stored event carries `{ seq, prevHash, hash }`. The hash is
+
+```
+hash     = sha256(`${prevHash}|${content}`)
+content  = tenantId|seq|kind|aggregateType|aggregateId|refType|refId
+         | idempotencyKey|occurredAtISO|traceId|canonicalJson(payload)
+```
+
+with a genesis `prevHash` of `'0' × 64`. The chain's current tail lives in a
+separate collection, `auditchains` (`{ tenantId unique, tailSeq, tailHash }`)
+— the **anchor**. Appending is a compare-and-swap on the anchor:
+
+1. read the anchor → `seq = tailSeq + 1`, compute the hash;
+2. insert the event (unique sparse index on `{tenantId, seq}` guards against
+   double-linking the same slot);
+3. CAS the anchor to the new tail. On CAS loss, re-read and retry (5 tries).
+
+Failure modes are deliberately non-fatal to the business:
+
+- **duplicate append** (same idempotency key, same content) → the 11000 on
+  the `{tenantId, seq}` index means "already linked" — the anchor CAS is
+  rolled back and the original row wins. Idempotent, gap-free.
+- **CAS exhausted / insert error** (two writers racing for the same slot and
+  both losing) → the row is stored with `seq: null` — **unanchored**. The
+  event is never lost and the caller never sees an error; the integrity
+  report counts unanchored rows and the nightly pass re-anchors them.
+
+## What the verifier detects — five break types
+
+`verifyChains` walks the tenant's stored seqs in order, re-hashes every row
+and cross-checks neighbours **and** the anchor (that is why the anchor lives
+in a *different* collection: deleting the whole event collection leaves the
+anchor pointing at a tail that no longer exists):
+
+| Break type | What it catches |
+|---|---|
+| `hash_mismatch` | **content edited in place** (payload, kind, aggregate id, timestamps…) |
+| `broken_front` | the first stored row is not a genesis successor of what came before it (prefix erased) |
+| `broken_link` | a middle row was **deleted** (its successor's `prevHash` no longer links) |
+| `tail_missing` | the anchored tail row is gone (whole chain or tail lost) |
+| `tail_mismatch` | the chain's real tail ≠ the anchor (tail rows deleted, or a concurrent unanchored race) |
+
+The integrity report carries `checks.auditChain: { eventsVerified, unanchored,
+breaks[], ok }`, and the admin console's integrity card renders the breaks by
+name. The nightly pass also counts `chainBreaks`/`chainUnanchored` into its
+summary.
+
+## Repair policy — the deliberate heart of the phase
+
+**A break is never auto-healed.** This is the security boundary:
+
+- **Replay restores content, not the chain.** When `replay()` restores an
+  orphan (an event whose row was deleted), it appends a *new* event — which
+  takes a *new* chain slot. The old, deleted slot stays a visible
+  `broken_link`. That scar is correct: the row-set changed, and the chain is
+  now *showing* it. Auto-healing it would make tampering invisible.
+- **The nightly anchors unanchored rows only** (crashed-append backfill) and
+  never rebuilds.
+- **The only re-link is a deliberate, manual, audited act**: `rebuildChain`
+  (SUPER_ADMIN, `POST /ledger/integrity/rebuild-chain`) re-hashes the whole
+  chain in seq order (seqs preserved), resets the anchor, and **appends a
+  `chain_rebuilt` fact event** recording the re-link and the new tail. A
+  rebuilt chain is therefore distinguishable from a tampered chain by
+  construction — every heal leaves its own receipt *on* the chain.
+
+The operational story for a real incident: verifier names the seq and the
+kind of break → an operator restores the correct rows from the source system
+→ if the row-set changed, they run `rebuild-chain` on purpose → the
+`chain_rebuilt` event marks the moment and the operator who did it.
+
+## Fiscal period close
+
+`fiscalperiods` — `{ tenantId + periodKey ('YYYY-MM') unique, start, end,
+state open|closed, closedAt/By, reopenedAt/By }`, UTC month bounds.
+
+- **Close** (SUPER_ADMIN `POST /ledger/periods/:periodKey/close`) is allowed
+  mid-month: it is an operator freeze. The `post()` guard then rejects any
+  **new** journal whose `occurredAt` falls inside a closed period with
+  **409 `PERIOD_CLOSED`** — but idempotent re-posts (replay of an event that
+  was already journaled) pass, so the nightly/replay self-healing keeps
+  working across a closed boundary.
+- **Reopen** (SUPER_ADMIN `…/reopen`) is the only way back; it unblocks
+  posting. Close and reopen each append their own **chained** domain event
+  (`period_closed` / `period_reopened`), so the freeze itself is
+  tamper-evident — deleting a close leaves the chain broken.
+- **Period report** (`GET /ledger/periods/:periodKey`) is derived *from the
+  journal*: journals with `occurredAt` in the month window → gross captured,
+  refunds, net, payouts out, per-kind rollup and `periodBalanced` (the
+  period's own trial balance). The report reads the ledger — it cannot be
+  made to disagree with it.
+- **Mid-month trade-off (documented, deliberate):** sales that *happen*
+  while the month is closed cannot be posted until reopen; when they are,
+  their `occurredAt` is the reopen-side moment, so the amount lands in that
+  month's report window. Live sales against a closed period are drift until
+  the books reopen — exactly the pressure the integrity report exists to
+  make visible.
+
+## Verification matrix (2026-09-07, Phase 11)
+
+| Layer | Suite | Proof |
+|---|---|---|
+| Hermetic | `scripts/smoke-audit.test.js` §10–11 (25 total) | crashed-append backfill (exactly 1 anchored); duplicate append gapless; **content tamper → `hash_mismatch` at the victim seq**, cleared on restore; **tail deletion → `tail_mismatch`**, cleared; **middle deletion → `broken_link` at the successor**, cleared; orphan-restore scar → `rebuildChain` → clean + `chain_rebuilt` fact; integrity carries `auditChain`; close → new post 409 `PERIOD_CLOSED` → report (balanced) → chained close/reopen events → reopen unblocks → coverage still clean |
+| Live API | `scripts/e2e-live.mjs` §11 (79 total) | `replay-chain` anchored the pre-chain history (79 rows), verifier green (0 breaks, 0 unanchored), close → closed+balanced report → reopen → tenant-scoped period list |
+| Live browser | `frontend/e2e/ui-admin.e2e.mjs` A38/A40 (40 total) | integrity card with the **Audit chain (tamper-evidence)** row; **Fiscal periods** card: close month via UI → report rendered from the journal (balanced) → reopen |
+
+Full pyramid at ship: smoke:all 18 suites green (audit 25/25, invariants
+8/8) · e2e-live 79/79 · async-flow-live 14/14 · storefront UI 29/29 ·
+async-pay UI 7/7 · admin UI 40/40 (console-err=0) · both Vite builds pass.
+
+## Known boundaries (deliberate)
+
+- A rare triple race (two writers competing for one seq and both CAS-losing
+  in the same tick) can leave a `broken_link` even though no row was lost.
+  It is *detectable* by the verifier and *resolvable* by a human via
+  `rebuild-chain` — we chose a visible scar over a silent heal.
+- `rebuildChain` preserves seqs but changes every hash from the re-link
+  point; the `chain_rebuilt` fact is the receipt. Consumers that pinned an
+  old tail hash must re-verify — that is the point.
+- Period close is per-tenant and calendar-month only (no custom fiscal
+  calendars); `periodKey` is strictly `YYYY-MM`.
+- The chain is verified by full re-hash of stored rows — fine at the current
+  volume (hundreds to thousands of events per tenant) and the nightly runs
+  it anyway; a Merkle summary is the obvious scale-up if the store outgrows
+  it.
+
+## Verification matrix (2026-09-07, Phase 10)
 
 | Layer | Suite | Proof |
 |---|---|---|
@@ -190,3 +325,14 @@ async-flow-live 14/14 · storefront UI 29/29 · async-pay UI 7/7 · admin UI
 | `frontend/apps/web/src/features/orders/OrdersPage.jsx` | "Follow the money" timeline |
 | `frontend/packages/shared/src/api/endpoints.js` | `ledger.integrity/replay`, `admin.integrity/trace` |
 | `backend/scripts/smoke-audit.test.js` | the hermetic proof |
+| `backend/src/models/auditChain.model.js` | (P11) per-tenant chain tail anchor (`auditchains`) |
+| `backend/src/models/fiscalPeriod.model.js` | (P11) `fiscalperiods` (open/closed per `YYYY-MM`) |
+| `backend/src/models/domainEvent.model.js` | (P11) + `seq`/`prevHash`/`hash` + unique sparse `{tenantId, seq}` |
+| `backend/src/services/domainEvent.service.js` | (P11) + chain protocol: `appendEvent` CAS, `verifyChains`, `repairChain`, `rebuildChain` |
+| `backend/src/services/period.service.js` | (P11) close / reopen / list / `periodReport` (from the journal) |
+| `backend/src/controllers/period.controller.js` | (P11) period endpoints |
+| `backend/src/routes/ledger.routes.js` | (P11) + `replay-chain`, `rebuild-chain`, 4× `/periods` (SUPER_ADMIN) |
+| `backend/src/routes/admin.routes.js` | (P11) + `GET /admin/periods[/:periodKey]` (ADMIN) |
+| `backend/src/services/ledger.service.js` | (P11) `post()` `PERIOD_CLOSED` guard (new journals only) |
+| `backend/src/services/maintenance.service.js` | (P11) + chain summary in nightly + step 11 (anchor unanchored only) |
+| `frontend/apps/web/src/features/platform/LedgerPage.jsx` | (P11) audit-chain row + **Fiscal periods** card (close/report/reopen) |
