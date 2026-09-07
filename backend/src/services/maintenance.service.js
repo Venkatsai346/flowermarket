@@ -118,6 +118,11 @@ class MaintenanceService {
     //    finds and repairs them rather than waiting for a customer to notice.
     try {
       out.searchIndex = await searchIndexer.freshnessCheck({ repair: true, limit: 200 });
+      // A MISSING document (handler never ran, index truncated, fresh seed
+      // pre-reindex) can't be found by staleness alone — backfill it.
+      if (out.searchIndex && out.searchIndex.missing > 0) {
+        out.searchIndexBackfill = await searchIndexer.reindexAll({ tenantId });
+      }
     } catch (err) {
       out.searchIndex = { error: err?.message || String(err) };
     }

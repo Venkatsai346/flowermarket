@@ -155,12 +155,15 @@ export default function Checkout() {
       });
       const order = r.data?.order || r.data;
       setCart(null);
-      if (r.data?.pending) {
+      if (r.data?.paymentPending) {
+        // async gateway (Razorpay): order exists but awaits capture — the
+        // order page polls /orders/:id/payment until the webhook lands
         toast('Complete the payment to confirm your order');
+        navigate(`/orders/${order.id}?pay=1`);
       } else {
         toast('Order placed', 'success');
+        navigate(`/orders/${order.id}`);
       }
-      navigate(`/orders/${order.id}`);
     } catch (e) {
       toast(errMsg(e), 'error');
     } finally {

@@ -1,3 +1,4 @@
+import Joi from 'joi';
 import walletService from '../services/wallet.service.js';
 import refundService from '../services/refund.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -23,6 +24,15 @@ class WalletController {
   });
 
   /** Customer view of their refunds. */
+  topup = asyncHandler(async (req, res) => {
+    const result = await walletService.topup({
+      tenantId: req.tenantId,
+      userId: req.auth.userId,
+      amount: req.body.amount,
+    });
+    res.status(201).json(success(result, { message: 'Wallet topped up' }));
+  });
+
   refunds = asyncHandler(async (req, res) => {
     const result = await refundService.list({
       tenantId: req.tenantId, userId: req.auth.userId, query: req.query,

@@ -478,6 +478,7 @@ export const WALLET_TXN_REASON = Object.freeze({
   REFUND: 'refund',
   GOODWILL: 'goodwill',
   ORDER_PAYMENT: 'order_payment',
+  TOPUP: 'topup',
   ADJUSTMENT: 'adjustment',
 });
 

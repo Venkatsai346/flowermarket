@@ -5,6 +5,7 @@ import PaymentWebhookEvent, { PAYMENT_WEBHOOK_EVENT_STATUS } from '../models/pay
 import { webhookEvents } from '../observability/registry.js';
 import paymentProvider from './paymentProvider.service.js';
 import walletService from './wallet.service.js';
+import { Types } from 'mongoose';
 import { notFound, badRequest, conflict } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
 import { generateOpaqueToken } from '../utils/hash.js';
@@ -624,8 +625,38 @@ class PaymentService {
   async getPayment({ paymentId }) {
     const payment = await Payment.findById(paymentId);
     if (!payment) throw notFound('Payment not found', 'PAYMENT_NOT_FOUND');
-    const transactions = await PaymentTransaction.find({ paymentId: payment._id }).sort({ createdAt: 1 }).lean();
-    return { payment, transactions };
+    const [transactions, events] = await Promise.all([
+      PaymentTransaction.find({ paymentId: payment._id }).sort({ createdAt: 1 }).lean(),
+      // the webhook audit trail for THIS payment (what the gateway told us)
+      PaymentWebhookEvent.find({ paymentId: payment._id }).sort({ createdAt: 1 }).lean(),
+    ]);
+    return { payment, transactions, events };
+  }
+
+  /**
+   * Webhook event audit trail (ops). The PaymentWebhookEvent rows are the
+   * "who moved the money and why" log — every verified gateway event with
+   * its disposition (processed/duplicate/mismatch/ignored), delivery count
+   * and the raw payload. `mismatch` rows are the ones an operator pages on.
+   */
+  async listWebhookEvents({ tenantId, query = {} }) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const q = tenantId ? { tenantId } : {};
+    if (query.status) q.status = query.status;
+    if (query.provider) q.provider = query.provider;
+    if (query.paymentId && Types.ObjectId.isValid(query.paymentId)) q.paymentId = new Types.ObjectId(query.paymentId);
+    if (query.orderId && Types.ObjectId.isValid(query.orderId)) q.orderId = new Types.ObjectId(query.orderId);
+    const [items, total] = await Promise.all([
+      // list view: drop the (potentially large) raw payload — the payment
+      // drawer (getPayment) is where operators peek at it
+      PaymentWebhookEvent.find(q).select('-raw').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      PaymentWebhookEvent.countDocuments(q),
+    ]);
+    return {
+      items,
+      meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + items.length < total },
+    };
   }
 
   async listPayments({ tenantId, query = {} }) {

@@ -333,6 +333,7 @@ Two flows (doc §6): `pickup_qc` (pickup → QC → refund) for non-perishables,
 | `GET /fulfillment/forecast/history?hubId=` | fulfillment-time history (self-correction inputs) |
 | `POST /fulfillment/assignments/sweep?limit=` | expire stale PENDING_ACCEPT rider assignments → auto-reassign |
 | `GET /fulfillment/payments` · `GET /fulfillment/payments/:id` | payment reads (ADMIN) |
+| `POST /fulfillment/payments/mock/force-pending` `{enabled}` | **dev-only** (400 outside `NODE_ENV=development`): flips the in-process mock gateway between sync and async (pending) charge modes at runtime — lets the awaiting-payment storefront flow (banner + 5s poll) be exercised on the live stack without `MOCK_PAYMENT_PENDING` or real keys (ADMIN) |
 
 ### Payment webhooks (raw body — no tenant header, signature-verified)
 

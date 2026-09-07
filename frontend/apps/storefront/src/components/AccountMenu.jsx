@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ChevronDown, LogOut, Package, RotateCcw, User, Wallet } from 'lucide-react';
+import { ChevronDown, LogOut, MapPin, Package, RotateCcw, User, Wallet } from 'lucide-react';
 import { useShop } from '../store.js';
 import { useShopAuth } from '../api.js';
 import { cn } from '../lib/utils.js';
@@ -9,6 +9,7 @@ const LINKS = [
   { to: '/orders', label: 'My orders', icon: Package },
   { to: '/returns', label: 'Returns & refunds', icon: RotateCcw },
   { to: '/wallet', label: 'My wallet', icon: Wallet },
+  { to: '/addresses', label: 'My addresses', icon: MapPin },
 ];
 
 /**

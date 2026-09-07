@@ -24,6 +24,13 @@ export default function FulfillmentPage() {
   const [tab, setTab] = useState('picking');
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedOrder, setSelectedOrder] = useState(null);
+  const [focusPayment, setFocusPayment] = useState(null);
+
+  const openPayment = (paymentId) => {
+    if (!paymentId) return;
+    setFocusPayment({ id: paymentId });
+    setTab('payments');
+  };
 
   const { data: counts, refetch: refetchCounts } = useApi(
     () => Promise.all([
@@ -98,10 +105,12 @@ export default function FulfillmentPage() {
       {tab === 'picking' && <PickingQueue refreshKey={refreshKey} onOpen={setSelectedOrder} />}
       {tab === 'delivery' && <DeliveryQueue refreshKey={refreshKey} onOpen={setSelectedOrder} />}
       {tab === 'slots' && <SlotsPanel refreshKey={refreshKey} />}
-      {tab === 'payments' && <PaymentsPanel refreshKey={refreshKey} />}
+      {tab === 'payments' && (
+        <PaymentsPanel refreshKey={refreshKey} focusPayment={focusPayment} onFocusConsumed={() => setFocusPayment(null)} />
+      )}
 
       {selectedOrder && (
-        <OrderOpsDrawer order={selectedOrder} onClose={() => setSelectedOrder(null)} onChanged={onChanged} />
+        <OrderOpsDrawer order={selectedOrder} onClose={() => setSelectedOrder(null)} onChanged={onChanged} onOpenPayment={openPayment} />
       )}
     </div>
   );

@@ -37,7 +37,7 @@ Everything below is built around those three questions.
 
 | Provider | When | `charge()` | Webhook signature |
 |---|---|---|---|
-| `mock` (default) | no Razorpay keys in env | synchronous success; amounts ending in paise `13` decline (deterministic failure hook). With `MOCK_PAYMENT_PENDING=true` it returns `pending` + `gatewayOrderId` — the full async flow without real keys | `x-mock-signature`, HMAC-SHA256 of the raw body with `MOCK_PAYMENT_WEBHOOK_SECRET` — **identical algorithm** to Razorpay's |
+| `mock` (default) | no Razorpay keys in env | synchronous success; amounts ending in paise `13` decline (deterministic failure hook). With `MOCK_PAYMENT_PENDING=true` **or** the dev-only runtime toggle `POST /fulfillment/payments/mock/force-pending` (400 outside development) it returns `pending` + `gatewayOrderId` — the full async flow without real keys | `x-mock-signature`, HMAC-SHA256 of the raw body with `MOCK_PAYMENT_WEBHOOK_SECRET` — **identical algorithm** to Razorpay's |
 | `razorpay` | `RAZORPAY_KEY_ID` + `RAZORPAY_KEY_SECRET` set | creates a gateway order (`payment_capture=1`), returns `pending` + client secret | `x-razorpay-signature`, HMAC-SHA256 of the raw body with `RAZORPAY_WEBHOOK_SECRET` |
 
 Both webhook routes are mounted with `express.raw` **before** `express.json`
@@ -165,7 +165,7 @@ Plus the existing worker/ops set (heartbeats, outbox lag, DLQ depth).
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | empty | non-empty → real async Razorpay flow |
 | `RAZORPAY_WEBHOOK_SECRET` | empty | verifies `x-razorpay-signature` (required in prod) |
 | `MOCK_PAYMENT_WEBHOOK_SECRET` | `mock-webhook-secret-dev` | mock webhook HMAC secret |
-| `MOCK_PAYMENT_PENDING` | `false` | `true` → mock behaves like the async gateway (checkout returns pending; webhook/reconcile confirms) — dev/demo of the full async flow |
+| `MOCK_PAYMENT_PENDING` | `false` | `true` → mock behaves like the async gateway (checkout returns pending; webhook/reconcile confirms) — dev/demo of the full async flow. The same mode can be flipped at runtime with the dev-only endpoint `POST /fulfillment/payments/mock/force-pending` (ADMIN, 400 outside development) — used by the e2e suites to drive the awaiting-payment UI |
 | `PAYMENT_RECONCILE_EVERY_MS` | `300000` | worker reconcile cadence |
 | `PAYMENT_PENDING_STALE_MINUTES` | `15` | staleness gate for reconciliation |
 
@@ -194,8 +194,11 @@ gateway's attestation, exactly like any other pending payment.
 |---|---|
 | Hermetic (in-memory mongod + in-process app) | `scripts/smoke-payments.test.js` — **13/13**: sync regression; async checkout → `payment_pending`; customer endpoint (owner sees pending, stranger 404); bad signature 401 with zero side effects; amount mismatch → untouched + audit; signed webhook → processed → confirmed; **duplicate replay → single row, disposition preserved**; unknown refs (razorpay 200-ack / mock 400); **webhook lost → gateway-poll recovery**; gateway silent → failed + cancelled; Razorpay HMAC unit vectors (valid/tampered/missing, constant-time); **refund reconciliation**; `/metrics` assertions |
 | Live stack (real mongod + API + worker + browser) | `scripts/live-payments-proof.mjs` — **28/28** against the running services with `MOCK_PAYMENT_PENDING=true`: async checkout, signature enforcement, **worker-safe reconcile (gateway silent → never confirmed without attestation)**, signed pipeline + dedupe + mismatch, metrics, worker job registration |
+| Live stack (API-level async proof) | `scripts/async-payment-live.test.mjs` — **14/14**: dev toggle on → pending checkout (`paymentPending` + `gatewayOrderId`) → `GET /orders/:id/payment` polls pending → signed webhook (tampered sig rejected) → order confirmed + `paidAt` → toggle off |
+| Browser UI (async customer journey) | `frontend/e2e/ui-async-payment.e2e.mjs` — **7/7**: pending state renders "Complete your payment" + "Awaiting payment"; signed webhook capture; the page's 5s poll flips it to Confirmed with no manual refresh |
+| Browser UI (admin ops view) | `ui-admin.e2e.mjs` A37 — live async payment seeded via API+webhook appears in the Payments table (searchable by order id), the Webhook audit shows `payment.captured` / Processed, the payment drawer shows gateway refs + webhook events, reconcile sweep runs clean |
 | Scheduled job live | `scheduledjobs.payment-reconcile` — `lastStatus: ok`, `lastResult {paymentsScanned:4, paymentsFailed:4, paymentsCancelled:4}` after the async demo run's stale pendings went past the 15-min window |
-| Full regression | `npm run smoke:all` (16 suites, includes payments) + `e2e-live` 67/67 + admin UI 36/36 + storefront UI 27/27 — all green |
+| Full regression | `npm run smoke:all` (16 suites, includes payments) + `e2e-live` 67/67 + `async-payment-live` 14/14 + storefront UI 29/29 + async-payment UI 7/7 + admin UI 37/37 — all green |
 
 ## Known boundaries (deliberate)
 

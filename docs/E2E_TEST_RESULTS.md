@@ -75,7 +75,7 @@ Phase 2 of the deep-dive: drove the **actual browser UIs** of both apps — ever
 feature exercised through the frontend, real HTTP through the Vite proxies to
 :4000, state asserted via API round-trips (not just DOM text).
 
-**Storefront (customer) — 27/27** (`frontend/e2e/ui-storefront.e2e.mjs`)
+**Storefront (customer) — 29/29** (`frontend/e2e/ui-storefront.e2e.mjs`)
 | Area | Cases |
 |---|---|
 | Home: hero + store identity | S01 |
@@ -104,9 +104,22 @@ feature exercised through the frontend, real HTTP through the Vite proxies to
 | Return: request sheet → submit (qty + reason) | S24 |
 | Returns page lists the return | S25 |
 | Wallet page: balance + transactions | S26 |
+| Address book: add → edit → delete round-trip | S28 |
+| Wallet: top-up credits the balance (live, API-verified) | S29 |
 | No page errors / failed API requests | S27 |
 
-**Admin web — 36/36** (`frontend/e2e/ui-admin.e2e.mjs`)
+**Async payment (customer) — 7/7** (`frontend/e2e/ui-async-payment.e2e.mjs`)
+| Area | Cases |
+|---|---|
+| Dev toggle: mock gateway → async (pending) mode | P01 |
+| Sign in with phone OTP (new customer) | P02 |
+| Add a product to the basket from the PDP | P03 |
+| Checkout lands in the awaiting-payment state (no auto-confirm) | P04 |
+| Signed gateway webhook captures the payment | P05 |
+| Polling flips the page Awaiting payment → Confirmed (no refresh) | P06 |
+| Dev toggle: back to sync mode | P07 |
+
+**Admin web — 37/37** (`frontend/e2e/ui-admin.e2e.mjs`)
 | Area | Cases |
 |---|---|
 | Login page renders; admin email+password login → dashboard | A01–A02 |
@@ -133,6 +146,7 @@ feature exercised through the frontend, real HTTP through the Vite proxies to
 | Storefront branding: save tagline → API-verified → restore | A23 |
 | Domains page renders | A24 |
 | Platform console: overview / stores / lifecycle / vendor applications / vendors / billing / plans / payouts / ledger | A25–A33 |
+| Payments ops: live async payment → webhook audit → drawer → reconcile | A37 |
 | RBAC: store admin blocked from vendor console | A34 |
 | Rider session: login as UI-created rider → /rider renders | A35 |
 | No page errors / failed API requests | A36 |
@@ -213,6 +227,25 @@ These were real defects in `src/` that the test matrix exposed — not test bugs
     (race-safe guard), and replays are bookkept separately
     (`deliveries` counter + `lastSeenAt`). Caught by `live-payments-proof`
     against the running stack; regression-tested in `smoke-payments` §4.
+15. **Partial search index shadowed the live catalogue (items invisible).**
+    The seed never built the ranked index, so the first outbox event made the
+    index *partial* (fewer docs than live) and the ranked path — non-empty —
+    never fell back to the legacy scan (the old guard only covered
+    ranked-returns-0). A reseeded tenant could serve e.g. 2 of 5 products.
+    Fixed in three places: `seed-default-tenant.js` now runs
+    `searchIndexer.reindexAll()` after seeding; the nightly maintenance job
+    backfills missing docs (`freshnessCheck.missing > 0 → reindexAll`); and
+    `catalog.public.controller.js` probes the legacy scan *always* and serves
+    it whenever `legacy.total > ranked.total` (`meta.indexState:
+    stale_fallback`) — a partial index can no longer shadow live stock.
+    Verified live: delete 3 index docs → `total=5, indexState=stale_fallback`;
+    reindex → `ranked` again.
+16. **Payments order-id search fired ~24 requests per search (400 storm).**
+    `PaymentsPanel`'s "Payment by order id…" input refetched on every
+    keystroke; typing a 24-char Mongo id char-by-char produced ~24
+    `GET /fulfillment/payments` calls, each 400 until the id was whole
+    (visible as a console-error storm in A36). Debounced the search value
+    (300 ms, same pattern as `KycPanel`); A36 now reports `console-err=0`.
 
 ## Test defects (rot) found & fixed — app behavior was correct
 
@@ -268,8 +301,10 @@ the tenant re-seeded (new id above), and **every layer re-run green**:
 | `invariants` (env docs, money-invariants, RBAC guards, …) | 8/8 |
 | `e2e-live.mjs` (live stack, full journey) | 67/67 |
 | `live-payments-proof.mjs` (async checkout, HMAC enforcement, reconciliation, dedupe, mismatch, metrics, worker job) | 28/28 |
-| Storefront browser UI | 27/27 |
-| Admin browser UI (incl. race-proofed A08) | 36/36 |
+| `async-payment-live.test.mjs` (dev toggle → pending checkout → poll → signed webhook → confirmed, live stack) | 14/14 |
+| Storefront browser UI | 29/29 |
+| Async-payment browser UI (pending state → signed webhook → live poll flip) | 7/7 |
+| Admin browser UI (incl. race-proofed A08 + payments-ops A37) | 37/37 |
 | Worker `payment-reconcile` job, live | `lastStatus: ok` — swept 4 stale async-demo payments (gateway silent → failed + cancelled, never confirmed without attestation) |
 
 The payment layer design + verification matrix:
@@ -285,8 +320,8 @@ manually:
 |---|---|
 | `backend` | `npm run smoke:all` — pure suites + 16 hermetic DB suites (in-memory mongod pinned to 6.0.6 via `MONGOMS_VERSION`) |
 | `frontend` | unit tests (web, storefront, shared) + production builds |
-| `live-e2e` | full live stack (mongo 6.0.6 rs0 service → `scripts/ci/boot-live-stack.sh` → API + worker + 2× Vite) → `e2e-live.mjs` 67 checks |
-| `browser-ui` | same stack + real Chromium (`frontend/e2e/provision-chromium.mjs` extracts the `@sparticuz/chromium` binary + NSS/NSPR libs) → storefront 27 + admin 36 browser checks |
+| `live-e2e` | full live stack (mongo 6.0.6 rs0 service → `scripts/ci/boot-live-stack.sh` → API + worker + 2× Vite) → `e2e-live.mjs` 67 checks + `async-payment-live.test.mjs` 14 checks |
+| `browser-ui` | same stack + real Chromium (`frontend/e2e/provision-chromium.mjs` extracts the `@sparticuz/chromium` binary + NSS/NSPR libs) → storefront 29 + async-payment 7 + admin 37 browser checks |
 
 Local parity for the live jobs: `bash scripts/ci/boot-live-stack.sh`
 (expects mongod on 127.0.0.1:27017), then `. /tmp/fm-ci/env.sh && node
@@ -318,6 +353,7 @@ cd ../frontend/apps/storefront && npm test
 # 4. browser-UI E2E (needs the boot-stack: mongod + :4000 + :5173 + :5174)
 #    uses a headless Chromium already provisioned under /tmp/chromium + /home/user/.browser-libs
 cd ../frontend/e2e
-LD_LIBRARY_PATH=/home/user/.browser-libs node ui-storefront.e2e.mjs   # 27/27
-LD_LIBRARY_PATH=/home/user/.browser-libs node ui-admin.e2e.mjs       # 36/36
+LD_LIBRARY_PATH=/home/user/.browser-libs node ui-storefront.e2e.mjs       # 29/29
+LD_LIBRARY_PATH=/home/user/.browser-libs node ui-async-payment.e2e.mjs   # 7/7
+LD_LIBRARY_PATH=/home/user/.browser-libs node ui-admin.e2e.mjs           # 37/37
 ```

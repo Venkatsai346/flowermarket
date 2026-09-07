@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Banknote, RefreshCw, Search, SearchX } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Banknote, RefreshCw, Search, SearchX, Webhook } from 'lucide-react';
 import { fmtDateTime, inr, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
@@ -14,7 +14,7 @@ import Table from '../../components/ui/Table.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
 import Stat from '../../components/ui/Stat.jsx';
 import OpsPaymentDrawer from './OpsPaymentDrawer.jsx';
-import { PAYMENT_METHOD_META, PAYMENT_STATUS_META } from './opsMeta.js';
+import { PAYMENT_METHOD_META, PAYMENT_STATUS_META, WEBHOOK_EVENT_STATUS_META } from './opsMeta.js';
 
 const FILTERS = [
   ['', 'All statuses'],
@@ -25,21 +25,39 @@ const FILTERS = [
   ['partially_refunded', 'Partially refunded'],
 ];
 
-export default function PaymentsPanel({ refreshKey = 0 }) {
+export default function PaymentsPanel({ refreshKey = 0, focusPayment = null, onFocusConsumed }) {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
   const [orderId, setOrderId] = useState('');
   const [selected, setSelected] = useState(null);
+  const [eventStatus, setEventStatus] = useState('');
+  const [eventPage, setEventPage] = useState(1);
   const action = useAction();
+
+  // debounce the order-id search: a 24-char Mongo id typed char-by-char
+  // would otherwise fire ~24 refetches, each 400ing until the id is whole
+  const [debouncedOrderId, setDebouncedOrderId] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedOrderId(orderId), 300);
+    return () => clearTimeout(t);
+  }, [orderId]);
+
+  // cross-tab deep link: an order drawer asked to open a specific payment
+  useEffect(() => {
+    if (focusPayment?.id) {
+      setSelected({ id: focusPayment.id });
+      onFocusConsumed?.();
+    }
+  }, [focusPayment]);
 
   const { data, meta, loading, refetch } = useApi(
     () => api.fulfillment.payments({
       page,
       limit: 15,
       status: status || undefined,
-      orderId: orderId || undefined,
+      orderId: debouncedOrderId || undefined,
     }),
-    [page, status, orderId, refreshKey],
+    [page, status, debouncedOrderId, refreshKey],
   );
 
   const { data: counts, refetch: refetchCounts } = useApi(
@@ -52,12 +70,19 @@ export default function PaymentsPanel({ refreshKey = 0 }) {
     [refreshKey],
   );
 
+  // Webhook audit trail — the "who moved the money, and why" log.
+  const { data: events, meta: eventMeta, loading: eventsLoading, refetch: refetchEvents } = useApi(
+    () => api.fulfillment.webhookEvents({ page: eventPage, limit: 8, status: eventStatus || undefined }),
+    [eventPage, eventStatus, refreshKey],
+  );
+
   const reconcile = async () => {
     try {
       const r = await action.run(() => api.fulfillment.reconcilePayments({ limit: 50 }));
       toast.success(r.message || 'Payment reconciliation complete');
       refetch();
       refetchCounts();
+      refetchEvents();
     } catch (e) {
       toast.error(errMsg(e));
     }
@@ -110,6 +135,39 @@ export default function PaymentsPanel({ refreshKey = 0 }) {
             { key: 'createdAt', header: 'Created', render: (r) => fmtDateTime(r.createdAt) },
           ]}
           footer={<Pagination meta={meta} onPage={setPage} />}
+        />
+      </Card>
+
+      <Card
+        title="Webhook audit"
+        subtitle="Every verified gateway event and its disposition. Mismatches (amount ≠ recorded) are the fraud signal — the payment is left untouched."
+        actions={
+          <Select className="w-44!" value={eventStatus} onChange={(e) => { setEventStatus(e.target.value); setEventPage(1); }}>
+            <option value="">All dispositions</option>
+            <option value="processed">Processed</option>
+            <option value="mismatch">Mismatch</option>
+            <option value="duplicate">Duplicate</option>
+            <option value="ignored">Ignored</option>
+            <option value="received">Received</option>
+          </Select>
+        }
+        bodyClassName="p-0!"
+      >
+        <Table
+          loading={eventsLoading && !events}
+          data={events || []}
+          rowKey="_id"
+          onRowClick={(r) => r.paymentId && setSelected({ id: r.paymentId, orderId: r.orderId })}
+          empty={<EmptyState icon={Webhook} title="No webhook events" message="Gateway events (payment.captured, payment.failed, …) land here as they arrive." />}
+          columns={[
+            { key: 'eventType', header: 'Event', render: (r) => <span className="font-mono text-xs text-slate-700">{r.eventType} <span className="text-slate-400">· {r.provider}</span></span> },
+            { key: 'status', header: 'Disposition', render: (r) => <Badge tone={pickMeta(WEBHOOK_EVENT_STATUS_META, r.status).tone} dot>{pickMeta(WEBHOOK_EVENT_STATUS_META, r.status).label}</Badge> },
+            { key: 'orderId', header: 'Order', render: (r) => <span className="font-mono text-xs text-slate-500">{r.orderId ? String(r.orderId).slice(-8) : '—'}</span> },
+            { key: 'amountPaise', header: 'Gateway amount', align: 'right', render: (r) => r.amountPaise != null ? inr(r.amountPaise / 100) : '—' },
+            { key: 'deliveries', header: 'Deliveries', align: 'right', render: (r) => <span className={r.deliveries > 1 ? 'font-semibold text-sky-600' : 'text-slate-400'}>{r.deliveries}</span> },
+            { key: 'createdAt', header: 'Received', render: (r) => fmtDateTime(r.createdAt) },
+          ]}
+          footer={<Pagination meta={eventMeta} onPage={setEventPage} />}
         />
       </Card>
 

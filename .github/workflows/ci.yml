@@ -110,9 +110,14 @@ jobs:
         run: |
           . /tmp/fm-ci/env.sh
           node scripts/e2e-live.mjs
+      - name: Async payment flow — live API proof (14 checks)
+        working-directory: backend
+        run: |
+          . /tmp/fm-ci/env.sh
+          node scripts/async-payment-live.test.mjs
 
   browser-ui:
-    name: Browser UI — real Chromium (storefront 27 + admin 36)
+    name: Browser UI — real Chromium (storefront 29 + admin 37 + async-pay 7)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     services:
@@ -155,12 +160,17 @@ jobs:
           BROWSER_LIBS_DIR: ${{ runner.temp }}/browser-libs
       - name: Boot live stack
         run: bash scripts/ci/boot-live-stack.sh
-      - name: Storefront browser suite (27 checks)
+      - name: Storefront browser suite (29 checks)
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh
           BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-storefront.e2e.mjs
-      - name: Admin browser suite (36 checks)
+      - name: Async-payment browser suite (7 checks)
+        working-directory: frontend/e2e
+        run: |
+          . /tmp/fm-ci/env.sh
+          BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-async-payment.e2e.mjs
+      - name: Admin browser suite (37 checks)
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh

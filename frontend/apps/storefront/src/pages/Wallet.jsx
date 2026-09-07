@@ -1,9 +1,11 @@
-import { BadgeIndianRupee, ReceiptText, Wallet as WalletIcon } from 'lucide-react';
+import { useState } from 'react';
+import { BadgeIndianRupee, Plus, ReceiptText, Wallet as WalletIcon } from 'lucide-react';
 import { fmtDateTime } from '@flower-market/shared';
 import { api, useShopAuth } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
+import { errMsg } from '../lib/utils.js';
 import {
   REFUND_DESTINATION_META, REFUND_REASON_META, REFUND_STATUS_META,
   WALLET_TXN_REASON_META, meta, signedMoney,
@@ -21,15 +23,38 @@ import {
 export default function Wallet() {
   const isAuth = useShopAuth((s) => s.isAuthenticated());
   const openAuth = useShop((s) => s.openAuth);
+  const toast = useShop((s) => s.toast);
 
-  const { data: wallet } = useApi(
+  const [adding, setAdding] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const { data: wallet, refetch: refetchWallet } = useApi(
     () => (isAuth ? api.shop.wallet() : Promise.resolve({ data: null })),
     [isAuth]
   );
-  const { data: txns } = useApi(
+  const { data: txns, refetch: refetchTxns } = useApi(
     () => (isAuth ? api.shop.walletTransactions({ limit: 30 }) : Promise.resolve({ data: undefined })),
     [isAuth]
   );
+
+  const topup = async () => {
+    const value = Number(amount);
+    if (!value || value <= 0) { toast('Enter an amount to add', 'error'); return; }
+    setBusy(true);
+    try {
+      await api.shop.walletTopup({ amount: value });
+      toast('Money added to your wallet', 'success');
+      setAdding(false);
+      setAmount('');
+      refetchWallet();
+      refetchTxns();
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
   const { data: refunds } = useApi(
     () => (isAuth ? api.shop.walletRefunds({ limit: 30 }) : Promise.resolve({ data: undefined })),
     [isAuth]
@@ -55,17 +80,57 @@ export default function Wallet() {
       <h1 className="mb-5 text-2xl font-bold tracking-tight text-slate-900">My wallet</h1>
 
       {/* balance */}
-      <div className="card mb-6 flex flex-col items-start justify-between gap-4 p-5 sm:flex-row sm:items-center">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Available balance</p>
-          <p className="mt-1 flex items-baseline gap-2">
-            <Money value={balance} className="text-3xl font-bold text-slate-900" />
-            {balance > 0 && <span className="text-xs font-medium text-emerald-600">ready to use</span>}
-          </p>
+      <div className="card mb-6 p-5">
+        <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Available balance</p>
+            <p className="mt-1 flex items-baseline gap-2">
+              <Money value={balance} className="text-3xl font-bold text-slate-900" />
+              {balance > 0 && <span className="text-xs font-medium text-emerald-600">ready to use</span>}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button variant="soft" size="sm" icon={Plus} onClick={() => setAdding((v) => !v)}>
+              Add money
+            </Button>
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: 'var(--brand-soft)' }}>
+              <BadgeIndianRupee className="h-7 w-7" style={{ color: 'var(--brand)' }} />
+            </div>
+          </div>
         </div>
-        <div className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: 'var(--brand-soft)' }}>
-          <BadgeIndianRupee className="h-7 w-7" style={{ color: 'var(--brand)' }} />
-        </div>
+
+        {adding && (
+          <div className="mt-4 border-t border-slate-100 pt-4">
+            <p className="mb-3 text-sm font-medium text-slate-700">Add money to your wallet</p>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {[100, 500, 1000].map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setAmount(String(v))}
+                  className="rounded-full border border-slate-200 px-4 py-1.5 text-sm font-medium text-slate-600 transition hover:border-transparent"
+                  style={Number(amount) === v ? { background: 'var(--brand-soft)', boxShadow: '0 0 0 2px var(--brand)' } : undefined}
+                >
+                  ₹{v}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                className="input w-40"
+                type="number"
+                min="10"
+                max="5000"
+                inputMode="decimal"
+                placeholder="Amount (₹10 – ₹5,000)"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+              />
+              <Button size="sm" loading={busy} onClick={topup}>Add to wallet</Button>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">Charged through our secure payment gateway; the money is available in your wallet the moment it clears.</p>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">

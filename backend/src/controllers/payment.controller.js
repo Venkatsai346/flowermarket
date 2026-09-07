@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import Payment from '../models/payment.model.js';
 import paymentService from '../services/payment.service.js';
 import paymentProvider from '../services/paymentProvider.service.js';
+import config from '../config/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 import { badRequest, unauthorized } from '../utils/ApiError.js';
@@ -109,6 +110,28 @@ class PaymentController {
   getPayment = asyncHandler(async (req, res) => {
     const detail = await paymentService.getPayment({ paymentId: req.params.id });
     res.status(200).json(success(detail, { message: 'Payment fetched' }));
+  });
+
+  listWebhookEvents = asyncHandler(async (req, res) => {
+    const result = await paymentService.listWebhookEvents({ tenantId: req.tenantId, query: req.query });
+    res.status(200).json(success(result.items, { message: 'Webhook events fetched', meta: result.meta }));
+  });
+
+  /**
+   * DEV ONLY — flips the in-process mock gateway between sync and async
+   * (pending) charge modes, so the storefront's awaiting-payment flow
+   * (banner + 5s polling of /orders/:id/payment) and the webhook-confirm
+   * path can be exercised against the LIVE running stack without real
+   * gateway keys. Hard-gated on config.isDev (404-equivalent 400 in prod)
+   * and the ADMIN/SUPER_ADMIN route guard.
+   */
+  mockForcePending = asyncHandler(async (req, res) => {
+    if (!config.isDev) throw badRequest('Development-only endpoint', 'DEV_ONLY');
+    const enabled = Boolean(req.body?.enabled);
+    paymentProvider.forcePending(enabled);
+    res.status(200).json(success({ mockPending: enabled }, {
+      message: enabled ? 'Mock gateway set to async (pending) mode' : 'Mock gateway restored to sync mode',
+    }));
   });
 }
 

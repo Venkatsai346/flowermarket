@@ -122,8 +122,9 @@ running).
   (age 0.015s) before the worker drained it; request counter advanced 0→3
   for exactly 3 requests; scrapes absent from the access log; graceful
   SIGTERM verified on both processes (clean log → DB disconnect → exit 0).
-- **Regression:** live E2E 67/67, admin UI 36/36, storefront UI 27/27, all 14
-  DB suites (worker 6/6 + observability 7/7) — worker running throughout.
+- **Regression:** live E2E 67/67, admin UI 37/37, storefront UI 29/29,
+  async-payment UI 7/7, all 14 DB suites (worker 6/6 + observability 7/7) —
+  worker running throughout.
 
 ## Files
 
@@ -200,8 +201,9 @@ histogram_quantile(0.95, rate(fm_http_request_duration_seconds_bucket[5m])) by (
    `backend` (pure suites + 16 hermetic suites on in-memory mongod 6.0.6),
    `frontend` (per-workspace unit tests + production builds), `live-e2e`
    (full stack on a `mongo:6.0.6` replica-set service: API + worker + 2× Vite
-   → the 67-check suite), and `browser-ui` (same stack + real Chromium
-   provisioned from `@sparticuz/chromium` → storefront 27 + admin 36 checks).
+   → the 67-check suite + the 14-check async-payment proof), and `browser-ui`
+   (same stack + real Chromium provisioned from `@sparticuz/chromium` →
+   storefront 29 + async-payment 7 + admin 37 checks).
    Shared stack boot: `scripts/ci/boot-live-stack.sh` (idempotent: rs0 ensure
    → seed → API/worker/Vite → health gates → writes `/tmp/fm-ci/env.sh` with
    `FM_TENANT_ID`/`API_LOG_FILE` for the suites — the same script boots the

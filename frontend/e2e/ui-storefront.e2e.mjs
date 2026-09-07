@@ -394,6 +394,74 @@ await R.check('S26', 'Wallet page: balance + transactions render', async () => {
 });
 await shot(page, 's26-wallet');
 
+// ---------------------------------------------------------------- address book
+await R.check('S28', 'Address book: add → edit → delete round-trip', async () => {
+  page.once('dialog', (d) => d.accept()); // window.confirm on delete
+  await page.goto(BASE + '/addresses', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /Addresses/i, 15000);
+  await clickText(page, /Add address/i);
+  await typeInto(page, 'input[placeholder="Full name"]', 'S28 Saver');
+  await typeInto(page, 'input[placeholder="Phone"]', '9811122233');
+  await typeInto(page, 'input[placeholder="Flat / house / street"]', '78 Test Villa');
+  await typeInto(page, 'input[placeholder="City"]', 'Kakinada');
+  await typeInto(page, 'input[placeholder="State"]', 'Andhra Pradesh');
+  await typeInto(page, 'input[placeholder="Pincode"]', '533001');
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === 'Save address');
+    if (!b) throw new Error('Save address button missing');
+    b.click();
+  });
+  await waitText(page, /S28 Saver/i, 15000);
+  // edit: change the street line
+  await page.evaluate(() => {
+    const card = [...document.querySelectorAll('.card')].find((c) => c.textContent.includes('S28 Saver'));
+    const edit = card?.querySelector('button[title="Edit"]');
+    if (!edit) throw new Error('Edit button missing');
+    edit.click();
+  });
+  await waitText(page, /Edit/i, 10000);
+  await typeInto(page, 'input[placeholder="Flat / house / street"]', '79 Edited Villa');
+  await clickText(page, /Save address/i);
+  await waitText(page, /79 Edited Villa/i, 15000);
+  // delete (confirm auto-accepted)
+  await page.evaluate(() => {
+    const card = [...document.querySelectorAll('.card')].find((c) => c.textContent.includes('S28 Saver'));
+    const del = card?.querySelector('button[title="Delete"]');
+    if (!del) throw new Error('Delete button missing');
+    del.click();
+  });
+  await waitGone(page, /S28 Saver/i, 15000);
+  return 'add → edit → delete, book left clean';
+});
+await shot(page, 's28-addresses');
+
+// ---------------------------------------------------------------- wallet top-up
+await R.check('S29', 'Wallet: top-up credits the balance (live)', async () => {
+  const raw = await page.evaluate(() => localStorage.getItem('fm-shop:127.0.0.1'));
+  const st = JSON.parse(raw || '{}');
+  const tok = st.state?.accessToken || st.accessToken;
+  if (!tok) throw new Error('no customer token in localStorage');
+  const bal0 = await api('GET', '/wallet', undefined, { token: tok, tenant: null });
+  const before = bal0.balance ?? bal0.available ?? Number(bal0);
+  await page.goto(BASE + '/wallet', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /₹/i, 15000);
+  await clickText(page, /Add money/i);
+  await typeInto(page, 'input[placeholder^="Amount"]', '500');
+  await clickText(page, /Add to wallet/i);
+  // poll the balance (the source of truth) until the top-up lands
+  const deadline = Date.now() + 20000;
+  let after = before;
+  while (Date.now() < deadline) {
+    const b = await api('GET', '/wallet', undefined, { token: tok, tenant: null });
+    after = b.balance ?? b.available ?? Number(b);
+    if (after >= before + 500) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (Math.abs(after - (before + 500)) > 0.01) throw new Error(`balance ₹${before} → ₹${after} (expected +500)`);
+  return `balance ₹${before} → ₹${after}`;
+});
+await shot(page, 's29-wallet-topup');
+
 // ---------------------------------------------------------------- audit
 await R.check('S27', 'No page errors / failed API requests', async () => {
   const iss = page._issues;

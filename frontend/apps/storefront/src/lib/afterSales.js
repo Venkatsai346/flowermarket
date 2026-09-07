@@ -70,6 +70,7 @@ export const WALLET_TXN_REASON_META = {
   refund: 'Refund',
   goodwill: 'Goodwill credit',
   order_payment: 'Order payment',
+  topup: 'Wallet top-up',
   adjustment: 'Adjustment',
 };
 

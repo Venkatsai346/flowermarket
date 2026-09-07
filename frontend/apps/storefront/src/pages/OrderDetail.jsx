@@ -22,6 +22,9 @@ export default function OrderDetail() {
   const [cancelText, setCancelText] = useState('');
   const [cancelling, setCancelling] = useState(false);
 
+  const [payStatus, setPayStatus] = useState(null);
+  const [checkingPay, setCheckingPay] = useState(false);
+
   const { data, loading, refetch } = useApi(() => api.shop.order(id), [id]);
   const { data: timeline } = useApi(() => api.shop.orderTimeline(id), [id]);
 
@@ -45,6 +48,58 @@ export default function OrderDetail() {
     if (searchParams.get('return') === '1' && canRequestReturn) setReturnOpen(true);
     if (searchParams.get('cancel') === '1' && cancelAllowed) setConfirmCancel(true);
   }, [searchParams, canRequestReturn, cancelAllowed]);
+
+  // Async gateway payments (Razorpay): checkout returns an order stuck at
+  // `payment_pending` until the webhook captures it. Poll the payment status
+  // every 5s so the page flips to "confirmed" the moment the bank confirms —
+  // no manual refresh needed for the customer.
+  const awaitingPayment = order?.status === 'payment_pending';
+  useEffect(() => {
+    if (!awaitingPayment) return undefined;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const r = await api.shop.orderPayment(id);
+        if (!alive) return;
+        setPayStatus(r.data);
+        if (r.data?.order?.status !== 'payment_pending') {
+          const cancelled = r.data.order.status === 'cancelled';
+          toast(
+            cancelled
+              ? 'Payment was not completed in time — the order was cancelled'
+              : 'Payment confirmed — your order is confirmed',
+            cancelled ? 'error' : 'success',
+          );
+          refetch();
+        }
+      } catch { /* network blip — keep polling */ }
+    };
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, [awaitingPayment, id]);
+
+  const checkNow = async () => {
+    setCheckingPay(true);
+    try {
+      const r = await api.shop.orderPayment(id);
+      setPayStatus(r.data);
+      if (r.data?.order?.status !== 'payment_pending') {
+        const cancelled = r.data.order.status === 'cancelled';
+        toast(
+          cancelled
+            ? 'Payment was not completed in time — the order was cancelled'
+            : 'Payment confirmed — your order is confirmed',
+          cancelled ? 'error' : 'success',
+        );
+        refetch();
+      }
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    } finally {
+      setCheckingPay(false);
+    }
+  };
 
   if (loading && !data) {
     return <div className="wrap space-y-3 py-8"><Skeleton className="h-8 w-48" /><Skeleton className="h-40 w-full rounded-2xl" /></div>;
@@ -93,6 +148,39 @@ export default function OrderDetail() {
         </div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ${orderMeta.tone}`}>{orderMeta.label}</span>
       </div>
+
+      {/* async payment: the order exists but the gateway hasn't captured it yet */}
+      {awaitingPayment && (
+        <div className="card mb-5 border-amber-200 bg-amber-50/70 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="relative flex h-3 w-3" aria-hidden>
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-amber-500" />
+              </span>
+              <div>
+                <p className="text-sm font-bold text-amber-900">Complete your payment</p>
+                <p className="mt-0.5 max-w-md text-xs leading-relaxed text-amber-700">
+                  {payStatus?.payment?.status === 'failed'
+                    ? `The last attempt failed${payStatus.payment.failureReason ? ` — ${payStatus.payment.failureReason}` : ''}. The order is still open; try paying again from the gateway.`
+                    : payStatus?.payment?.status === 'success'
+                      ? 'Payment confirmed — finalising your order…'
+                      : 'We are waiting for your bank or UPI app to confirm. This page updates automatically, so you can stay right here.'}
+                </p>
+              </div>
+            </div>
+            <div className="text-right">
+              <Money value={order.totalAmount} className="text-base font-bold text-amber-900" />
+              {payStatus?.payment?.gatewayOrderId && (
+                <p className="font-mono text-[10px] text-amber-600">ref {payStatus.payment.gatewayOrderId}</p>
+              )}
+            </div>
+          </div>
+          <Button variant="outline" size="sm" loading={checkingPay} onClick={checkNow} className="mt-3 !border-amber-300 !text-amber-800">
+            Check payment status
+          </Button>
+        </div>
+      )}
 
       {/* actions */}
       {(cancelAllowed || canRequestReturn) && !cancelled && (

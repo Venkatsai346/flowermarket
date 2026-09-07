@@ -3,7 +3,10 @@ import WalletTransaction from '../models/walletTransaction.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
+import { generateOpaqueToken } from '../utils/hash.js';
 import { WALLET_TXN_TYPE, WALLET_TXN_REASON } from '../constants/enums.js';
+import config from '../config/index.js';
+import paymentProvider from './paymentProvider.service.js';
 
 /**
  * WalletService — customer wallet (instant refunds & goodwill credits).
@@ -55,6 +58,49 @@ class WalletService {
   }
 
   /** Debit the wallet (versioned). */
+  /**
+   * Wallet top-up — customer moves money INTO the wallet via the provider
+   * (mock gateway in dev, Razorpay in prod). Synchronous charge semantics:
+   * the provider confirms BEFORE we credit, so a top-up can never credit
+   * money that was not collected. The gateway payment id is kept on the
+   * wallet transaction for audit/traceability.
+   */
+  async topup({ tenantId, userId, amount }) {
+    const value = roundMoney(amount);
+    const { topupMin, topupMax } = config.wallet;
+    if (!(value >= topupMin)) {
+      throw badRequest(`Top-up minimum is Rs ${topupMin}`, 'TOPUP_BELOW_MINIMUM');
+    }
+    if (!(value <= topupMax)) {
+      throw badRequest(`Top-up maximum is Rs ${topupMax}`, 'TOPUP_ABOVE_MAXIMUM');
+    }
+    const charge = await paymentProvider.charge({
+      idempotencyKey: `topup_${generateOpaqueToken(12)}`,
+      amount: value,
+      currency: 'INR',
+      method: 'wallet_topup',
+    });
+    if (!charge.success) {
+      throw badRequest(
+        charge.raw?.declined
+          ? 'Top-up declined by the payment provider — try a different amount'
+          : 'Top-up failed',
+        'TOPUP_FAILED',
+      );
+    }
+    // NOTE: refId is an ObjectId column — the gateway payment id is a
+    // provider string, so it lives in the note (the Payment rows it would
+    // link to are order-scoped and top-ups have no order).
+    const { wallet, txn } = await this.credit({
+      tenantId, userId, amount: value,
+      reason: WALLET_TXN_REASON.TOPUP,
+      refType: 'gateway_payment',
+      refId: null,
+      note: `Top-up via ${charge.provider}${charge.gatewayPaymentId ? ` (gateway ${charge.gatewayPaymentId})` : ''}`,
+    });
+    return { wallet, txn, gatewayPaymentId: charge.gatewayPaymentId || null, provider: charge.provider };
+  }
+
   async debit({ tenantId, userId, amount, reason, refType = null, refId = null, note = null }) {
     const value = roundMoney(amount);
     if (value <= 0) throw badRequest('Debit amount must be positive', 'INVALID_AMOUNT');

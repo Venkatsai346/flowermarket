@@ -264,6 +264,8 @@ export function createEndpoints(client) {
       payments: (q = {}) => c.get('/fulfillment/payments', { query: q }),
       payment: (id) => c.get(`/fulfillment/payments/${id}`),
       reconcilePayments: (q = {}) => c.post('/fulfillment/reconcile/payments', undefined, { query: q }),
+      webhookEvents: (q = {}) => c.get('/fulfillment/payments/webhook-events', { query: q }),
+      mockForcePending: (body) => c.post('/fulfillment/payments/mock/force-pending', body),
     },
 
     /** After-sales state machine used by ops/admin. */
@@ -379,6 +381,7 @@ export function createEndpoints(client) {
       orders: (q = {}) => c.get('/orders', { query: q }),
       order: (id) => c.get(`/orders/${id}`),
       orderTimeline: (id) => c.get(`/orders/${id}/timeline`),
+      orderPayment: (id) => c.get(`/orders/${id}/payment`),
       cancelOrder: (id, body) => c.post(`/orders/${id}/cancel`, body),
 
       // addresses
@@ -393,6 +396,7 @@ export function createEndpoints(client) {
       createReturn: (body) => c.post('/returns', body),
       returnDetail: (id) => c.get(`/returns/${id}`),
       wallet: () => c.get('/wallet'),
+      walletTopup: (body) => c.post('/wallet/topup', body),
       walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
       walletRefunds: (q = {}) => c.get('/wallet/refunds', { query: q }),
     },

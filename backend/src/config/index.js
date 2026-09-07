@@ -79,6 +79,12 @@ const config = {
     maxAddressesPerUser: Number(process.env.MAX_ADDRESSES_PER_USER) || 10,
   },
 
+  // ---- Wallet top-up (gateway charge, then credit) ----
+  wallet: {
+    topupMin: Number(process.env.WALLET_TOPUP_MIN_AMOUNT) || 10,
+    topupMax: Number(process.env.WALLET_TOPUP_MAX_AMOUNT) || 5000,
+  },
+
   // ---- Phase 4b: notifications (provider-agnostic; console/mock default) ----
   notifications: {
     provider: process.env.NOTIFICATION_PROVIDER || 'console', // console | mock | fcm | apns | smtp | twilio

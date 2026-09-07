@@ -35,7 +35,12 @@ const addr = await api('POST', '/users/me/addresses', {
 const addressId = addr.id || addr._id;
 
 const cat = await api('GET', '/catalog?limit=10', undefined, { tenant: null });
-const listing = (Array.isArray(cat) ? cat : cat.items || [])[0];
+const catList = Array.isArray(cat) ? cat : cat.items || [];
+// A14 (after-sales) returns this order via PICKUP_QC, which is by design
+// ineligible for perishable loose flowers — pick the first NON-perishable
+// listing (bouquet/plant) so the shared setup order is returnable regardless
+// of search-rank history (soldCount drift changes which listing ranks first).
+const listing = catList.find((l) => l.product?.isPerishable === false) || catList[0];
 const listingId = listing.listingId || listing.id;
 await api('POST', '/cart/items', { tenantProductId: listingId, qty: 1 }, { token: custTok });
 const today = new Date().toISOString().slice(0, 10);
@@ -368,11 +373,44 @@ await R.check('A17', 'Search admin: health + synonyms + reindex', async () => {
     await clickText(page, /Create|Save|Add/i, { timeout: 5000 }).catch(() => {});
   }
   await new Promise((r) => setTimeout(r, 800));
-  // reindex
-  await clickText(page, /Reindex|Run reindex/i, { timeout: 6000 }).catch(() => {});
-  const done = await waitText(page, /Reindex complete|indexed/i, 20000).then(() => true).catch(() => false);
+  await page.keyboard.press('Escape'); // ensure no modal is left over the reindex step
+  // reindex — the button OPENS a modal; the inner "Run reindex" button fires
+  // POST /search/reindex. Wait on the network response, not on page text
+  // (the health panel always contains the word "indexed" — a text match
+  // would pass even when the reindex never ran).
+  await clickText(page, /Run reindex|Reindex/i, { timeout: 6000 });
+  await waitText(page, /Rebuild the search index/i, 8000); // modal subtitle — modal is open
+  const reindexResp = page.waitForResponse(
+    (res) => res.url().includes('/search/reindex') && res.request().method() === 'POST',
+    { timeout: 30000 }).catch(() => null);
+  // The health card ALSO has a "Run reindex" button (DOM-first) that only
+  // re-opens this modal — so scope the action click to a modal panel, and
+  // scan every open panel (a leftover modal would be the first one).
+  const clickedInner = await page.evaluate(() => {
+    const panels = document.querySelectorAll('div.modal-panel[role="dialog"]');
+    for (const panel of panels) {
+      const btn = Array.from(panel.querySelectorAll('button'))
+        .find((b) => (b.innerText || '').trim() === 'Run reindex');
+      if (btn) { btn.click(); return true; }
+    }
+    return false;
+  });
+  if (!clickedInner) throw new Error('modal action button not found in any dialog panel');
+  const resp = await reindexResp;
+  if (!resp) throw new Error('POST /search/reindex never observed — the modal action did not fire');
+  if (!resp.ok()) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(`POST /search/reindex → ${resp.status()}: ${JSON.stringify(body).slice(0, 200)}`);
+  }
   await page.keyboard.press('Escape');
-  return done ? 'reindex complete' : 'search admin rendered (reindex skipped)';
+  // the reindex must actually leave the index complete — a reindex that
+  // "succeeded" while listings stay missing is the bug this test exists for
+  const health = await api('GET', '/search/health', undefined, { token: adminTok });
+  const fresh = health.freshness || health;
+  if (Number(fresh.missing) !== 0) {
+    throw new Error(`index incomplete after reindex: missing=${fresh.missing} indexed=${fresh.indexedDocuments} listings=${fresh.listings}`);
+  }
+  return `reindex complete (${fresh.indexedDocuments} docs, 0 missing)`;
 });
 
 // ---------------------------------------------------------------- tax
@@ -494,6 +532,80 @@ for (const [id, path, desc, rx] of platformPages) {
 }
 await shot(page, 'a33-platform');
 
+// ---------------------------------------------------------------- payments ops
+await R.check('A37', 'Payments ops: live async payment → webhook audit → drawer → reconcile', async () => {
+  // 1) seed a REAL async payment through the live API: pending charge,
+  //    then a signed gateway webhook that captures it.
+  const crypto = await import('node:crypto');
+  const WEBHOOK_SECRET = 'mock-webhook-secret-dev';
+  await api('POST', '/fulfillment/payments/mock/force-pending', { enabled: true }, { token: adminTok });
+  try {
+    const a2 = await api('GET', '/catalog?limit=10', undefined, { tenant: null });
+    const cat2 = Array.isArray(a2) ? a2 : a2.items || [];
+    const listing2 = cat2.find((l) => l.product?.isPerishable === false) || cat2[0];
+    await api('POST', '/cart/items', { tenantProductId: listing2.listingId || listing2.id, qty: 1 }, { token: custTok });
+    const s2 = await api('GET', `/cart/slots?pincode=533001&date=${today}`, undefined, { token: custTok });
+    const slot2 = (s2.slots || (Array.isArray(s2) ? s2 : [])).find((sl) => (sl.remaining ?? sl.available) > 0);
+    const r2 = await api('POST', `/cart/slots/${slot2.id || slot2._id}/reserve`, {}, { token: custTok });
+    const q2 = await api('POST', '/cart/quote', { slotReservationId: r2.id || r2._id, addressId }, { token: custTok });
+    const co2 = await api('POST', '/cart/checkout', {
+      slotReservationId: r2.id || r2._id, addressId, paymentMethod: 'upi', confirmPriceChanges: true,
+    }, { token: custTok });
+    if (co2.paymentPending !== true) throw new Error('seed: expected paymentPending, got ' + JSON.stringify(co2).slice(0, 160));
+    const seedOrder = co2.order || co2;
+    const seedOrderId = seedOrder.id || seedOrder._id;
+    // signed gateway webhook (same HMAC contract as Razorpay)
+    const body = JSON.stringify({
+      eventId: `evt_a37_${Date.now()}`,
+      gatewayOrderId: co2.gatewayOrderId,
+      gatewayPaymentId: `mpay_a37_${Date.now().toString(36)}`,
+      amountPaise: Math.round(Number(q2.grandTotal) * 100),
+    });
+    const sig = crypto.createHmac('sha256', WEBHOOK_SECRET).update(body, 'utf8').digest('hex');
+    const wh = await fetch('http://127.0.0.1:4000/api/v1/payments/webhook/mock', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-mock-signature': sig },
+      body,
+    });
+    if (wh.status !== 200) throw new Error(`seed: webhook ${wh.status}`);
+    // 2) UI: payments tab — stats, table, webhook audit, drawer, reconcile
+    await page.goto(BASE + '/fulfillment', { waitUntil: 'networkidle2', timeout: 30000 });
+    await waitText(page, /Picking|picking/i, 15000);
+    await clickText(page, 'Payments', { exact: true });
+    await waitText(page, /Webhook audit/i, 15000);
+    const t = await bodyText(page);
+    for (const lbl of ['Pending', 'Success', 'Failed', 'Refunded', 'Reconcile pending']) {
+      if (!new RegExp(lbl, 'i').test(t)) throw new Error(`missing ${lbl}`);
+    }
+    // our captured payment must be searchable by order id
+    await typeInto(page, 'input[placeholder="Payment by order id…"]', String(seedOrderId));
+    await page.waitForFunction((id) => {
+      const rows = [...document.querySelectorAll('tbody tr')];
+      return rows.some((r) => (r.textContent || '').includes(id));
+    }, { timeout: 20000 }, String(seedOrderId));
+    // webhook audit shows the verified event
+    await waitText(page, /payment\.captured/i, 15000);
+    await waitText(page, /Processed/i, 8000);
+    // open the payment drawer — gateway refs + webhook events section
+    await page.evaluate((id) => {
+      const row = [...document.querySelectorAll('tbody tr')].find((r) => (r.textContent || '').includes(id));
+      if (!row) throw new Error('payment row gone');
+      row.click();
+    }, String(seedOrderId));
+    await waitText(page, /Gateway order/i, 15000);
+    await waitText(page, /Webhook events/i, 10000);
+    await page.keyboard.press('Escape');
+    await new Promise((r) => setTimeout(r, 600));
+    // reconcile: no pending left from our seed, runs clean
+    await clickText(page, /Reconcile pending/i);
+    await waitText(page, /sweep complete/i, 15000);
+    return `seed order ${String(seedOrderId).slice(-8)}: captured via webhook, audited, reconciled`;
+  } finally {
+    await api('POST', '/fulfillment/payments/mock/force-pending', { enabled: false }, { token: adminTok });
+  }
+});
+await shot(page, 'a37-payments');
+
 // ---------------------------------------------------------------- RBAC + rider
 await R.check('A34', 'RBAC: store admin blocked from vendor console', async () => {
   await page.goto(BASE + '/vendor', { waitUntil: 'networkidle2', timeout: 30000 });
@@ -518,6 +630,11 @@ await shot(page, 'a35-rider');
 // ---------------------------------------------------------------- audit
 await R.check('A36', 'No page errors / failed API requests', async () => {
   const iss = page._issues;
+  if (process.env.DUMP_CONSOLE && iss.console.length) {
+    console.log('  --- console errors ---');
+    for (const c of iss.console) console.log('    ·', c);
+    console.log('  --- end ---');
+  }
   if (iss.pageerrors.length) throw new Error(`pageerrors: ${iss.pageerrors[0]}`);
   const hardNet = iss.netfail.filter((f) => !/favicon/.test(f));
   if (hardNet.length) throw new Error(`netfail: ${hardNet[0]}`);
