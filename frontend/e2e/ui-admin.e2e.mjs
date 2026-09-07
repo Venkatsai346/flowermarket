@@ -615,10 +615,10 @@ await R.check('A38', 'System integrity: ledger page reports all subsystems + rep
   const t = await bodyText(page);
   if (!/All subsystems consistent/i.test(t)) throw new Error('integrity not green on live stack');
   if (!/Replay/i.test(t)) throw new Error('replay action missing');
-  for (const sub of ['Ledger', 'Search index', 'Delivery slots', 'Payouts', 'Wallet ledger', 'Vendor ledger', 'Statutory payable', 'GST output payable', 'Audit event store']) {
+  for (const sub of ['Ledger', 'Search index', 'Delivery slots', 'Payouts', 'Wallet ledger', 'Vendor ledger', 'Statutory payable', 'GST output payable', 'Bank cash position', 'Audit event store']) {
     if (!new RegExp(sub, 'i').test(t)) throw new Error(`missing subsystem row: ${sub}`);
   }
-  return 'all 11 subsystems reported, stack green';
+  return 'all 12 subsystems reported, stack green';
 });
 await shot(page, 'a38-integrity');
 
@@ -763,7 +763,14 @@ await R.check('A44', 'Bank reconciliation: a statement line with an unknown UTR 
   // the line must appear in the persistent queue view with its amount
   await waitText(page, new RegExp(a44utr), 15000);
   await waitText(page, /−₹12\.34/, 10000);
-  return `line ${a44utr} queued (−₹12.34) — no batch matched, nothing guessed`;
+  // cleanup: the deliberately-unknown line is removed via the operator
+  // correction endpoint so the bank check's unmatched count stays honest
+  const sumRes = await api('GET', '/payouts/admin/statement', undefined, { token: adminTok });
+  const mine = (sumRes?.queued || []).find((q) => q.utr === a44utr);
+  if (!mine) throw new Error('queued line not visible in summary');
+  const delRes = await api('DELETE', `/payouts/admin/statement/lines/${encodeURIComponent(mine.statementRef)}/${mine.lineNo}`, undefined, { token: adminTok });
+  if (!delRes?.deleted) throw new Error(`cleanup delete failed: ${JSON.stringify(delRes).slice(0, 120)}`);
+  return `line ${a44utr} queued (−₹12.34) — no batch matched, nothing guessed, then cleaned`;
 });
 await shot(page, 'a44-statement');
 

@@ -40,7 +40,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory, gst,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory, gst, bank,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -56,6 +56,7 @@ class IntegrityService {
       this._vendorCheck(),
       this._statutoryCheck(),
       this._gstCheck(),
+      this._bankCheck(),
     ]);
 
     const ledger = {
@@ -98,6 +99,7 @@ class IntegrityService {
       // (the payable accounts carry no tenant).
       statutory,
       gst,
+      bank,
       // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
       // deleted or re-ordered rows) are a DRIFT — the strongest signal in
       // the report. Unanchored rows are normal while repairChain catches up.
@@ -161,6 +163,16 @@ class IntegrityService {
   async _gstCheck() {
     try {
       const r = await payoutService.reconcileGst({});
+      return { ...r, ok: r.ok };
+    } catch (e) {
+      return { error: e?.message || String(e), ok: false };
+    }
+  }
+
+  /** Bank books must equal settled cash − live payout outflows − net statutory deposits. */
+  async _bankCheck() {
+    try {
+      const r = await payoutService.reconcileBank({});
       return { ...r, ok: r.ok };
     } catch (e) {
       return { error: e?.message || String(e), ok: false };

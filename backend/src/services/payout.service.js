@@ -1780,6 +1780,121 @@ class PayoutService {
     });
     return { posted: posted.created, idempotencyKey: key, journal: posted.journal || null };
   }
+
+  // -------------------------------------------------------------------------
+  // Phase 20 — bank cash position integrity
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reconcile the bank's book balance to the chained money facts that moved
+   * it:
+   *
+   *   books(bank) =  Σ psp_settled (signed — the PSP nets refunds in as
+   *                  negative settlement rows; final once posted)
+   *                −  Σ batch.netPaise over LIVE batches (PROCESSING / PAID —
+   *                   the payout journal credits the bank at submission)
+   *                −  Σ statutory deposits (recorded, not reverted — the
+   *                   deposit journal credits the bank)
+   *                +  bank_backfill journals (self-corrections, excluded)
+   *
+   * Refunds never touch bank — they go back out through the gateway
+   * (gateway_clearing). A REVERSED batch posted its credit AND its unwind,
+   * so it nets to zero and is excluded, like every prior phase.
+   *
+   * The bank statement (Phase 14) is the independent egress cross-check:
+   * an UNMATCHED statement line is money the bank moved with no known batch
+   * UTR — visible, never guessed. `ok` = balanced AND no unmatched lines.
+   */
+  async reconcileBank({} = {}) {
+    const { default: DomainEvent } = await import('../models/domainEvent.model.js');
+    const { default: StatutoryDeposit } = await import('../models/statutoryDeposit.model.js');
+    const { default: BankStatementLine } = await import('../models/bankStatementLine.model.js');
+    const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
+
+    const [settleAgg, batchAgg, depAgg, unmatchAgg, bankBal] = await Promise.all([
+      DomainEvent.aggregate([
+        { $match: { kind: DOMAIN_EVENT_TYPE.PSP_SETTLED } },
+        { $group: { _id: null, n: { $sum: 1 }, paise: { $sum: '$payload.amountPaise' } } },
+      ]),
+      PayoutBatch.aggregate([
+        { $match: { state: { $in: [PAYOUT_STATE.PROCESSING, PAYOUT_STATE.PAID] } } },
+        { $group: { _id: null, n: { $sum: 1 }, paise: { $sum: '$netPaise' } } },
+      ]),
+      StatutoryDeposit.aggregate([
+        { $match: { status: 'recorded' } },
+        { $group: { _id: null, n: { $sum: 1 }, paise: { $sum: '$amountPaise' } } },
+      ]),
+      BankStatementLine.aggregate([
+        { $match: { matchStatus: 'unmatched' } },
+        { $group: { _id: null, n: { $sum: 1 }, paise: { $sum: { $abs: '$amountPaise' } } } },
+      ]),
+      ledgerService.balance(ledgerAccounts.bank()),
+    ]);
+
+    const settlements = { count: settleAgg[0]?.n || 0, paise: Math.round(settleAgg[0]?.paise || 0) };
+    const payouts = { count: batchAgg[0]?.n || 0, paise: Math.round(batchAgg[0]?.paise || 0) };
+    const deposits = { count: depAgg[0]?.n || 0, paise: Math.round(depAgg[0]?.paise || 0) };
+    const expectedPaise = settlements.paise - payouts.paise - deposits.paise;
+    const booksPaise = Math.round(bankBal?.balancePaise || 0);
+    const differencePaise = expectedPaise - booksPaise;
+    const balanced = differencePaise === 0;
+    return {
+      expectedPaise,
+      booksPaise,
+      differencePaise,
+      settlements,
+      payouts,
+      deposits,
+      statement: { unmatchedLines: unmatchAgg[0]?.n || 0, unmatchedPaiseAbs: Math.round(unmatchAgg[0]?.paise || 0) },
+      balanced,
+      ok: balanced && (unmatchAgg[0]?.n || 0) === 0,
+    };
+  }
+
+  /**
+   * Post ONE signed bank_backfill journal (repair). The bank account is
+   * single (the platform's operating account) — no per-owner split. The
+   * counter is gateway_clearing, the unexplained-cash bucket: under-stated
+   * books → DR bank / CR clearing (cash that is in the bank but not on the
+   * books); over-stated → the mirror. Event first, same idempotency key.
+   */
+  async postBankBackfill({ differencePaise, note = null, idempotencyKey = null }) {
+    const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
+    const diff = Math.round(Number(differencePaise) || 0);
+    if (diff === 0) throw Object.assign(new Error('Backfill difference must be non-zero'), { status: 422, code: 'BANK_BACKFILL_EMPTY' });
+
+    const bank = ledgerAccounts.bank();
+    const clearing = ledgerAccounts.gatewayClearing();
+    const key = idempotencyKey || `bank_backfill:platform:${new Date().toISOString()}`;
+    const lines = diff > 0
+      ? [{ accountCode: bank, debitPaise: diff }, { accountCode: clearing, creditPaise: diff }]
+      : [{ accountCode: bank, creditPaise: -diff }, { accountCode: clearing, debitPaise: -diff }];
+
+    const { default: domainEventService } = await import('./domainEvent.service.js');
+    const event = await domainEventService.append({
+      tenantId: null,
+      kind: DOMAIN_EVENT_TYPE.BANK_BACKFILL,
+      aggregateType: 'bank_account',
+      aggregateId: bank,
+      idempotencyKey: key,
+      occurredAt: new Date(),
+      refType: 'bank_account',
+      refId: bank,
+      payload: { differencePaise: diff, note: note || null },
+    });
+
+    const posted = await ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.BANK_BACKFILL,
+      idempotencyKey: key,
+      lines,
+      refType: 'bank_account',
+      refId: null, // the account code is not an ObjectId — it lives in aggregateId/meta
+      tenantId: null,
+      occurredAt: event?.occurredAt || new Date(),
+      meta: { note: note || null },
+    });
+    return { posted: posted.created, idempotencyKey: key, journal: posted.journal || null };
+  }
 }
 
 export default new PayoutService();

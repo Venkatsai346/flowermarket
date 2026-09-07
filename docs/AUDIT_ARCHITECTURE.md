@@ -889,3 +889,96 @@ would post one journal per drifted owner.
   replay refused → re-post under the event's own key restores the pair with
   no residual drift; trial balance + audit chain hold with GST backfills
   mixed in.
+
+## Part 11 — Phase 20: bank cash position integrity (the settlement bank is a real account)
+
+Phases 12 through 19 made the ledger's *internal* accounts honest: every
+payable and liability now reconciles to the domain facts that created it.
+But every one of those accounts is a mirror of cash that is, in the end,
+sitting in — or leaving — one physical place: the platform's settlement
+bank. A settlement journal lost in a crash, a payout journal that landed
+without its event, or a deposit the platform booked but never made, would
+leave the books disagreeing with the money — and no internal account
+reconcile can see it, because from the ledger's point of view everything
+balances. Phase 20 asks the last cash question: **do the bank books equal
+the cash facts, to the paise?**
+
+### The invariant
+
+To the paise, at all times:
+
+```
+books(bank)  =  Σ psp_settled  −  Σ live batch.netPaise  −  Σ net statutory deposits
+```
+
+- **settlements** — the `PSP_SETTLED` domain events, signed. Settlement is
+  final once posted (the cash is in the account), and the PSP nets refunds
+  in as *negative* settlement rows, so the event sum is the whole truth of
+  the inflow side.
+- **live payout outflows** — Σ `batch.netPaise` over batches in PROCESSING
+  or PAID. The payout journal credits the bank the *net* (after
+  commission, the platform's commission GST, and TCS/TDS), at submission —
+  so the liability is booked the moment the instruction is accepted.
+- **net statutory deposits** — recorded deposits minus reverts. Both move
+  the same account, so the UTR trail and the ledger agree by construction.
+
+Refunds never touch the bank: they go back out through the gateway
+(`gateway_clearing`), which is exactly why the invariant excludes them —
+a refund of an already-settled order leaves the bank books untouched and
+balanced.
+
+The REVERSED-batch subtlety repeats from Phases 17–19: the reversal posts
+the mirror journal, so the pair nets to zero and the batch is excluded
+from "live". Counting it would double-count the unwind.
+
+### Where the money is, and the sign of the repair
+
+The bank account is single (the platform's operating account) — there is
+no per-owner split, so the repair posts **one** signed `bank_backfill`
+journal:
+
+- under-stated (the books show less cash than the facts say) —
+  **DR bank / CR gateway_clearing**: the unexplained-cash bucket absorbs
+  the correction, restoring the bank to what the facts say it holds;
+- over-stated — the mirror.
+
+The `bank_backfill` domain event is appended first under the **same
+idempotency key** as the journal — one fact, not two. The amount is the
+measured difference, not re-derivable from any aggregate, so `replay`
+refuses it with `BANK_BACKFILL_NOT_REPLAYABLE`.
+
+### The statement cross-check
+
+The bank statement (Phase 14) is an *independent* source of truth for the
+egress side: the bank's own record of money moving. A statement line whose
+UTR matches no known batch is money that left (or arrived) with no
+explanation in our systems — the closest thing to fraud the platform will
+ever see. The Phase 20 check therefore reports `ok` only when the books
+balance **and** the unmatched queue is empty. Unmatched lines are never
+guessed at; they stay visible until an operator matches them (which, for a
+batch, drives the payout state machine) or removes them through the new
+operator-correction endpoint (`DELETE /payouts/admin/statement/lines/:ref/:lineNo` —
+unmatched lines only; matched lines are immutable once they have driven a
+money movement).
+
+### Where it shows up
+
+- `GET /payouts/admin/bank-reconcile` (SUPER_ADMIN) — the platform cash
+  picture: settlements / live payouts / net deposits to the paise, plus the
+  statement's unmatched count.
+- `POST /payouts/admin/bank-reconcile/repair` (SUPER_ADMIN) — the
+  one-journal repair.
+- `DELETE /payouts/admin/statement/lines/:ref/:lineNo` (SUPER_ADMIN) —
+  operator correction for a bad ingestion.
+- Integrity report `checks.bank` → the ledger page's **Bank cash position**
+  row (A38 now requires all 12 subsystems), with the single backfill
+  action.
+- `smoke-bank` (54 checks): settlement moves cash in; a live payout drains
+  the net; a bank reversal unwinds it; a statutory deposit (and its
+  revert) moves and restores; a refund of a settled order leaves the bank
+  untouched; white-box drift → exact paise detected → signed backfill
+  (DR bank / CR clearing) with event key == journal key → balanced →
+  zero-difference refused; backfill journal loss → findDrift → replay
+  refused → re-post under the event's own key restores the pair with no
+  residual; an unmatched statement line keeps the check red until it is
+  explained; trial balance + audit chain hold with bank journals mixed in.

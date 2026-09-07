@@ -712,6 +712,7 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   VENDOR_BACKFILL: 'vendor_backfill', // vendor payable reconciled to payout lines (Phase 17)
   STATUTORY_BACKFILL: 'statutory_backfill', // TCS/TDS payable reconciled to withheld + deposits (Phase 18)
   GST_BACKFILL: 'gst_backfill', // GST output payable reconciled to sale/refund/payout facts (Phase 19)
+  BANK_BACKFILL: 'bank_backfill', // bank cash position reconciled to settled/payout/deposit facts (Phase 20)
   // Phase 11 — the audit chain was deliberately re-linked after a legitimate
   // row-set change (e.g. an event restored from its journal). Manual only.
   CHAIN_REBUILT: 'chain_rebuilt',
@@ -729,6 +730,7 @@ export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
   DOMAIN_EVENT_TYPE.VENDOR_BACKFILL,
   DOMAIN_EVENT_TYPE.STATUTORY_BACKFILL,
   DOMAIN_EVENT_TYPE.GST_BACKFILL,
+  DOMAIN_EVENT_TYPE.BANK_BACKFILL,
 ]);
 
 // ---- Price history ----
@@ -858,6 +860,7 @@ export const LEDGER_JOURNAL_KIND = Object.freeze({
   VENDOR_BACKFILL: 'vendor_backfill', // one-time reconciliation of pre-ledger vendor payables
   STATUTORY_BACKFILL: 'statutory_backfill', // one-time reconciliation of TCS/TDS payables
   GST_BACKFILL: 'gst_backfill', // one-time reconciliation of GST output payables
+  BANK_BACKFILL: 'bank_backfill', // one-time reconciliation of the bank cash position
 });
 
 /** Which statutes the platform withholds from vendor payouts. */

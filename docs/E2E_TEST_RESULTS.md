@@ -53,6 +53,7 @@ updated, and log/tenant discovery in the e2e scripts is now dynamic.)
 | smoke-vendors (Phase 17) | 90/90 |
 | smoke-statutory (Phase 18) | 49/49 |
 | smoke-gstpayable (Phase 19) | 56/56 |
+| smoke-bank (Phase 20) | 54/54 |
 | smoke-worker (leased claims, reaper, backoff/DLQ, single-flight) | 6/6 |
 | smoke-observability (healthz/readyz/metrics, outbox lag, heartbeat, jobs) | 7/7 |
 | smoke-payments (webhook idempotency, amount verify, reconciliation, metrics) | 13/13 |
@@ -516,4 +517,27 @@ hermetic smoke, live API, browser UI, and the integrity report — agreed to
 the paise afterward.
 
 CI counts synced in `.github/workflows/ci.yml`: live 114 checks, admin
+browser 44.
+
+## Phase 20 re-verification — bank cash position integrity (2026-09-07)
+
+| Layer | Result |
+|---|---|
+| `smoke-bank` (NEW) | **54/54** — `bank` treated as a real ledger account: `books == settlements (signed PSP events) − live batch nets − net statutory deposits` to the paise after every movement (settlement ingest, live payout, bank reversal, TCS deposit + revert); a refund of a settled order leaves the bank untouched (gateway_clearing absorbs it); white-box drift → exact paise detected → signed backfill (under-stated: DR bank / CR gateway_clearing) with event key == journal key → balanced → zero-difference refused; backfill journal loss → `findDrift` → replay refused with `BANK_BACKFILL_NOT_REPLAYABLE` (never guesses) → re-post under the event's own key restores the pair with zero residual drift; an unmatched statement line keeps the check red until explained; trial balance + audit chain hold with bank journals mixed in |
+| `smoke:all` (27 suites, invariants 8/8) | ALL GREEN |
+| `e2e-live.mjs` | **121/121** (+§19: bank reconcile `ok` with settlement/payout/deposit detail to the paise; books equal the cash facts and no unmatched statement lines; integrity `checks.bank.ok`; 403s for customer on both admin endpoints; no-op repair posts nothing · §14 gained 14.5/14.6: the deliberately-unknown statement lines are deleted via the new operator-correction endpoint, leaving no test residue in the queue) |
+| Admin browser UI | **44/44** (A38 now requires the **Bank cash position** row: "all 12 subsystems reported"; A44 now cleans its intentionally-queued unknown line through the same endpoint) |
+
+The first live run of the new check went red on purpose: the earlier
+Phases' e2e suites had left ten deliberately-unknown statement lines in
+the unmatched queue (their point was that nothing gets guessed), and the
+new invariant — unexplained egress keeps the platform red — correctly
+refused to be green over them. The fix was the operator surface itself:
+`DELETE /payouts/admin/statement/lines/:ref/:lineNo` (unmatched only),
+used to clear the residue, and now used by the suites to clean up after
+themselves. After that, every layer — hermetic smoke, live API, browser
+UI, and the integrity report — agreed to the paise: books 154,770 =
+settlements 154,770 − live payouts 0 − net deposits 0.
+
+CI counts synced in `.github/workflows/ci.yml`: live 121 checks, admin
 browser 44.

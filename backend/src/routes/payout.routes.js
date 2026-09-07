@@ -62,6 +62,7 @@ router.post('/admin/statutory/:id/revert', platformAdmin, validate(payoutIdParam
 // Phase 14 — bank statement reconciliation (the egress truth)
 router.get('/admin/statement', platformAdmin, PayoutController.statementSummary);
 router.post('/admin/statement/ingest', platformAdmin, validate(bankStatementIngestSchema), PayoutController.statementIngest);
+router.delete('/admin/statement/lines/:ref/:lineNo', platformAdmin, validate(Joi.object({ ref: Joi.string().min(3).max(64), lineNo: Joi.number().integer().min(1) }), 'params'), PayoutController.statementLineDelete);
 // Phase 17 — vendor payable integrity (the payout lines ARE the ledger)
 router.get('/admin/vendor-reconcile', platformAdmin, validate(vendorReconcileQuery, 'query'), PayoutController.vendorReconcile);
 router.post('/admin/vendor-reconcile/repair', platformAdmin, validate(vendorReconcileBody, 'body'), PayoutController.vendorReconcileRepair);
@@ -71,6 +72,9 @@ router.post('/admin/statutory-reconcile/repair', platformAdmin, validate(Joi.obj
 // Phase 19 — GST output payable integrity (the seller's GST is a ledger)
 router.get('/admin/gst-reconcile', platformAdmin, validate(Joi.object({ vendor: Joi.string().hex().length(24).optional() }), 'query'), PayoutController.gstReconcile);
 router.post('/admin/gst-reconcile/repair', platformAdmin, validate(Joi.object({ owner: Joi.alternatives().try(Joi.string().hex().length(24), Joi.string().valid('platform')).optional() }), 'body'), PayoutController.gstReconcileRepair);
+// Phase 20 — bank cash position integrity (bank books = cash facts)
+router.get('/admin/bank-reconcile', platformAdmin, PayoutController.bankReconcile);
+router.post('/admin/bank-reconcile/repair', platformAdmin, validate(Joi.object({ note: Joi.string().max(300).optional() }), 'body'), PayoutController.bankReconcileRepair);
 router.get('/admin/:id', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.getPayout);
 router.post('/admin/:id/submit', platformAdmin, validate(payoutIdParamSchema, 'params'), PayoutController.submitForApproval);
 router.post('/admin/:id/approve', platformAdmin, validate(payoutIdParamSchema, 'params'), validate(approveSchema), PayoutController.approve);

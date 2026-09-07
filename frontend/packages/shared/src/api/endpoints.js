@@ -256,6 +256,8 @@ export function createEndpoints(client) {
         // Phase 19 — GST output payable integrity (the seller's GST is a ledger)
         gstReconcile: (q = {}) => c.get('/payouts/admin/gst-reconcile', { query: q }),
         gstReconcileRepair: (body = {}) => c.post('/payouts/admin/gst-reconcile/repair', body),
+        bankReconcile: () => c.get('/payouts/admin/bank-reconcile'),
+        bankReconcileRepair: (body = {}) => c.post('/payouts/admin/bank-reconcile/repair', body),
       },
     },
 

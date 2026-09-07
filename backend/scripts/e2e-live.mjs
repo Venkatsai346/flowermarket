@@ -408,6 +408,15 @@ section('14. bank statement — the egress truth (Phase 14)');
   const stmtRbac1 = await api('/payouts/admin/statement', { token: custTok });
   const stmtRbac2 = await api('/payouts/admin/statement/ingest', { method: 'POST', token: custTok, body: { statementRef: 'BS-RBAC', lines: [{ utr: 'X-12345', amount: 10 }] } });
   check('14.4', 'statement endpoints are platform-admin only', stmtRbac1.status === 403 && stmtRbac2.status === 403, `summary=${stmtRbac1.status} ingest=${stmtRbac2.status}`);
+
+  // the queue is an operational surface, not a graveyard: the deliberately
+  // unknown lines we just proved are removable (operator correction path),
+  // leaving the bank check's unmatched count honest
+  const del1 = await api(`/payouts/admin/statement/lines/${stmtRef}/1`, { method: 'DELETE', token: adminTok });
+  const del2 = await api(`/payouts/admin/statement/lines/${stmtRef}/2`, { method: 'DELETE', token: adminTok });
+  check('14.5', 'unknown lines can be deleted (operator correction)', del1.status === 200 && del2.status === 200 && del1.data?.data?.deleted === true && del2.data?.data?.deleted === true, `d1=${del1.status} d2=${del2.status}`);
+  const stmtSum3 = await api('/payouts/admin/statement', { token: adminTok });
+  check('14.6', 'no test residue left in the unmatched queue', stmtSum3.data?.data?.queued.filter((q) => q.statementRef === stmtRef).length === 0, JSON.stringify(stmtSum3.data?.data?.queued).slice(0, 120));
 }
 
 // =====================================================================
@@ -497,6 +506,25 @@ section('18. GST output payable integrity (Phase 19)');
 
   const grepair = await api('/payouts/admin/gst-reconcile/repair', { method: 'POST', token: adminTok });
   check('18.5', 'no-op repair: already balanced, nothing posted', grepair.status === 200 && grepair.data?.data?.balanced === true && grepair.data?.data?.repaired === null, j(grepair.data?.data).slice(0, 160));
+}
+
+section('19. Bank cash position integrity (Phase 20)');
+{
+  const bre = await api('/payouts/admin/bank-reconcile', { token: adminTok });
+  check('19.1', 'bank reconcile: books = settled − live payouts − net deposits, no drift', bre.status === 200 && bre.data?.data?.ok === true && bre.data?.data?.balanced === true && bre.data?.data?.differencePaise === 0 && typeof bre.data?.data?.settlements?.paise === 'number', j(bre.data?.data).slice(0, 160));
+
+  const b = bre.data?.data;
+  check('19.2', 'bank books equal the cash facts to the paise; no unmatched statement lines', b && b.booksPaise === b.expectedPaise && b.statement?.unmatchedLines === 0, j(b).slice(0, 160));
+
+  const binteg = await api('/ledger/integrity', { token: adminTok });
+  check('19.3', 'integrity report: bank check present and ok', binteg.status === 200 && binteg.data?.data?.checks?.bank?.ok === true, j(binteg.data?.data?.checks?.bank).slice(0, 160));
+
+  const brbac1 = await api('/payouts/admin/bank-reconcile', { token: custTok });
+  const brbac2 = await api('/payouts/admin/bank-reconcile/repair', { method: 'POST', token: custTok });
+  check('19.4', 'bank reconcile endpoints are platform-admin only', brbac1.status === 403 && brbac2.status === 403, `reconcile=${brbac1.status} repair=${brbac2.status}`);
+
+  const brepair = await api('/payouts/admin/bank-reconcile/repair', { method: 'POST', token: adminTok, body: {} });
+  check('19.5', 'no-op repair: already balanced, nothing posted', brepair.status === 200 && brepair.data?.data?.balanced === true && brepair.data?.data?.repaired === null, j(brepair.data?.data).slice(0, 160));
 }
 
 const passed = results.filter((x) => x.pass).length;

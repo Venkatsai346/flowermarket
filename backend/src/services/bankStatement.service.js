@@ -3,7 +3,7 @@ import BankStatementLine from '../models/bankStatementLine.model.js';
 import PayoutBatch from '../models/payoutBatch.model.js';
 import payoutService from './payout.service.js';
 import domainEventService from './domainEvent.service.js';
-import { badRequest } from '../utils/ApiError.js';
+import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { PAYOUT_STATE, DOMAIN_EVENT_TYPE } from '../constants/enums.js';
 
 /**
@@ -140,6 +140,19 @@ class BankStatementService {
         matchStatus: l.matchStatus, batchNumber: null, createdAt: l.createdAt,
       })),
     };
+  }
+
+  /**
+   * Delete a statement line (operator correction — a bad ingestion).
+   * Only UNMATCHED lines may be deleted: a matched line already drove (or
+   * confirmed) a money movement and is immutable — fix the batch instead.
+   */
+  async deleteLine({ statementRef, lineNo, actorId = null }) {
+    const line = await BankStatementLine.findOne({ statementRef, lineNo });
+    if (!line) throw notFound('Statement line not found', 'STATEMENT_LINE_NOT_FOUND');
+    if (line.matchStatus !== 'unmatched') throw conflict('Matched statement lines are immutable — the batch link is the record', 'STATEMENT_LINE_MATCHED');
+    await line.deleteOne();
+    return { deleted: true, statementRef: line.statementRef, lineNo: line.lineNo, utr: line.utr, amountPaise: line.amountPaise };
   }
 }
 

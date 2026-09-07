@@ -873,3 +873,47 @@ wallet, vendor, and statutory backfills. The integrity report gained
 `checks.gst`, and the platform Ledger page gained a **GST output payable**
 row (drift to the paise + per-owner backfill action; A38 now requires all
 11 subsystems).
+
+## Phase 20 — bank cash position integrity (the settlement bank is a real account)
+
+The settlement bank is where the money physically is: PSP settlements move
+captured cash in (`psp_settled`: DR bank / CR gateway_clearing), live payout
+batches move vendor cash out (the `payout_initiated` journal credits the
+bank the batch's `netPaise` — net of commission, platform commission GST and
+TCS/TDS), and statutory deposits leave for the government (CR bank). Phase
+20 reconciles the bank's book balance to the paise against the domain facts
+that moved it:
+
+```
+books(bank)  =  Σ psp_settled (signed — the PSP nets refunds in as negative
+                settlement rows; final once posted)
+             −  Σ batch.netPaise over LIVE batches (PROCESSING / PAID — the
+                payout journal is live)
+             −  Σ statutory deposits (recorded, not reverted)
+             +  bank_backfill journals (self-corrections, excluded)
+```
+
+Refunds never touch the bank — they go back out through the gateway
+(`gateway_clearing`), which is why a refund of a settled order leaves the
+bank books exactly where they were. A REVERSED batch posted its credit AND
+its unwind, so it nets to zero and is excluded, like every prior phase.
+
+The bank statement (Phase 14) is the independent egress cross-check: an
+UNMATCHED statement line is money the bank moved with no known batch UTR.
+The check is `ok` only when the books balance AND the unmatched queue is
+empty — unexplained egress keeps the platform red until it is explained.
+
+| Method | Path | Roles | Notes |
+|---|---|---|---|
+| `GET` | `/payouts/admin/bank-reconcile` | SUPER_ADMIN | `{ expectedPaise, booksPaise, differencePaise, settlements{count, paise}, payouts{count, paise}, deposits{count, paise}, statement{unmatchedLines, unmatchedPaiseAbs}, balanced, ok }` |
+| `POST` | `/payouts/admin/bank-reconcile/repair` | SUPER_ADMIN | body `{ note? }`: posts **one** signed `bank_backfill` journal for the difference (under-stated → DR `bank` / CR `gateway_clearing` — the unexplained-cash bucket absorbs the correction; over-stated → the mirror) + a `bank_backfill` audit event with the **same idempotency key as the journal**, then reports the post-repair state. No-op (200 `{repaired:null}`) when balanced |
+| `DELETE` | `/payouts/admin/statement/lines/:ref/:lineNo` | SUPER_ADMIN | operator correction for a bad ingestion — deletes a statement line. Only **unmatched** lines may be deleted; matched lines already drove a money movement and are immutable (`STATEMENT_LINE_MATCHED`) |
+
+The backfill amount is the measured *difference* — not re-derivable — so
+`replay` refuses it with `BANK_BACKFILL_NOT_REPLAYABLE`, exactly like the
+wallet, vendor, statutory, and GST backfills. Zero-difference backfills are
+refused (`BANK_BACKFILL_EMPTY`). The integrity report gained `checks.bank`
+(12th subsystem), and the platform Ledger page gained a **Bank cash
+position** row (books vs facts + settlement/payout/deposit counts + the
+unmatched statement count, with a single backfill action; A38 now requires
+all 12 subsystems).

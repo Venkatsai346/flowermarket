@@ -174,6 +174,7 @@ function IntegrityCard() {
             <CheckRow name="Vendor ledger" check={c.vendors} detail={c.vendors ? `${c.vendors.vendorsChecked} vendor(s) checked · ${c.vendors.drifted} drifted · total difference ${inr(c.vendors.totalDifferencePaise)}` : ''} />
             <CheckRow name="Statutory payable (TCS/TDS)" check={c.statutory} detail={c.statutory ? `${c.statutory.statutes?.length ?? 0} payable(s) checked · ${c.statutory.drifted ?? 0} drifted · total difference ${inr(c.statutory.totalDifferencePaise ?? 0)}` : ''} />
             <CheckRow name="GST output payable" check={c.gst} detail={c.gst ? `${c.gst.checked ?? 0} payable(s) checked · ${c.gst.drifted ?? 0} drifted · total difference ${inr(c.gst.totalDifferencePaise ?? 0)}` : ''} />
+            <CheckRow name="Bank cash position" check={c.bank} detail={c.bank ? `books ${inr(c.bank.booksPaise)} vs facts ${inr(c.bank.expectedPaise)} (settlements ${c.bank.settlements?.count ?? 0} · payouts ${c.bank.payouts?.count ?? 0} · deposits ${c.bank.deposits?.count ?? 0}) · ${c.bank.statement?.unmatchedLines ?? 0} unmatched statement line(s)` : ''} />
             <CheckRow name="Audit event store" check={c.events} detail={c.events ? `${c.events.total} events · newest ${c.events.newestOccurredAt ? fmtDateTime(c.events.newestOccurredAt) : '—'}` : ''} />
             <CheckRow name="Notifications" check={c.notifications} detail={c.notifications ? `${c.notifications.pending} pending · oldest ${Math.round((c.notifications.oldestPendingAgeMs || 0) / 60000)} min · ${c.notifications.deadLetters} dead-lettered` : ''} />
             <CheckRow name="Audit chain (tamper-evidence)" check={c.auditChain} detail={c.auditChain ? `${c.auditChain.eventsVerified} event(s) re-hashed · ${c.auditChain.unanchored} unanchored · ${c.auditChain.breaks.length} break(s)` : ''} />
@@ -287,6 +288,30 @@ function IntegrityCard() {
                       Backfill {d.owner === 'platform' ? 'platform' : d.owner.slice(0, 8) + '…'}
                     </Button>
                   ))}
+                </div>
+              </div>
+            )}
+            {c.bank && !c.bank.ok && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 sm:col-span-2">
+                <p className="text-xs font-semibold text-amber-900">
+                  The settlement bank books {inr(c.bank.booksPaise)} but the cash facts (settlements − live payout
+                  outflows − net statutory deposits) say {inr(c.bank.expectedPaise)} — difference {inr(c.bank.differencePaise)}
+                  {c.bank.statement?.unmatchedLines > 0 ? ` · ${c.bank.statement.unmatchedLines} statement line(s) moved money with no matching batch` : ''}.
+                  A backfill posts one signed `bank_backfill` journal — recorded in the audit store and not replayable
+                  (the amount is not re-derivable).
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    icon={Wrench}
+                    loading={busy}
+                    onClick={async () => {
+                      const r = await run(() => api.payouts.admin.bankReconcileRepair({}));
+                      if (r?.data) { toast.success('Bank cash position backfilled'); refetch(); }
+                    }}
+                  >
+                    Backfill bank position
+                  </Button>
                 </div>
               </div>
             )}

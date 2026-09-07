@@ -356,6 +356,32 @@ class PayoutController {
     res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: row.differencePaise, posted: repaired.posted } }, { message: 'GST payable backfilled' }));
   });
 
+  statementLineDelete = asyncHandler(async (req, res) => {
+    const result = await bankStatementService.deleteLine({ statementRef: req.params.ref, lineNo: Number(req.params.lineNo), actorId: req.auth.userId });
+    res.status(200).json(success(result, { message: 'Statement line deleted (unmatched only)' }));
+  });
+
+  // ---- Phase 20: bank cash position integrity (bank books = cash facts) ----
+
+  bankReconcile = asyncHandler(async (req, res) => {
+    const result = await payoutService.reconcileBank({});
+    res.status(200).json(success(result, { message: 'Bank cash position reconciliation' }));
+  });
+
+  bankReconcileRepair = asyncHandler(async (req, res) => {
+    const all = await payoutService.reconcileBank({});
+    if (all.balanced) {
+      res.status(200).json(success({ ...all, repaired: null }, { message: 'Bank position already balanced' }));
+      return;
+    }
+    const repaired = await payoutService.postBankBackfill({
+      differencePaise: all.differencePaise,
+      note: req.body?.note ? String(req.body.note).slice(0, 300) : null,
+    });
+    const after = await payoutService.reconcileBank({});
+    res.status(200).json(success({ ...after, repaired: { idempotencyKey: repaired.idempotencyKey, differencePaise: all.differencePaise, posted: repaired.posted } }, { message: 'Bank cash position backfilled' }));
+  });
+
   // ---- Phase 18: statutory payable integrity (TCS/TDS are real accounts) ----
 
   statutoryReconcile = asyncHandler(async (req, res) => {
