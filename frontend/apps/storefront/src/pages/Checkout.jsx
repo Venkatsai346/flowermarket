@@ -19,8 +19,9 @@ function AddressForm({ onSaved, onCancel }) {
   const [f, setF] = useState({ name: '', phone: '', line1: '', line2: '', city: '', state: '', pincode: '' });
   const [busy, setBusy] = useState(false);
   const toast = useShop((s) => s.toast);
+  
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-
+  
   const save = async () => {
     setBusy(true);
     try {
@@ -60,7 +61,7 @@ export default function Checkout() {
   const toast = useShop((s) => s.toast);
   const navigate = useNavigate();
   const isAuth = useShopAuth((s) => s.isAuthenticated());
-
+  
   const [addressId, setAddressId] = useState('');
   const [slotId, setSlotId] = useState('');
   const [reservation, setReservation] = useState(null);
@@ -75,26 +76,43 @@ export default function Checkout() {
     [isAuth],
   );
 
+  // --- FIX: Safely extract arrays in case the API wraps them in an object (e.g., { slots: [...] } or { data: [...] }) ---
+  const addressesArray = useMemo(() => {
+    if (Array.isArray(addresses)) return addresses;
+    if (Array.isArray(addresses?.addresses)) return addresses.addresses;
+    if (Array.isArray(addresses?.data)) return addresses.data;
+    return [];
+  }, [addresses]);
+
+  const slotsArray = useMemo(() => {
+    if (Array.isArray(slots)) return slots;
+    if (Array.isArray(slots?.slots)) return slots.slots;
+    if (Array.isArray(slots?.data)) return slots.data;
+    return [];
+  }, [slots]);
+  // ---------------------------------------------------------------------------------------------------------------
+
   const reservationId = reservation?.id || reservation?.reservationId || null;
   const quoteKey = isAuth && addressId && reservationId ? `${addressId}:${reservationId}` : null;
+  
   const { data: quote } = useApi(
     () => (quoteKey
       ? api.shop.checkoutQuote({ slotReservationId: reservationId, addressId, confirmPriceChanges: true })
       : Promise.resolve({ data: null })),
     [quoteKey],
   );
+
   const walletBalance = Number(wallet?.balance) || 0;
   const orderTotal = Number(quote?.grandTotal) || 0;
   const canWalletPay = Boolean(isAuth && wallet && quote && walletBalance >= orderTotal && quote.grandTotal != null);
 
   useEffect(() => {
-    if (!addressId && addresses?.length) {
-      setAddressId(String(addresses.find((a) => a.isDefault)?.id || addresses[0].id));
+    // FIX: Use addressesArray instead of addresses
+    if (!addressId && addressesArray.length) {
+      setAddressId(String(addressesArray.find((a) => a.isDefault)?.id || addressesArray[0].id));
     }
-  }, [addresses, addressId]);
+  }, [addressesArray, addressId]);
 
-  // If the preflight had to snap the cart to live prices, re-read the cart so
-  // the summary line items agree with the quoted totals.
   useEffect(() => {
     if (!quote?.priceChanged) return undefined;
     let alive = true;
@@ -102,9 +120,6 @@ export default function Checkout() {
     return () => { alive = false; };
   }, [quote?.priceChanged, setCart]);
 
-  // If a previously selected wallet option no longer covers the exact order
-  // total (balance dropped / quote changed / cart changed), fall back to UPI
-  // so the customer can never submit a wallet payment the server would reject.
   useEffect(() => {
     if (payment === 'wallet' && !canWalletPay) setPayment('upi');
   }, [payment, canWalletPay]);
@@ -112,16 +127,17 @@ export default function Checkout() {
   /** Slots grouped by day, because "tomorrow 4–6pm" is how people think. */
   const byDay = useMemo(() => {
     const groups = new Map();
-    for (const s of slots || []) {
+    // FIX: Iterate over the safely normalized slotsArray
+    for (const s of slotsArray) {
       const key = s.date;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(s);
     }
     return [...groups.entries()];
-  }, [slots]);
+  }, [slotsArray]);
 
   const items = cart?.items || [];
-
+  
   const reserve = async (slot) => {
     setSlotId(String(slot.id));
     try {
@@ -165,7 +181,7 @@ export default function Checkout() {
           icon={MapPin}
           title="Your basket is empty"
           message="Add something before checking out."
-          action={<Button onClick={() => navigate('/')}>Browse the store</Button>}
+          action={<Button onClick={() => navigate('/')} >Browse the store</Button>}
         />
       </div>
     );
@@ -190,7 +206,8 @@ export default function Checkout() {
             />
           ) : (
             <div className="space-y-2">
-              {(addresses || []).map((a) => (
+              {/* FIX: Map over addressesArray */}
+              {addressesArray.map((a) => (
                 <button
                   key={a.id}
                   type="button"
@@ -226,7 +243,6 @@ export default function Checkout() {
           <p className="mb-4 text-xs text-slate-500">
             Choosing a slot holds it for 10 minutes so nobody else can take it while you pay.
           </p>
-
           {slotsLoading ? (
             <div className="flex gap-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-16 w-32" />)}</div>
           ) : !byDay.length ? (
@@ -335,7 +351,7 @@ export default function Checkout() {
           </ul>
           <dl className="space-y-1.5 border-t border-slate-100 pt-3 text-sm">
             <div className="flex justify-between text-slate-600">
-              <dt>Subtotal</dt><dd><Money value={cart?.subtotal} /></dd>
+              <dt>Subtotal</dt><dd><Money value={cart?.cart?.subtotal ?? cart?.subtotal} /></dd>
             </div>
             {quote ? (
               <>
@@ -365,11 +381,9 @@ export default function Checkout() {
               </p>
             )}
           </dl>
-
           <Button className="mt-4 w-full" loading={placing} disabled={!canPlace} onClick={place}>
             {!addressId ? 'Choose an address' : !reservation ? 'Choose a slot' : 'Place order'}
           </Button>
-
           <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
             <ShieldCheck className="h-3.5 w-3.5" />
             Stock and price are re-checked at the moment you order

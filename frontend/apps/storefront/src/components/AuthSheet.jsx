@@ -27,7 +27,14 @@ export default function AuthSheet() {
     if (phone.replace(/\D/g, '').length !== 10) { toast('Enter a 10-digit mobile number', 'error'); return; }
     setBusy(true);
     try {
-      const r = await api.shop.requestOtp({ channel: 'sms', target: phone.replace(/\D/g, ''), purpose: 'login' });
+      const r = await api.shop.requestOtp({
+        channel: 'phone',
+        purpose: 'login',
+        phone: {
+          countryCode: '+91',
+          number: phone.replace(/\D/g, ''),
+        },
+      });
       // the console/dev OTP provider echoes the code so the flow is testable
       if (r.data?.code || r.data?.otp) setDevCode(r.data.code || r.data.otp);
       setStep('code');
@@ -40,11 +47,24 @@ export default function AuthSheet() {
   };
 
   const verify = async () => {
+    if (!/^[0-9]{4,8}$/.test(code.trim())) {
+      toast('Enter a valid OTP', 'error');
+      return;
+    }
+
     setBusy(true);
+
     try {
       const r = await api.shop.verifyOtp({
-        channel: 'sms', target: phone.replace(/\D/g, ''), purpose: 'login', code: code.trim(),
+        channel: 'phone',
+        purpose: 'login',
+        phone: {
+          countryCode: '+91',
+          number: phone.replace(/\D/g, ''),
+        },
+        code: code.trim(),
       });
+
       setSession(r.data);
       toast('Signed in', 'success');
       reset();

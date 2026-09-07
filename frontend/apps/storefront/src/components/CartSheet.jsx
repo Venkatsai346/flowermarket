@@ -16,13 +16,16 @@ export default function CartSheet() {
   const openAuth = useShop((s) => s.openAuth);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
   const navigate = useNavigate();
-
+  
   const [busyId, setBusyId] = useState(null);
   const [coupon, setCoupon] = useState('');
   const [couponBusy, setCouponBusy] = useState(false);
 
+  // --- FIX: Correctly map the nested API response shape ---
   const items = cart?.items || [];
-  const totals = cart?.totals || cart || {};
+  const cartMeta = cart?.cart || cart || {}; // Extract the nested cart metadata
+  const subtotal = cartMeta.subtotal ?? cart?.subtotal ?? 0;
+  // --------------------------------------------------------
 
   const setQty = async (item, qty) => {
     setBusyId(item.id);
@@ -81,22 +84,31 @@ export default function CartSheet() {
         <div className="space-y-3">
           <dl className="space-y-1.5 text-sm">
             <div className="flex justify-between text-slate-600">
-              <dt>Subtotal</dt><dd><Money value={totals.subtotal ?? cart?.subtotal} /></dd>
+              <dt>Subtotal</dt> 
+              {/* FIX: Use the resolved subtotal variable */}
+              <dd><Money value={subtotal} /></dd>
             </div>
-            {Boolean(cart?.couponCode) && (
+            
+            {/* FIX: Use cartMeta for couponCode */}
+            {Boolean(cartMeta.couponCode) && (
               <div className="flex justify-between text-emerald-600">
-                <dt className="flex items-center gap-1"><Tag className="h-3.5 w-3.5" />{cart.couponCode}</dt>
+                <dt className="flex items-center gap-1">
+                  <Tag className="h-3.5 w-3.5" />{cartMeta.couponCode}
+                </dt>
                 <dd>
                   <button type="button" onClick={dropCoupon} className="text-xs underline">remove</button>
                 </dd>
               </div>
             )}
+            
             <p className="pt-1 text-[11px] text-slate-400">
               Delivery, taxes and any discount are confirmed at checkout.
             </p>
           </dl>
+          
           <Button className="w-full" onClick={goCheckout}>
-            Checkout · <Money value={totals.subtotal ?? cart?.subtotal} />
+            {/* FIX: Use the resolved subtotal variable */}
+            Checkout · <Money value={subtotal} />
           </Button>
         </div>
       ) : null}
@@ -139,8 +151,9 @@ export default function CartSheet() {
               </button>
             </li>
           ))}
-
-          {!cart?.couponCode && (
+          
+          {/* FIX: Use cartMeta for checking if coupon exists */}
+          {!cartMeta.couponCode && (
             <li className="flex gap-2 pt-4">
               <input
                 value={coupon}

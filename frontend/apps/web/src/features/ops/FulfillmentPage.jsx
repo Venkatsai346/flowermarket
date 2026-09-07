@@ -25,28 +25,26 @@ export default function FulfillmentPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [selectedOrder, setSelectedOrder] = useState(null);
 
-  const { data: counts, refetch: refetchCounts } = useApi(
-    () => Promise.all([
-      api.fulfillment.listAll({ status: 'confirmed', page: 1, limit: 1 }),
-      api.fulfillment.listAll({ status: 'picking', page: 1, limit: 1 }),
-      api.fulfillment.listAll({ status: 'packed', page: 1, limit: 1 }),
-      api.fulfillment.listAll({ status: 'out_for_delivery', page: 1, limit: 1 }),
-      api.fulfillment.listAll({ status: 'delivery_failed', page: 1, limit: 1 }),
-      api.fulfillment.listAll({ status: 'delivered', page: 1, limit: 1 }),
-    ]),
-    [refreshKey],
-  );
+  // --- DEEP FIX: Separate useApi calls to properly extract `.meta` for the stats ---
+  const { meta: confirmedMeta, refetch: refetchConfirmed } = useApi(() => api.fulfillment.listAll({ status: 'confirmed', page: 1, limit: 1 }), [refreshKey]);
+  const { meta: pickingMeta, refetch: refetchPicking } = useApi(() => api.fulfillment.listAll({ status: 'picking', page: 1, limit: 1 }), [refreshKey]);
+  const { meta: packedMeta, refetch: refetchPacked } = useApi(() => api.fulfillment.listAll({ status: 'packed', page: 1, limit: 1 }), [refreshKey]);
+  const { meta: outMeta, refetch: refetchOut } = useApi(() => api.fulfillment.listAll({ status: 'out_for_delivery', page: 1, limit: 1 }), [refreshKey]);
+  const { meta: failedMeta, refetch: refetchFailed } = useApi(() => api.fulfillment.listAll({ status: 'delivery_failed', page: 1, limit: 1 }), [refreshKey]);
+  const { meta: deliveredMeta, refetch: refetchDelivered } = useApi(() => api.fulfillment.listAll({ status: 'delivered', page: 1, limit: 1 }), [refreshKey]);
 
-  const count = (i) => counts?.[i]?.meta?.total || 0;
   const refresh = () => {
     setRefreshKey((k) => k + 1);
-    refetchCounts();
+    refetchConfirmed(); refetchPicking(); refetchPacked(); refetchOut(); refetchFailed(); refetchDelivered();
   };
-
+  
   const onChanged = () => {
     setRefreshKey((k) => k + 1);
-    refetchCounts();
+    refetchConfirmed(); refetchPicking(); refetchPacked(); refetchOut(); refetchFailed(); refetchDelivered();
   };
+
+  // Helper to safely read the total from the meta object
+  const getTotal = (meta) => meta?.total || 0;
 
   return (
     <div>
@@ -55,7 +53,7 @@ export default function FulfillmentPage() {
         description="Warehouse picking, rider dispatch, delivery slots and payment reconciliation."
         actions={<Button variant="secondary" icon={RefreshCw} onClick={refresh}>Refresh all</Button>}
       />
-
+      
       <nav className="mb-5 flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1.5">
         {OPS_TABS.map(([key, label]) => {
           const Icon = TAB_ICONS[key];
@@ -79,17 +77,17 @@ export default function FulfillmentPage() {
         <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
           {tab === 'picking' ? (
             <>
-              <Stat label="To pick" value={count(0)} sub="confirmed" icon={Boxes} tone="sky" />
-              <Stat label="Picking now" value={count(1)} sub="in progress" icon={Boxes} tone="violet" />
-              <Stat label="Packed" value={count(2)} sub="ready to dispatch" icon={Boxes} tone="emerald" />
-              <Stat label="Out for delivery" value={count(3)} sub="rider leg" icon={Truck} tone="amber" />
+              <Stat label="To pick" value={getTotal(confirmedMeta)} sub="confirmed" icon={Boxes} tone="sky" />
+              <Stat label="Picking now" value={getTotal(pickingMeta)} sub="in progress" icon={Boxes} tone="violet" />
+              <Stat label="Packed" value={getTotal(packedMeta)} sub="ready to dispatch" icon={Boxes} tone="emerald" />
+              <Stat label="Out for delivery" value={getTotal(outMeta)} sub="rider leg" icon={Truck} tone="amber" />
             </>
           ) : (
             <>
-              <Stat label="Packed" value={count(2)} sub="awaiting dispatch" icon={Truck} tone="emerald" />
-              <Stat label="Out for delivery" value={count(3)} sub="active rides" icon={Truck} tone="sky" />
-              <Stat label="Failed" value={count(4)} sub="needs retry" icon={Truck} tone="rose" />
-              <Stat label="Delivered" value={count(5)} sub="completed" icon={Truck} tone="slate" />
+              <Stat label="Packed" value={getTotal(packedMeta)} sub="awaiting dispatch" icon={Truck} tone="emerald" />
+              <Stat label="Out for delivery" value={getTotal(outMeta)} sub="active rides" icon={Truck} tone="sky" />
+              <Stat label="Failed" value={getTotal(failedMeta)} sub="needs retry" icon={Truck} tone="rose" />
+              <Stat label="Delivered" value={getTotal(deliveredMeta)} sub="completed" icon={Truck} tone="slate" />
             </>
           )}
         </div>
@@ -99,7 +97,7 @@ export default function FulfillmentPage() {
       {tab === 'delivery' && <DeliveryQueue refreshKey={refreshKey} onOpen={setSelectedOrder} />}
       {tab === 'slots' && <SlotsPanel refreshKey={refreshKey} />}
       {tab === 'payments' && <PaymentsPanel refreshKey={refreshKey} />}
-
+      
       {selectedOrder && (
         <OrderOpsDrawer order={selectedOrder} onClose={() => setSelectedOrder(null)} onChanged={onChanged} />
       )}

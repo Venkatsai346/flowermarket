@@ -24,10 +24,12 @@ class CatalogPublicController {
    * rather than failing the request: a degraded catalogue beats no catalogue.
    */
   search = asyncHandler(async (req, res) => {
+    const resolvedTenantId = req.tenantId || req.headers['x-tenant-id'];
+    console.log("🔍 CATALOG DEBUG - Resolved Tenant ID:", resolvedTenantId);
     if (config.search.rankedCatalog) {
       try {
         const ranked = await searchService.search({
-          tenantId: req.tenantId,
+          tenantId: resolvedTenantId,
           query: req.query,
           sessionKey: req.get('x-session-id') || req.ip || null,
         });
@@ -40,7 +42,7 @@ class CatalogPublicController {
         console.error('[search] ranked path failed, falling back to the legacy scan:', err.message);
       }
     }
-    const result = await catalogSearchService.search({ tenantId: req.tenantId, query: req.query });
+    const result = await catalogSearchService.search({ tenantId: resolvedTenantId, query: req.query });
     res.status(200).json(success(result.items, { message: 'Catalog fetched', meta: result.meta }));
   });
 

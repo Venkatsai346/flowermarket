@@ -59,7 +59,7 @@ export default function SlotsPanel({ hubs = [], hubId = '', onHubChange }) {
         <Field label="Hub">
           <Select value={hubId} onChange={(e) => setHubId(e.target.value)}>
             <option value="">All hubs</option>
-            {hubs.map((h) => <option key={rid(h)} value={rid(h)}>{h.name}</option>)}
+            {hubs.map((h) => <option key={h.id || h._id} value={h.id || h._id}>{h.name}</option>)}
           </Select>
         </Field>
         <Field label="From">

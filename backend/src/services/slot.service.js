@@ -98,18 +98,44 @@ class SlotService {
   }
 
   /**
-   * Customer query: available slots for a pincode + date.
-   * Returns slots with remaining capacity and cut-off status.
+   * DEEP FIX: Upgraded to support date ranges (fromDate/toDate), arrays, or fallback to UTC 'days'.
+   * This prevents the timezone trap and supports the frontend's `days: 3` request.
    */
-  async listAvailable({ tenantId, pincode, date }) {
+  async listAvailable({ tenantId, pincode, date, fromDate, toDate, days }) {
     const hub = await this.resolveHub({ tenantId, pincode });
+    
+    // --- DEEP FIX: Build a robust date filter ---
+    let dateQuery;
+    if (fromDate && toDate) {
+      // Range query (Best practice if Controller passes fromDate/toDate)
+      dateQuery = { $gte: fromDate, $lte: toDate };
+    } else if (date) {
+      // Single date query
+      dateQuery = date;
+    } else {
+      // FALLBACK: Generate UTC dates based on 'days' param (defaults to 3 days)
+      // We MUST use UTC methods to match the database format ('YYYY-MM-DD' in UTC)
+      const numDays = days || 3; 
+      const utcDates = [];
+      const now = new Date();
+      for (let i = 0; i < numDays; i++) {
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + i));
+        utcDates.push(d.toISOString().slice(0, 10));
+      }
+      dateQuery = { $in: utcDates };
+    }
+    // ---------------------------------------------
+
     const slots = await DeliverySlot.find({
-      tenantId, hubId: hub._id, date, status: { $in: ['open', 'full'] },
-    }).sort({ startTime: 1 }).lean();
+      tenantId, 
+      hubId: hub._id, 
+      date: dateQuery, // Now safely handles ranges, arrays, or single dates
+      status: { $in: ['open', 'full'] },
+    }).sort({ date: 1, startTime: 1 }).lean(); // Added date: 1 to sort by day
 
     const now = new Date();
     const result = slots.map((s) => {
-      const effective = s.manualCapacity ?? s.totalCapacity; // Phase 4 override
+      const effective = s.manualCapacity ?? s.totalCapacity;
       const remaining = Math.max(0, effective - s.reservedCapacity);
       const cutOffPassed = s.lastOrderTime && s.lastOrderTime <= now;
       return {
@@ -126,6 +152,7 @@ class SlotService {
         hub: { id: hub._id, name: hub.name },
       };
     });
+
     return { hub: { id: hub._id, name: hub.name }, slots: result };
   }
 

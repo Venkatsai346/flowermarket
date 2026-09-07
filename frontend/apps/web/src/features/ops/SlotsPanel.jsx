@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { CalendarPlus, RefreshCw, Settings2, SlidersHorizontal, XCircle } from 'lucide-react';
-import { addDays, fmtDate, pct, pickMeta, todayISO } from '@flower-market/shared';
+import { addDays, fmtDate, pickMeta, todayISO } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
 import { errMsg } from '../../lib/utils.js';
@@ -91,21 +91,39 @@ export default function SlotsPanel({ refreshKey = 0 }) {
   const [selectedSlot, setSelectedSlot] = useState(null);
   const action = useAction();
 
-  const { data, loading, refetch } = useApi(
-    () => Promise.all([
-      api.admin.hubs(),
-      api.admin.slots({ hubId: hubId || undefined, from, to }),
-      api.admin.slotsUtilization({ hubId: hubId || undefined, from, to }),
-    ]),
-    [hubId, from, to, refreshKey],
+  // --- DEEP FIX: useApi expects a single response object with .data and .meta. 
+  // Promise.all returns an array, which breaks useApi's internal `r.data` extraction.
+  // We must use separate useApi calls for each endpoint. ---
+  const { data: hubsData, loading: hubsLoading, refetch: refetchHubs } = useApi(
+    () => api.admin.hubs(),
+    [refreshKey]
+  );
+  const { data: slotsData, loading: slotsLoading, refetch: refetchSlots } = useApi(
+    () => api.admin.slots({ hubId: hubId || undefined, from, to }),
+    [hubId, from, to, refreshKey]
+  );
+  const { data: utilData, loading: utilLoading, refetch: refetchUtil } = useApi(
+    () => api.admin.slotsUtilization({ hubId: hubId || undefined, from, to }),
+    [hubId, from, to, refreshKey]
   );
 
-  const hubs = data?.[0] || [];
-  const slots = data?.[1] || [];
-  const utilization = data?.[2] || [];
+  const loading = hubsLoading || slotsLoading || utilLoading;
+  const refetch = () => {
+    refetchHubs();
+    refetchSlots();
+    refetchUtil();
+  };
+
+  // useApi already unwraps `.data`, so these are already the raw arrays!
+  const hubs = Array.isArray(hubsData) ? hubsData : [];
+  const slots = Array.isArray(slotsData) ? slotsData : [];
+  const utilization = Array.isArray(utilData) ? utilData : [];
+  // --------------------------------------------------------------------------------
 
   useEffect(() => {
-    if (!hubId && hubs.length) setHubId(hubs[0].id);
+    if (!hubId && hubs.length) {
+      setHubId(hubs[0].id);
+    }
   }, [hubs, hubId]);
 
   const capacity = utilization.reduce((a, s) => a + (s.capacity || 0), 0);
@@ -159,6 +177,7 @@ export default function SlotsPanel({ refreshKey = 0 }) {
           <Field label="Hub" className="w-56!">
             <Select value={hubId} onChange={(e) => setHubId(e.target.value)}>
               <option value="">All hubs</option>
+              {/* hubs is now a properly resolved array */}
               {hubs.map((h) => <option key={h.id} value={h.id}>{h.name} · {h.code}</option>)}
             </Select>
           </Field>
@@ -170,7 +189,7 @@ export default function SlotsPanel({ refreshKey = 0 }) {
           </Field>
         </div>
         <Table
-          loading={loading && !data}
+          loading={loading && !slotsData}
           data={slots}
           onRowClick={(r) => setSelectedSlot(r)}
           empty={<EmptyState title="No slots" message="Generate slots for this hub/date range first." />}
