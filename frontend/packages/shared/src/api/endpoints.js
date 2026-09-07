@@ -47,6 +47,7 @@ export function createEndpoints(client) {
       adminUpdateVendor: (id, body) => c.patch(`/marketplace/admin/vendors/${id}`, body),
       reviewVendorProduct: (id, body) => c.post(`/marketplace/admin/vendor-products/${id}/review`, body),
       adminTenants: (q = {}) => c.get('/marketplace/admin/tenants', { query: q }),
+      adminSetTenantStatus: (id, body) => c.post(`/marketplace/admin/tenants/${id}/status`, body),
       adminPlans: () => c.get('/marketplace/admin/plans'),
       createPlan: (body) => c.post('/marketplace/admin/plans', body),
       updatePlan: (id, body) => c.patch(`/marketplace/admin/plans/${id}`, body),
@@ -393,6 +394,7 @@ export function createEndpoints(client) {
       products: (q = {}) => c.get('/catalog', { query: q }),
       product: (id) => c.get(`/catalog/products/${id}`),
       stock: (id) => c.get(`/catalog/products/${id}/stock`),
+      serviceability: (pincode) => c.get('/catalog/serviceability', { query: { pincode } }),
       categories: () => c.get('/catalog/categories'),
       brands: () => c.get('/catalog/brands'),
 
@@ -422,6 +424,7 @@ export function createEndpoints(client) {
       orderTimeline: (id) => c.get(`/orders/${id}/timeline`),
       orderPayment: (id) => c.get(`/orders/${id}/payment`),
       cancelOrder: (id, body) => c.post(`/orders/${id}/cancel`, body),
+      orderInvoice: (id) => c.get(`/tax/orders/${id}/invoice`),
 
       // addresses
       addresses: () => c.get('/users/me/addresses'),

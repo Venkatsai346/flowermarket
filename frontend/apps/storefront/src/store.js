@@ -1,5 +1,12 @@
 import { create } from 'zustand';
 
+const pinKey = () => `fm-pin:${typeof window !== 'undefined' ? window.location.hostname : 'server'}`;
+
+function readPin() {
+  if (typeof window === 'undefined') return '';
+  return window.localStorage.getItem(pinKey()) || '';
+}
+
 /**
  * UI state only. The cart itself lives on the SERVER — price, stock and
  * coupon validity are all things a client must not be trusted with, and the
@@ -23,13 +30,34 @@ export const useShop = create((set, get) => ({
   setCart: (cart) => set({ cart }),
   itemCount: () => (get().cart?.items || []).reduce((a, i) => a + (i.qty || 0), 0),
 
+  // ---- pincode (the front door) ----
+  pincode: readPin(),
+  serviceability: null,
+  pinOpen: false,
+  openPin: () => set({ pinOpen: true }),
+  closePin: () => set({ pinOpen: false }),
+  setPincode: (pincode) => {
+    const pin = String(pincode || '').replace(/\D/g, '').slice(0, 6);
+    if (typeof window !== 'undefined') {
+      if (pin) window.localStorage.setItem(pinKey(), pin);
+      else window.localStorage.removeItem(pinKey());
+    }
+    set({ pincode: pin, serviceability: pin ? get().serviceability : null });
+  },
+  setServiceability: (serviceability) => set({ serviceability }),
+
   // ---- UI ----
   cartOpen: false,
   openCart: () => set({ cartOpen: true }),
   closeCart: () => set({ cartOpen: false }),
   authOpen: false,
-  openAuth: () => set({ authOpen: true }),
-  closeAuth: () => set({ authOpen: false }),
+  authPending: null,
+  openAuth: (pending = null) => set({ authOpen: true, authPending: pending || null }),
+  closeAuth: () => {
+    const pending = get().authPending;
+    pending?.onCancel?.();
+    set({ authOpen: false, authPending: null });
+  },
 
   toasts: [],
   toast: (message, tone = 'info') => {

@@ -22,6 +22,8 @@ import {
   TAX_DOC_TYPE, TAX_DOC_STATUS, TAX_OWNER_TYPE, EINVOICE_STATUS,
   CREDIT_NOTE_REASON, AUDIT_ACTION, ORDER_STATUS,
 } from '../constants/enums.js';
+import OrderChargeBreakdown from '../models/orderChargeBreakdown.model.js';
+import { renderInvoiceHtml } from '../utils/invoiceHtml.js';
 
 /**
  * TaxDocumentService — issues legally valid invoices and credit notes.
@@ -192,6 +194,10 @@ class TaxDocumentService {
 
     const items = await OrderItem.find({ orderId: order._id }).lean();
     if (!items.length) throw badRequest('Order has no items to invoice', 'ORDER_EMPTY');
+    const breakdown = await OrderChargeBreakdown.findOne({ orderId: order._id }).lean();
+    // Only rows we ourselves snapshotted as inclusive use the inclusive
+    // reconstruction. Seeded/legacy exclusive orders have no flag → exclusive.
+    const pricesInclusive = breakdown?.pricesInclusive === true;
 
     // ---- facts we need: category (for the rate) and place of supply ----
     const masters = await ProductMaster.find({ _id: { $in: items.map((i) => i.productMasterId).filter(Boolean) } })
@@ -250,6 +256,7 @@ class TaxDocumentService {
         customer,
         supplyDate,
         includeDeliveryFee: key === 'store' ? deliveryFeePaise : 0,
+        pricesInclusive,
         actorId,
         req,
       });
@@ -262,7 +269,7 @@ class TaxDocumentService {
   /** Build + persist ONE invoice for one supplier's slice of an order. */
   async issueSingleInvoice({
     order, items, vendorId, categoryByMaster, unitByMaster, policies, posStateCode,
-    customer, supplyDate, includeDeliveryFee = 0, actorId = null, req = null,
+    customer, supplyDate, includeDeliveryFee = 0, pricesInclusive = false, actorId = null, req = null,
   }) {
     const { registration, supplierType } = await taxService.resolveSupplier({
       tenantId: order.tenantId, vendorId,
@@ -281,14 +288,14 @@ class TaxDocumentService {
       const chargedTaxPaise = toPaise(item.taxAmount || 0);
 
       /**
-       * RECONSTRUCTION MODE. The Phase 3.5 pipeline charged tax ON TOP of the
-       * line (exclusive), so the customer paid gross − discount + tax. We feed
-       * the engine that net and the tax that was actually charged, and it only
-       * splits it into heads. Switching checkout to inclusive pricing is a
-       * separate, flagged migration (it changes what customers are charged);
-       * this document layer is correct either way.
+       * RECONSTRUCTION MODE. The charged tax is authoritative; we only split
+       * it into CGST/SGST/IGST. Inclusive MRP (Wave 1): the customer paid
+       * gross − discount. Exclusive historical rows: they paid gross −
+       * discount + tax. We never re-price from today's rate table.
        */
-      const netChargedPaise = grossPaise - discountPaise + chargedTaxPaise;
+      const netChargedPaise = pricesInclusive
+        ? grossPaise - discountPaise
+        : grossPaise - discountPaise + chargedTaxPaise;
       const computed = computeLineTax({
         grossPaise: netChargedPaise,
         discountPaise: 0,
@@ -762,8 +769,8 @@ class TaxDocumentService {
   }
 
   /** Attach rupee values alongside paise so clients never divide by 100. */
-  withRupeeView(doc) {
-    return {
+  withRupeeView(doc, { html = false } = {}) {
+    const view = {
       ...doc,
       totalsRupees: {
         taxableValue: fromPaise(doc.totals?.taxableValuePaise || 0),
@@ -776,6 +783,8 @@ class TaxDocumentService {
         grandTotal: fromPaise(doc.totals?.grandTotalPaise || 0),
       },
     };
+    if (html) view.html = renderInvoiceHtml(view);
+    return view;
   }
 }
 

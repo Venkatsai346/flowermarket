@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { PackageSearch, SlidersHorizontal } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { MapPin, PackageSearch, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -7,6 +7,7 @@ import ProductCard from '../components/ProductCard.jsx';
 import ProductSheet from '../components/ProductSheet.jsx';
 import { Empty, ProductSkeleton, Button } from '../components/ui.jsx';
 import { cn, errMsg } from '../lib/utils.js';
+import { isAuthError, withAuthRetry } from '../lib/withAuth.js';
 
 const SORTS = [
   ['', 'Featured'],
@@ -21,6 +22,9 @@ export default function Home({ query }) {
   const cart = useShop((s) => s.cart);
   const setCart = useShop((s) => s.setCart);
   const toast = useShop((s) => s.toast);
+  const pincode = useShop((s) => s.pincode);
+  const serviceability = useShop((s) => s.serviceability);
+  const openPin = useShop((s) => s.openPin);
 
   const [categoryId, setCategoryId] = useState('');
   const [sort, setSort] = useState('');
@@ -50,11 +54,11 @@ export default function Home({ query }) {
   const add = async (listing) => {
     setBusyId(listing.listingId);
     try {
-      const r = await api.shop.addItem({ tenantProductId: listing.listingId, qty: 1 });
+      const r = await withAuthRetry(() => api.shop.addItem({ tenantProductId: listing.listingId, qty: 1 }));
       setCart(r.data);
       toast(`${listing.product?.title} added`, 'success');
     } catch (e) {
-      toast(errMsg(e), 'error');
+      toast(isAuthError(e) ? 'Sign in to add to your basket' : errMsg(e), isAuthError(e) ? 'info' : 'error');
     } finally {
       setBusyId(null);
     }
@@ -65,12 +69,12 @@ export default function Home({ query }) {
     if (!entry) return;
     setBusyId(listing.listingId);
     try {
-      const r = qty <= 0
-        ? await api.shop.removeItem(entry.itemId)
-        : await api.shop.updateItem(entry.itemId, { qty });
+      const r = await withAuthRetry(() => (qty <= 0
+        ? api.shop.removeItem(entry.itemId)
+        : api.shop.updateItem(entry.itemId, { qty })));
       setCart(r.data);
     } catch (e) {
-      toast(errMsg(e), 'error');
+      toast(isAuthError(e) ? 'Sign in to update your basket' : errMsg(e), isAuthError(e) ? 'info' : 'error');
     } finally {
       setBusyId(null);
     }
@@ -78,6 +82,7 @@ export default function Home({ query }) {
 
   const items = data || [];
   const tree = categories || [];
+  const unserviceable = Boolean(pincode && serviceability && serviceability.serviceable === false);
 
   return (
     <>
@@ -90,10 +95,18 @@ export default function Home({ query }) {
             {store.description && (
               <p className="max-w-xl text-sm leading-relaxed text-slate-600">{store.description}</p>
             )}
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              Same-day delivery slots available
-            </div>
+            <button
+              type="button"
+              onClick={openPin}
+              className="inline-flex w-fit items-center gap-2 rounded-full bg-white/70 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm ring-1 ring-slate-200/80"
+            >
+              <MapPin className="h-3.5 w-3.5" />
+              {pincode
+                ? (serviceability && !serviceability.serviceable
+                  ? `We don't deliver to ${pincode}`
+                  : `Delivering to ${pincode}`)
+                : 'Set your pincode for slots'}
+            </button>
           </div>
         </section>
       )}
@@ -149,7 +162,14 @@ export default function Home({ query }) {
           </div>
         </div>
 
-        {loading && !data ? (
+        {unserviceable ? (
+          <Empty
+            icon={MapPin}
+            title={`We don't deliver to ${pincode}`}
+            message="Try a pin we cover — we will not show a catalogue we cannot fulfil."
+            action={<Button variant="soft" onClick={openPin}>Change pincode</Button>}
+          />
+        ) : loading && !data ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {Array.from({ length: 8 }).map((_, i) => <ProductSkeleton key={i} />)}
           </div>

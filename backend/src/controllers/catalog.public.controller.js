@@ -3,9 +3,10 @@ import searchService from '../services/search.service.js';
 import config from '../config/index.js';
 import productMasterService from '../services/productMaster.service.js';
 import inventoryService from '../services/inventory.service.js';
+import slotService from '../services/slot.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
-import { notFound } from '../utils/ApiError.js';
+import { notFound, badRequest } from '../utils/ApiError.js';
 
 /**
  * CatalogPublicController — customer-facing read endpoints.
@@ -105,6 +106,25 @@ class CatalogPublicController {
         },
       }, { message: 'Product fetched' })
     );
+  });
+
+  /** GET /catalog/serviceability?pincode= — the front door. Public, no auth. */
+  serviceability = asyncHandler(async (req, res) => {
+    const pincode = String(req.query.pincode || '').replace(/\D/g, '');
+    if (!/^\d{6}$/.test(pincode)) throw badRequest('Enter a 6-digit pincode', 'BAD_PINCODE');
+    try {
+      const hub = await slotService.resolveHub({ tenantId: req.tenantId, pincode });
+      res.status(200).json(success({
+        pincode, serviceable: true, hub: { id: hub.id || hub._id, name: hub.name },
+      }, { message: 'We deliver here' }));
+    } catch (err) {
+      if (err?.code === 'PINCODE_UNSERVICEABLE' || err?.code === 'HUB_NOT_FOUND') {
+        return res.status(200).json(success({
+          pincode, serviceable: false, hub: null,
+        }, { message: err.message || "We don't deliver there yet" }));
+      }
+      throw err;
+    }
   });
 
   /** GET /catalog/products/:id/stock — quick availability check (RN app polling). */

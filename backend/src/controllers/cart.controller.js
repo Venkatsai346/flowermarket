@@ -100,6 +100,9 @@ class CartController {
       tenantId: req.tenantId,
       pincode: req.query.pincode,
       date: req.query.date || null,
+      fromDate: req.query.fromDate || null,
+      toDate: req.query.toDate || null,
+      days: req.query.days ? Number(req.query.days) : null,
     });
     res.status(200).json(success(result, { message: 'Available delivery slots' }));
   });

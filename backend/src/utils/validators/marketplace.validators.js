@@ -174,3 +174,12 @@ export const rebuildPlatformSchema = Joi.object({
 export const nightlyMarketplaceSchema = Joi.object({
   days: Joi.number().integer().min(1).max(90).optional(),
 });
+
+export const tenantIdParamSchema = Joi.object({
+  id: objectId.required(),
+});
+
+export const tenantStatusSchema = Joi.object({
+  status: Joi.string().valid('active', 'suspended', 'inactive', 'blocked').required(),
+  reason: Joi.string().max(500).allow('', null).optional(),
+});

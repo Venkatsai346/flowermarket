@@ -135,7 +135,10 @@ export class AnalyticsService {
         $group: {
           _id: '$tenantProductId',
           qty: { $sum: '$qty' },
-          revenue: { $sum: { $add: [{ $subtract: ['$lineTotal', '$discountAllocated'] }, '$taxAmount'] } },
+          // Inclusive MRP: lineTotal already contains GST. Adding taxAmount
+          // again would double-count. Exclusive historical rows that stored
+          // pre-tax lineTotal are not produced after Wave 1.
+          revenue: { $sum: { $subtract: ['$lineTotal', { $ifNull: ['$discountAllocated', 0] }] } },
         },
       },
       { $sort: { revenue: -1 } },
@@ -177,7 +180,7 @@ export class AnalyticsService {
 
     const agg = await OrderItem.aggregate([
       { $match: { tenantId, orderId: { $in: orderIds } } },
-      { $group: { _id: '$tenantProductId', qty: { $sum: '$qty' }, revenue: { $sum: { $add: [{ $subtract: ['$lineTotal', '$discountAllocated'] }, '$taxAmount'] } } } },
+      { $group: { _id: '$tenantProductId', qty: { $sum: '$qty' }, revenue: { $sum: { $subtract: ['$lineTotal', { $ifNull: ['$discountAllocated', 0] }] } } } },
     ]);
     const byCat = {};
     for (const a of agg) {

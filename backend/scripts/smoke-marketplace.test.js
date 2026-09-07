@@ -422,6 +422,42 @@ async function main() {
   assert.equal(await M.Invoice.countDocuments(), invBeforeNightly, 'nightly re-run creates no duplicate invoices');
   ok('nightly: marketplace pass runs, re-run idempotent');
 
+  // ================= 6b. Wave 1: pincode door + tenant suspend =================
+  r = await call('/catalog/serviceability?pincode=530013', { token: custATok, tenantId: tenantA.id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.serviceable, true);
+  r = await call('/catalog/serviceability?pincode=110001', { token: custATok, tenantId: tenantA.id });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.data.serviceable, false, 'Delhi pin is not on the Vizag hub');
+  r = await call(`/cart/slots?pincode=110001&date=${today}`, { token: custATok, tenantId: tenantA.id });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.data.serviceable, false);
+  assert.equal((r.body.data.slots || []).length, 0, 'unserviceable pin has no slots');
+  const delhi = await M.Address.create({ tenantId: tenantA.id, userId: custA.id, name: 'Delhi', phone: '9876520001', line1: 'CP', city: 'Delhi', state: 'Delhi', pincode: '110001' });
+  r = await call('/cart/items', { method: 'POST', token: custATok, tenantId: tenantA.id, body: { tenantProductId: listing.id, qty: 1 } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  r = await call(`/cart/slots?pincode=530013&date=${today}`, { token: custATok, tenantId: tenantA.id });
+  const holdSlot = (r.body.data.slots || []).find((s) => s.remaining > 0);
+  r = await call(`/cart/slots/${holdSlot.id}/reserve`, { method: 'POST', token: custATok, tenantId: tenantA.id });
+  const holdOk = r.body.data.id;
+  r = await call('/cart/checkout', { method: 'POST', token: custATok, tenantId: tenantA.id, body: { slotReservationId: holdOk, addressId: delhi.id, paymentMethod: 'upi', confirmPriceChanges: true } });
+  assert.equal(r.status, 400, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'PINCODE_UNSERVICEABLE');
+  ok('pincode: 530013 serviceable, 110001 cannot check out');
+
+  r = await call(`/marketplace/admin/tenants/${tenantA.id}/status`, { method: 'POST', token: platTok, tenantId: tenantA.id, body: { status: 'suspended', reason: 'wave1 smoke' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.status, 'suspended');
+  r = await call('/cart/items', { method: 'POST', token: custATok, tenantId: tenantA.id, body: { tenantProductId: listing.id, qty: 1 } });
+  assert.equal(r.status, 403, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'TENANT_SUSPENDED');
+  r = await call(`/marketplace/admin/tenants/${tenantA.id}/status`, { method: 'POST', token: platTok, tenantId: tenantA.id, body: { status: 'active', reason: 'restored' } });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.data.status, 'active');
+  r = await call('/cart/items', { method: 'POST', token: custATok, tenantId: tenantA.id, body: { tenantProductId: listing.id, qty: 1 } });
+  assert.equal(r.status, 200, 'activate restores cart writes');
+  ok('tenant lifecycle: suspend → checkout 403 TENANT_SUSPENDED → activate restores');
+
   // ================= 7. regression sanity =================
   r = await call('/admin/products?limit=5', { token: ownerATok });
   assert.equal(r.status, 200, 'Phase 4 admin works for store owner');

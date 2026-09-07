@@ -7,6 +7,7 @@ import { applyTheme, applyDocumentMeta } from './theme.js';
 import Header from './components/Header.jsx';
 import CartSheet from './components/CartSheet.jsx';
 import AuthSheet from './components/AuthSheet.jsx';
+import PincodeSheet from './components/PincodeSheet.jsx';
 import { Toasts } from './components/ui.jsx';
 import Home from './pages/Home.jsx';
 import Checkout from './pages/Checkout.jsx';
@@ -63,6 +64,8 @@ export default function App() {
   const { booted, bootError, setBoot, setBootError, store } = useShop();
   const setCart = useShop((s) => s.setCart);
   const toasts = useShop((s) => s.toasts);
+  const pincode = useShop((s) => s.pincode);
+  const setServiceability = useShop((s) => s.setServiceability);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
   const [query, setQuery] = useState('');
 
@@ -83,6 +86,16 @@ export default function App() {
       .catch((e) => { if (alive) setBootError(e); });
     return () => { alive = false; };
   }, [setBoot, setBootError]);
+
+  // 1b. remembered pin → serviceability (honest, not a fake catalogue)
+  useEffect(() => {
+    if (!booted || bootError || !pincode) return undefined;
+    let alive = true;
+    api.shop.serviceability(pincode)
+      .then((r) => { if (alive) setServiceability(r.data); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [booted, bootError, pincode, setServiceability]);
 
   // 2. the cart follows the session (a guest cart is server-side too)
   useEffect(() => {
@@ -121,6 +134,7 @@ export default function App() {
 
       <CartSheet />
       <AuthSheet />
+      <PincodeSheet />
       <Toasts items={toasts} />
     </div>
   );

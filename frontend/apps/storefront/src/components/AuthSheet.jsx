@@ -50,10 +50,15 @@ export default function AuthSheet() {
       const r = await api.shop.verifyOtp({
         purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number }, code: code.trim(),
       });
+      const pending = useShop.getState().authPending;
       setSession(r.data);
       toast('Signed in', 'success');
       reset();
-      close();
+      // close without firing onCancel — the retry is the continuation
+      useShop.setState({ authOpen: false, authPending: null });
+      if (pending?.retry) {
+        try { await pending.retry(); } catch (err) { toast(errMsg(err), 'error'); }
+      }
     } catch (e) {
       toast(errMsg(e), 'error');
     } finally {

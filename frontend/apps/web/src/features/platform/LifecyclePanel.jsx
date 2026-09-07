@@ -4,10 +4,12 @@ import { bpsToPct, fmtDate, pickMeta, SUBSCRIPTION_STATUS_META, titleCase } from
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
 import { errMsg } from '../../lib/utils.js';
+import { toast } from '../../lib/toasts.js';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
+import Modal from '../../components/ui/Modal.jsx';
 import Stat from '../../components/ui/Stat.jsx';
 import Table from '../../components/ui/Table.jsx';
 import { Input } from '../../components/ui/Field.jsx';
@@ -22,6 +24,9 @@ export default function LifecyclePanel() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [refreshKey, setRefreshKey] = useState(0);
+  const [dialog, setDialog] = useState(null); // { tenant, nextStatus }
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -34,6 +39,29 @@ export default function LifecyclePanel() {
 
   const refresh = () => setRefreshKey((k) => k + 1);
   const tenantsRows = tenants.data || [];
+
+  const openStatus = (tenant, nextStatus) => {
+    setReason(tenant.statusReason || '');
+    setDialog({ tenant, nextStatus });
+  };
+
+  const applyStatus = async () => {
+    if (!dialog) return;
+    setBusy(true);
+    try {
+      await api.marketplace.adminSetTenantStatus(dialog.tenant.id, {
+        status: dialog.nextStatus,
+        reason: reason.trim() || undefined,
+      });
+      toast.success(dialog.nextStatus === 'active' ? 'Store activated' : 'Store suspended — Host will 404');
+      setDialog(null);
+      refresh();
+    } catch (e) {
+      toast.error(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const vendorsRows = vendors.data || [];
   const kycRows = kyc.data || [];
   const kycByVendor = new Map(kycRows.map((r) => [String(r.vendorId), r]));
@@ -61,7 +89,7 @@ export default function LifecyclePanel() {
         <>
           <Card
             title="Tenant lifecycle"
-            subtitle="Subscription, storefront and billing posture."
+            subtitle="Suspend a store to 404 its Host. Activate to bring it back. Every action is audited."
             bodyClassName="p-0!"
             actions={
               <div className="flex items-center gap-2">
@@ -90,6 +118,11 @@ export default function LifecyclePanel() {
                 } },
                 { key: 'storefront', header: 'Storefront', render: (r) => <Badge tone={r.store?.isPublished ? 'emerald' : 'slate'}>{r.store ? (r.store.isPublished ? 'Published' : 'Draft') : '—'}</Badge> },
                 { key: 'createdAt', header: 'Joined', render: (r) => <span className="text-xs text-slate-500">{fmtDate(r.createdAt)}</span> },
+                { key: 'actions', header: '', render: (r) => (
+                  r.status === 'active'
+                    ? <Button variant="ghost" size="sm" className="!text-rose-600" onClick={() => openStatus(r, 'suspended')}>Suspend</Button>
+                    : <Button variant="secondary" size="sm" onClick={() => openStatus(r, 'active')}>Activate</Button>
+                ) },
               ]}
             />
           </Card>
@@ -125,6 +158,38 @@ export default function LifecyclePanel() {
           </Card>
         </>
       )}
+
+      <Modal
+        open={Boolean(dialog)}
+        onClose={() => !busy && setDialog(null)}
+        size="sm"
+        title={dialog?.nextStatus === 'suspended' ? `Suspend ${dialog?.tenant?.name}?` : `Activate ${dialog?.tenant?.name}?`}
+        subtitle={dialog?.nextStatus === 'suspended'
+          ? 'The storefront Host will 404. In-flight orders can still be refunded from admin.'
+          : 'The storefront will resolve again from its Host.'}
+        footer={(
+          <>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setDialog(null)}>Cancel</Button>
+            <Button
+              variant={dialog?.nextStatus === 'suspended' ? 'danger' : 'success'}
+              size="sm"
+              loading={busy}
+              onClick={applyStatus}
+            >
+              {dialog?.nextStatus === 'suspended' ? 'Suspend store' : 'Activate store'}
+            </Button>
+          </>
+        )}
+      >
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold text-slate-600">Reason (audited)</span>
+          <Input
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder={dialog?.nextStatus === 'suspended' ? 'Non-paying, abuse, …' : 'Issue resolved'}
+          />
+        </label>
+      </Modal>
     </div>
   );
 }

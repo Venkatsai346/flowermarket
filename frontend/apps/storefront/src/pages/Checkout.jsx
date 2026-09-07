@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  BadgeIndianRupee, Banknote, Calendar, Check, CreditCard, MapPin, Plus, ShieldCheck, Wallet,
+  BadgeIndianRupee, Banknote, Calendar, Check, CreditCard, MapPin, Plus, ShieldCheck, Tag, Wallet,
 } from 'lucide-react';
 import { api, useShopAuth } from '../api.js';
 import { useApi } from '../lib/useApi.js';
@@ -68,19 +68,10 @@ export default function Checkout() {
   const [payment, setPayment] = useState('upi');
   const [adding, setAdding] = useState(false);
   const [placing, setPlacing] = useState(false);
+  const [coupon, setCoupon] = useState('');
+  const [couponBusy, setCouponBusy] = useState(false);
 
   const { data: addresses, refetch: refetchAddresses } = useApi(() => api.shop.addresses(), []);
-  // /cart/slots serves one day at a time ({hub, slots}) — fetch the next three
-  // days in parallel and flatten; the day grouping below renders the rest.
-  const { data: slots, loading: slotsLoading } = useApi(async () => {
-    const dates = [0, 1, 2].map((i) => {
-      const d = new Date();
-      d.setDate(d.getDate() + i);
-      return d.toISOString().slice(0, 10);
-    });
-    const res = await Promise.all(dates.map((date) => api.shop.slots({ date })));
-    return { data: res.flatMap((r) => r.data?.slots || []) };
-  }, []);
   const { data: wallet } = useApi(
     () => (isAuth ? api.shop.wallet() : Promise.resolve({ data: null })),
     [isAuth],
@@ -94,16 +85,35 @@ export default function Checkout() {
     return [];
   }, [addresses]);
 
+  const selectedAddress = addressesArray.find((a) => String(a.id) === String(addressId));
+  const pin = selectedAddress?.pincode || '';
+
+  const { data: slots, loading: slotsLoading } = useApi(async () => {
+    if (!pin) return { data: [] };
+    const dates = [0, 1, 2].map((i) => {
+      const d = new Date();
+      d.setDate(d.getDate() + i);
+      return d.toISOString().slice(0, 10);
+    });
+    const res = await Promise.all(dates.map((date) => api.shop.slots({ date, pincode: pin })));
+    const first = res[0]?.data;
+    if (first && first.serviceable === false) {
+      return { data: { serviceable: false, pincode: pin, slots: [] } };
+    }
+    return { data: res.flatMap((r) => r.data?.slots || []) };
+  }, [pin]);
+
   const slotsArray = useMemo(() => {
     if (Array.isArray(slots)) return slots;
     if (Array.isArray(slots?.slots)) return slots.slots;
     if (Array.isArray(slots?.data)) return slots.data;
     return [];
   }, [slots]);
-  // ---------------------------------------------------------------------------------------------------------------
+  const pinServiceable = !pin || slots?.serviceable !== false;
 
   const reservationId = reservation?.id || reservation?.reservationId || null;
-  const quoteKey = isAuth && addressId && reservationId ? `${addressId}:${reservationId}` : null;
+  const couponCode = cart?.cart?.couponCode || cart?.couponCode || '';
+  const quoteKey = isAuth && addressId && reservationId ? `${addressId}:${reservationId}:${couponCode}` : null;
   
   const { data: quote } = useApi(
     () => (quoteKey
@@ -133,6 +143,11 @@ export default function Checkout() {
   useEffect(() => {
     if (payment === 'wallet' && !canWalletPay) setPayment('upi');
   }, [payment, canWalletPay]);
+
+  useEffect(() => {
+    setSlotId('');
+    setReservation(null);
+  }, [pin]);
 
   /** Slots grouped by day, because "tomorrow 4–6pm" is how people think. */
   const byDay = useMemo(() => {
@@ -200,7 +215,7 @@ export default function Checkout() {
     );
   }
 
-  const canPlace = addressId && reservation && !placing;
+  const canPlace = addressId && reservation && pinServiceable && !placing;
 
   return (
     <div className="wrap grid gap-6 py-8 lg:grid-cols-[1fr_360px]">
@@ -258,6 +273,10 @@ export default function Checkout() {
           </p>
           {slotsLoading ? (
             <div className="flex gap-2">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-16 w-32" />)}</div>
+          ) : !pin ? (
+            <p className="text-sm text-slate-500">Pick an address so we can show slots for that pincode.</p>
+          ) : !pinServiceable ? (
+            <p className="text-sm text-rose-600">We don't deliver to {pin}. Choose another address or we cannot check out.</p>
           ) : !byDay.length ? (
             <p className="text-sm text-slate-500">No slots available right now — please try again shortly.</p>
           ) : (
@@ -269,7 +288,7 @@ export default function Checkout() {
                   </p>
                   <div className="no-scrollbar -mx-1 flex gap-2 overflow-x-auto px-1">
                     {list.map((s) => {
-                      const full = (s.availableCapacity ?? 1) <= 0;
+                      const full = (s.remaining ?? s.availableCapacity ?? 1) <= 0;
                       const active = slotId === String(s.id);
                       return (
                         <button
@@ -306,7 +325,7 @@ export default function Checkout() {
             Payment
           </h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {PAYMENTS.map(([id, label, Icon]) => (
+            {PAYMENTS.filter(([id]) => id !== 'cod' || Boolean(slotsArray.find((s) => String(s.id) === slotId)?.codAllowed)).map(([id, label, Icon]) => (
               <button
                 key={id}
                 type="button"
@@ -362,6 +381,22 @@ export default function Checkout() {
               </li>
             ))}
           </ul>
+          {!couponCode ? (
+            <div className="mb-3 flex gap-2">
+              <input
+                value={coupon}
+                onChange={(e) => setCoupon(e.target.value.toUpperCase())}
+                placeholder="Coupon code"
+                className="input flex-1 !py-2 text-sm"
+              />
+              <Button variant="outline" size="sm" loading={couponBusy} onClick={applyCoupon}>Apply</Button>
+            </div>
+          ) : (
+            <div className="mb-3 flex items-center justify-between rounded-xl bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+              <span className="inline-flex items-center gap-1.5"><Tag className="h-3.5 w-3.5" />{couponCode}</span>
+              <button type="button" onClick={dropCoupon} className="underline">remove</button>
+            </div>
+          )}
           <dl className="space-y-1.5 border-t border-slate-100 pt-3 text-sm">
             <div className="flex justify-between text-slate-600">
               <dt>Subtotal</dt><dd><Money value={cart?.cart?.subtotal ?? cart?.subtotal} /></dd>
@@ -375,7 +410,8 @@ export default function Checkout() {
                 )}
                 {quote.taxTotal > 0 && (
                   <div className="flex justify-between text-slate-600">
-                    <dt>GST</dt><dd><Money value={quote.taxTotal} /></dd>
+                    <dt>{quote.pricesInclusive !== false ? 'GST (included)' : 'GST'}</dt>
+                    <dd><Money value={quote.taxTotal} /></dd>
                   </div>
                 )}
                 {quote.discountTotal > 0 && (

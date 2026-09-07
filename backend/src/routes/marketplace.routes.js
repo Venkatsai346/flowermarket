@@ -47,6 +47,8 @@ import {
   billingCycleSchema,
   rebuildPlatformSchema,
   nightlyMarketplaceSchema,
+  tenantIdParamSchema,
+  tenantStatusSchema,
 } from '../utils/validators/marketplace.validators.js';
 import { USER_ROLES } from '../constants/enums.js';
 
@@ -103,6 +105,7 @@ router.post('/admin/vendor-products/:id/review', validate(applicationReviewSchem
 
 // tenants + plans
 router.get('/admin/tenants', validate(vendorStatusQuerySchema, 'query'), MarketplaceController.listTenants);
+router.post('/admin/tenants/:id/status', validate(tenantIdParamSchema, 'params'), validate(tenantStatusSchema), MarketplaceController.setTenantStatus);
 router.get('/admin/plans', MarketplaceController.listPlansAdmin);
 router.post('/admin/plans', validate(planCreateSchema), MarketplaceController.createPlan);
 router.patch('/admin/plans/:id', validate(planUpdateSchema), MarketplaceController.updatePlan);

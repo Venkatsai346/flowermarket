@@ -78,12 +78,17 @@ class LedgerPostingService {
   async buildSaleLines({ order, items, vendorCache = new Map(), isWalletPayment = false }) {
     const tenantId = order.tenantId;
     const lines = [];
+    // Inclusive MRP: total === items − discount + fee (tax is inside the shelf).
+    // Exclusive (legacy / money.test.js): total === items + tax − discount + fee.
+    // Infer from the order itself so we never re-price and never break historical journals.
+    const inclusiveIdentity = toPaise(order.totalAmount ?? 0)
+      === toPaise(order.itemsSubtotal ?? 0) - toPaise(order.discount ?? 0) + toPaise(order.deliveryFee ?? 0);
 
     for (const item of items) {
       const lineTotalPaise = toPaise(item.lineTotal ?? 0);
       const discountPaise = toPaise(item.discountAllocated ?? 0);
       const taxPaise = toPaise(item.taxAmount ?? 0);
-      const netPaise = lineTotalPaise - discountPaise;
+      const netPaise = inclusiveIdentity ? (lineTotalPaise - discountPaise - taxPaise) : (lineTotalPaise - discountPaise);
 
       if (netPaise < 0) {
         throw new AppError(

@@ -12,6 +12,7 @@ const router = Router();
 router.get('/', validate(catalogQuerySchema, 'query'), CatalogPublicController.search);
 router.get('/categories', CatalogPublicController.categories);
 router.get('/brands', CatalogPublicController.brands);
+router.get('/serviceability', CatalogPublicController.serviceability);
 router.get('/products/:id', validate(idParamSchema, 'params'), CatalogPublicController.productDetail);
 router.get('/products/:id/stock', validate(idParamSchema, 'params'), CatalogPublicController.stockCheck);
 

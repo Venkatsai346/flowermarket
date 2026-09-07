@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, CheckCircle2, Circle, MapPin, PackageX, Receipt, RotateCcw, Truck,
+  ArrowLeft, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, RotateCcw, Truck,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
@@ -11,11 +11,15 @@ import ReturnSheet from '../components/ReturnSheet.jsx';
 import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
 import { CANCEL_REASONS, canCancel, canReturn, meta } from '../lib/afterSales.js';
 import { cn, errMsg } from '../lib/utils.js';
+import { openRazorpayCheckout } from '../lib/razorpay.js';
 
 export default function OrderDetail() {
   const { id } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useShop((s) => s.toast);
+  const store = useShop((s) => s.store);
+  const widgetOpened = useRef(false);
+  const [invoiceBusy, setInvoiceBusy] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0].code);
@@ -77,6 +81,36 @@ export default function OrderDetail() {
     poll();
     const t = setInterval(poll, 5000);
     return () => { alive = false; clearInterval(t); };
+  }, [awaitingPayment, id]);
+
+  useEffect(() => {
+    if (!awaitingPayment || widgetOpened.current) return undefined;
+    let alive = true;
+    const open = async () => {
+      try {
+        const r = await api.shop.orderPayment(id);
+        if (!alive) return;
+        const d = r.data || {};
+        const keyId = d.keyId;
+        const gatewayOrderId = d.payment?.gatewayOrderId;
+        if (!keyId || !gatewayOrderId) return;
+        widgetOpened.current = true;
+        await openRazorpayCheckout({
+          keyId,
+          gatewayOrderId,
+          amountPaise: d.amountPaise,
+          currency: d.currency || 'INR',
+          name: store?.name,
+          description: d.order?.orderNumber,
+          customer: d.customer || {},
+          onSuccess: () => { toast('Payment submitted — waiting for confirmation', 'success'); refetch(); },
+        });
+      } catch {
+        /* mock / no key — polling UI is enough */
+      }
+    };
+    if (searchParams.get('pay') === '1' || awaitingPayment) open();
+    return () => { alive = false; };
   }, [awaitingPayment, id]);
 
   const checkNow = async () => {
@@ -176,9 +210,37 @@ export default function OrderDetail() {
               )}
             </div>
           </div>
-          <Button variant="outline" size="sm" loading={checkingPay} onClick={checkNow} className="mt-3 !border-amber-300 !text-amber-800">
-            Check payment status
-          </Button>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" loading={checkingPay} onClick={checkNow} className="!border-amber-300 !text-amber-800">
+              Check payment status
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                widgetOpened.current = false;
+                api.shop.orderPayment(id).then((r) => {
+                  const d = r.data || {};
+                  if (!d.keyId || !d.payment?.gatewayOrderId) {
+                    toast('Payment widget is not configured for this store');
+                    return;
+                  }
+                  widgetOpened.current = true;
+                  return openRazorpayCheckout({
+                    keyId: d.keyId,
+                    gatewayOrderId: d.payment.gatewayOrderId,
+                    amountPaise: d.amountPaise,
+                    currency: d.currency || 'INR',
+                    name: store?.name,
+                    description: d.order?.orderNumber,
+                    customer: d.customer || {},
+                    onSuccess: () => { toast('Payment submitted — waiting for confirmation', 'success'); refetch(); },
+                  });
+                }).catch((e) => toast(errMsg(e), 'error'));
+              }}
+            >
+              Pay now
+            </Button>
+          </div>
         </div>
       )}
 
@@ -299,12 +361,45 @@ export default function OrderDetail() {
           <div className="flex justify-between text-slate-600"><dt>Items</dt><dd><Money value={order.itemsSubtotal} /></dd></div>
           {Boolean(order.discount) && <div className="flex justify-between text-emerald-600"><dt>Discount</dt><dd>−<Money value={order.discount} /></dd></div>}
           <div className="flex justify-between text-slate-600"><dt>Delivery</dt><dd><Money value={order.deliveryFee} /></dd></div>
-          <div className="flex justify-between text-slate-600"><dt>Tax</dt><dd><Money value={order.taxAmount} /></dd></div>
+          <div className="flex justify-between text-slate-600"><dt>GST (included)</dt><dd><Money value={order.taxAmount} /></dd></div>
           <div className="flex justify-between border-t border-slate-100 pt-2 text-base font-bold text-slate-900">
             <dt>Total paid</dt><dd><Money value={order.totalAmount} /></dd>
           </div>
         </dl>
       </div>
+
+      {!cancelled && order?.status && order.status !== 'payment_pending' && order.status !== 'created' && (
+        <div className="mt-4">
+          <Button
+            variant="outline"
+            size="sm"
+            icon={Download}
+            loading={invoiceBusy}
+            onClick={async () => {
+              setInvoiceBusy(true);
+              try {
+                const r = await api.shop.orderInvoice(id);
+                const list = Array.isArray(r.data) ? r.data : r.data?.items || [];
+                const doc = list[0];
+                if (!doc?.html) {
+                  toast('Invoice will appear once the order is confirmed');
+                  return;
+                }
+                const w = window.open('', '_blank', 'noopener');
+                if (!w) { toast('Allow pop-ups to download the invoice', 'error'); return; }
+                w.document.write(doc.html);
+                w.document.close();
+              } catch (e) {
+                toast(errMsg(e), 'error');
+              } finally {
+                setInvoiceBusy(false);
+              }
+            }}
+          >
+            Download GST invoice
+          </Button>
+        </div>
+      )}
 
       {Array.isArray(timeline) && timeline.length > 0 && (
         <div className="card mt-4 p-5">

@@ -109,11 +109,17 @@ class TaxController {
   myOrderInvoice = asyncHandler(async (req, res) => {
     const order = await Order.findOne({ _id: req.params.id, tenantId: req.tenantId, userId: req.auth.userId }).lean();
     if (!order) throw notFound('Order not found', 'ORDER_NOT_FOUND');
+    try {
+      await taxDocumentService.issueForOrder({ orderId: order._id, actorId: req.auth.userId, req });
+    } catch {
+      // not yet invoiceable, or place-of-supply unresolved — still return whatever exists
+    }
     const result = await taxDocumentService.list({
       tenantId: req.tenantId,
       query: { orderId: String(order._id), docType: TAX_DOC_TYPE.INVOICE },
     });
-    res.status(200).json(success(result.items, { message: 'Invoice(s) fetched' }));
+    const items = result.items.map((d) => taxDocumentService.withRupeeView(d, { html: true }));
+    res.status(200).json(success(items, { message: items.length ? 'Invoice(s) fetched' : 'Invoice not issued yet' }));
   });
 
   // ---------------- platform: rate policies ----------------

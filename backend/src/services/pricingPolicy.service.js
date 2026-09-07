@@ -4,7 +4,9 @@ import DiscountPolicy from '../models/discountPolicy.model.js';
 import CouponUsage from '../models/couponUsage.model.js';
 import OrderChargeBreakdown from '../models/orderChargeBreakdown.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
-import { roundMoney, moneySum } from '../utils/money.js';
+import { roundMoney, moneySum, toPaise, fromPaise } from '../utils/money.js';
+import { computeLineTax } from '../utils/gst.js';
+import config from '../config/index.js';
 
 /** HSN default when a category has no TaxPolicy row (legal fallback). */
 const DEFAULT_GST_SLAB_PCT = 0;
@@ -47,29 +49,30 @@ class PricingPolicyService {
       zoneDistanceKm,
     });
 
-    // ---- 2. tax per line from the category TaxPolicy ----
-    const lineItems = [];
-    for (const item of items) {
+    // ---- 2. lines + category tax policies (batched) ----
+    const pricesInclusive = config.tax.pricesInclusive !== false;
+    const uniqueCats = [...new Set(items.map((i) => i.categoryId).filter(Boolean))];
+    const policies = uniqueCats.length
+      ? await TaxPolicy.find({ categoryId: { $in: uniqueCats }, isActive: true }).lean()
+      : [];
+    const policyByCat = new Map(policies.map((p) => [String(p.categoryId), p]));
+
+    const lineItems = items.map((item) => {
       const price = item.priceSnapshot?.sellingPrice ?? 0;
       const lineTotal = roundMoney(price * item.qty);
-      const taxPolicy = await TaxPolicy.findOne({
-        categoryId: item.categoryId || null,
-        isActive: true,
-      }).lean();
-
-      // tax base = line total BEFORE discount (standard GST practice: tax on
-      // the pre-discount value, discount then reduces the total)
-      const taxAmount = roundMoney(lineTotal * ((taxPolicy?.gstSlabPct ?? DEFAULT_GST_SLAB_PCT) / 100));
-      lineItems.push({
+      const taxPolicy = item.categoryId ? policyByCat.get(String(item.categoryId)) : null;
+      return {
         tenantProductId: item.tenantProductId,
         productMasterId: item.productMasterId,
         qty: item.qty,
         lineTotal,
-        taxAmount,
+        taxAmount: 0,
+        discountAllocated: 0,
         taxPolicyId: taxPolicy?._id || null,
         hsnCode: taxPolicy?.hsnCode || null,
-      });
-    }
+        gstSlabPct: taxPolicy?.gstSlabPct ?? DEFAULT_GST_SLAB_PCT,
+      };
+    });
 
     // ---- 3. discount from the applied coupon (validated again here; the
     //      cart validated it at apply-time, this is the money moment) ----
@@ -84,10 +87,34 @@ class PricingPolicyService {
     // allocate discount proportionally across lines by price weight
     this.allocateDiscount(lineItems, discountTotal);
 
+    // ---- 4. GST per line via the integer-paise engine ----
+    // Inclusive (India MRP, default): tax is EXTRACTED from the shelf price
+    // after discount. Exclusive (flag off): tax is added on top of the pre-
+    // discount line, which is the legacy Phase 3.5 behaviour.
+    const state = config.tax.defaultStateCode;
+    for (const line of lineItems) {
+      const rateBps = Math.round((line.gstSlabPct || 0) * 100);
+      if (pricesInclusive) {
+        const computed = computeLineTax({
+          grossPaise: toPaise(line.lineTotal),
+          discountPaise: toPaise(line.discountAllocated || 0),
+          rateBps,
+          natureOfSupply: rateBps > 0 ? 'taxable' : 'nil_rated',
+          supplierStateCode: state,
+          placeOfSupplyStateCode: state,
+          pricesInclusive: true,
+        });
+        line.taxAmount = fromPaise(computed.totalTaxPaise);
+      } else {
+        line.taxAmount = roundMoney(line.lineTotal * ((line.gstSlabPct || 0) / 100));
+      }
+      delete line.gstSlabPct;
+    }
+
     const taxTotal = roundMoney(moneySum(...lineItems.map((l) => l.taxAmount)));
-    const grandTotal = roundMoney(
-      itemSubtotal + taxTotal - discountTotal + deliveryFee
-    );
+    const grandTotal = pricesInclusive
+      ? roundMoney(itemSubtotal - discountTotal + deliveryFee)
+      : roundMoney(itemSubtotal + taxTotal - discountTotal + deliveryFee);
 
     return {
       itemSubtotal,
@@ -95,6 +122,7 @@ class PricingPolicyService {
       taxTotal,
       discountTotal,
       grandTotal,
+      pricesInclusive,
       lineItems,
       deliveryFeePolicyId: feePolicy?._id || null,
       discountPolicyId,
@@ -176,6 +204,7 @@ class PricingPolicyService {
       deliveryFeePolicyId: charges.deliveryFeePolicyId || null,
       discountPolicyId: charges.discountPolicyId || null,
       couponCode: charges.couponCode || null,
+      pricesInclusive: charges.pricesInclusive !== false,
       createdBy,
     });
   }

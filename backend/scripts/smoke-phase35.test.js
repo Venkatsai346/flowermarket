@@ -4,9 +4,9 @@
  *
  * Covers:
  *   1. Delivery fee policy: free-delivery threshold (≥ ₹499 -> fee 0)
- *   2. Tax policy per category -> per-item taxAmount + order taxTotal
+ *   2. Tax policy per category -> tax EXTRACTED from MRP (inclusive)
  *   3. Coupon (WELCOME10) -> proportional discountAllocated per line
- *   4. Immutable OrderChargeBreakdown persisted (grandTotal = item+tax−disc+fee)
+ *   4. Immutable OrderChargeBreakdown persisted (grandTotal = item−disc+fee)
  *   5. Refund components: partial return (no fee) vs full return (fee refunded)
  *   6. Rider app: accept-timeout sweep + reject -> reassignment
  *   7. Async payment (razorpay-style): pending -> mock webhook -> CONFIRMED
@@ -116,10 +116,11 @@ async function main() {
   let order = r.body.data.order;
   const firstOrder = await M.Order.findById(order.id);
   assert.equal(order.deliveryFee, 49, 'below threshold -> fee charged');
-  assert.equal(order.taxAmount, 14.95, '5% GST on 299');
   assert.equal(order.itemsSubtotal, 299);
-  assert.equal(order.totalAmount, 299 + 14.95 + 49);
-  ok(`fee policy: subtotal 299 < 499 -> fee ₹49, tax ₹14.95 (total ₹${order.totalAmount})`);
+  assert.equal(order.taxAmount, 14.24, '5% GST extracted from inclusive ₹299');
+  assert.equal(order.totalAmount, 348, 'MRP-inclusive: 299 + 49 fee, tax inside the 299');
+  assert.equal(order.totalAmount, order.itemsSubtotal - (order.discount || 0) + order.deliveryFee);
+  ok(`fee policy: subtotal 299 < 499 -> fee ₹49, tax ₹${order.taxAmount} inside MRP (total ₹${order.totalAmount})`);
 
   // ================= 2. coupon + proportional discount + breakdown =================
   // fresh cart: 2 roses = 598 ≥ 499 -> free delivery; apply WELCOME10 (10% off)
@@ -135,11 +136,11 @@ async function main() {
   order = r.body.data.order;
   assert.equal(order.deliveryFee, 0, 'free delivery ≥ 499');
   assert.equal(order.discount, 59.8, '10% of 598');
-  assert.equal(order.taxAmount, 29.9, '5% of 598');
-  assert.equal(order.totalAmount, Math.round((598 + 29.9 - 59.8) * 100) / 100);
+  assert.equal(order.taxAmount, 25.63, '5% extracted from discounted inclusive 538.20');
+  assert.equal(order.totalAmount, 538.2, 'inclusive: 598 − 59.8, tax inside');
   const oi2 = (await M.OrderItem.find({ orderId: order.id })).find((x) => String(x.tenantProductId) === String(listing.id));
   assert.equal(oi2.discountAllocated, 59.8, 'discount fully allocated to the single line');
-  assert.equal(oi2.taxAmount, 29.9);
+  assert.equal(oi2.taxAmount, 25.63);
   ok('coupon + free delivery + tax: total ₹' + order.totalAmount + ', line discount ₹59.8');
 
   const breakdown = await M.OrderChargeBreakdown.findOne({ orderId: order.id });
@@ -181,8 +182,7 @@ async function main() {
   const retId = r.body.data.returnRequest.id;
   const rt = await M.RefundTransaction.findOne({ returnRequestId: retId });
   assert.equal(rt.refundFeeAmount, 0, 'partial return -> fee NOT refunded (FULL_ORDER_RETURN_ONLY)');
-  assert.equal(rt.refundItemAmount, Math.round((299 - 29.9) * 100) / 100, 'item = net goods value (price − discount) for 1 unit');
-  assert.equal(rt.refundTaxAmount, 14.95);
+  assert.equal(Math.round((rt.refundItemAmount + rt.refundTaxAmount) * 100) / 100, 269.1, 'unit charged after coupon (inclusive)');
   assert.equal(rt.amount, Math.round((rt.refundItemAmount + rt.refundTaxAmount) * 100) / 100, 'components add up to amount (no double count)');
   ok(`partial refund: item ₹${rt.refundItemAmount} + tax ₹${rt.refundTaxAmount} + fee ₹0`);
 
@@ -193,10 +193,10 @@ async function main() {
   const retId1 = r.body.data.returnRequest.id;
   const rt1 = await M.RefundTransaction.findOne({ returnRequestId: retId1 });
   assert.equal(rt1.refundFeeAmount, 49, 'FULL return -> delivery fee refunded');
-  assert.equal(rt1.refundItemAmount, 299);
-  assert.equal(rt1.refundTaxAmount, 14.95);
-  assert.equal(rt1.amount, 299 + 14.95 + 49, 'full refund incl. fee');
-  ok(`full refund: item ₹299 + tax ₹14.95 + fee ₹49 = ₹${rt1.amount}`);
+  assert.equal(rt1.refundTaxAmount, 14.24);
+  assert.equal(rt1.amount, 348, 'full refund = what the customer paid (MRP + fee)');
+  assert.equal(Math.round((rt1.refundItemAmount + rt1.refundTaxAmount + rt1.refundFeeAmount) * 100) / 100, rt1.amount);
+  ok(`full refund: item ₹${rt1.refundItemAmount} + tax ₹${rt1.refundTaxAmount} + fee ₹49 = ₹${rt1.amount}`);
 
   // ================= 4. rider reject -> reassignment =================
   const rider2 = await M.User.create({ tenantId: tenant.id, phone: { number: '9876510004', verified: true }, role: 'rider', status: 'active', rider: { availability: 'available' } });

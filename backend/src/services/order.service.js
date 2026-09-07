@@ -22,6 +22,8 @@ import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
 import { roundMoney, moneySum, toPaise } from '../utils/money.js';
 import { notFound, badRequest, conflict, unauthorized } from '../utils/ApiError.js';
+import User from '../models/user.model.js';
+import config from '../config/index.js';
 import { serializeList } from '../utils/serialize.js';
 import {
   ORDER_STATUS,
@@ -69,9 +71,10 @@ class OrderService {
       throw conflict('Slot hold is invalid or expired — please reserve again', 'RESERVATION_INVALID');
     }
 
-    // ---- 3. address snapshot (ownership) ----
+    // ---- 3. address snapshot (ownership) + pin is the front door ----
     const address = await Address.findOne({ _id: addressId, tenantId, userId });
     if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
+    await slotService.assertServiceable({ tenantId, pincode: address.pincode });
 
     // ---- 4. create order + items ----
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
@@ -97,9 +100,7 @@ class OrderService {
     if (chargeResult.pending) {
       return {
         ...(await this.detail({ tenantId, orderId: order._id })),
-        paymentPending: true,
-        gatewayOrderId: chargeResult.gatewayOrderId || null,
-        provider: chargeResult.provider || 'razorpay',
+        ...(await this.checkoutClientPayload({ order, userId, address, chargeResult })),
       };
     }
 
@@ -216,6 +217,10 @@ class OrderService {
       eventType: 'order_confirmed', entityType: 'order', entityId: order._id,
       tenantId, payload: { orderId: order._id, orderNumber: order.orderNumber, total: order.totalAmount },
     });
+    try {
+      const { default: taxDocumentService } = await import('./taxDocument.service.js');
+      await taxDocumentService.issueForOrder({ orderId: order._id, actorId: userId, req });
+    } catch { /* invoice is best-effort; customer GET issues if empty */ }
     return order;
   }
 
@@ -300,6 +305,9 @@ class OrderService {
           attempts: payments.length,
         }
       : null;
+    const extras = order.status === ORDER_STATUS.PAYMENT_PENDING
+      ? await this.checkoutClientPayload({ order, userId: order.userId, chargeResult: { gatewayOrderId: latest?.gatewayOrderId } })
+      : {};
     return {
       order: {
         id: order.id || String(order._id),
@@ -308,6 +316,7 @@ class OrderService {
         totalAmount: order.totalAmount,
       },
       payment: safe,
+      ...extras,
     };
   }
 
@@ -594,18 +603,45 @@ class OrderService {
   // ---------------- internals ----------------
 
   /**
-   * Component split for a FULL refund (cancellation / compensation):
-   *   item = itemsSubtotal − discount + tax     (what the customer paid for goods)
-   *   tax  = taxAmount                          (credit-note line)
-   *   fee  = deliveryFee
-   * `amount` (grand total) === item + tax + fee — components always add up.
+   * Component split for a FULL refund (cancellation / compensation).
+   * Inclusive MRP: item is the taxable goods value (shelf − tax); tax rides
+   * on its own line so a credit note can show it. Exclusive: item is the
+   * pre-tax shelf. Either way item + tax + fee === grandTotal.
    */
   fullOrderRefundComponents(order) {
-    const item = roundMoney(order.itemsSubtotal - order.discount + order.taxAmount);
+    const tax = order.taxAmount || 0;
+    const fee = order.deliveryFee || 0;
+    const inclusive = config.tax.pricesInclusive !== false;
+    const item = inclusive
+      ? roundMoney((order.itemsSubtotal || 0) - (order.discount || 0) - tax)
+      : roundMoney((order.itemsSubtotal || 0) - (order.discount || 0));
     return {
       refundItemAmount: item,
-      refundTaxAmount: order.taxAmount || 0,
-      refundFeeAmount: order.deliveryFee || 0,
+      refundTaxAmount: tax,
+      refundFeeAmount: fee,
+    };
+  }
+
+  /** Razorpay Checkout.js payload — safe, no secrets. */
+  async checkoutClientPayload({ order, userId, address = null, chargeResult = {} }) {
+    const user = await User.findById(userId || order.userId).select('profile email phone').lean();
+    const name = [user?.profile?.firstName, user?.profile?.lastName].filter(Boolean).join(' ')
+      || address?.name
+      || order.addressSnapshot?.name
+      || '';
+    return {
+      paymentPending: true,
+      gatewayOrderId: chargeResult.gatewayOrderId || order.paymentSummary?.gatewayOrderId || null,
+      provider: chargeResult.provider || 'razorpay',
+      keyId: chargeResult.keyId || config.razorpay?.keyId || null,
+      amountPaise: chargeResult.amountPaise || toPaise(order.totalAmount),
+      currency: order.currency || 'INR',
+      orderNumber: order.orderNumber,
+      customer: {
+        name,
+        email: user?.email?.address || '',
+        contact: user?.phone?.number || address?.phone || order.addressSnapshot?.phone || '',
+      },
     };
   }
 
@@ -677,6 +713,7 @@ class OrderService {
 
     const address = await Address.findOne({ _id: addressId, tenantId, userId });
     if (!address) throw notFound('Address not found', 'ADDRESS_NOT_FOUND');
+    await slotService.assertServiceable({ tenantId, pincode: address.pincode });
 
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
@@ -688,6 +725,7 @@ class OrderService {
       taxTotal: charges.taxTotal,
       discountTotal: charges.discountTotal,
       grandTotal: charges.grandTotal,
+      pricesInclusive: charges.pricesInclusive !== false,
       currency: 'INR',
       couponCode: cart.couponCode || null,
       slotType: slotDoc?.windowType || 'normal',

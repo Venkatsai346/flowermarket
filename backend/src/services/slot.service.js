@@ -17,16 +17,34 @@ import { roundMoney } from '../utils/money.js';
  * OVERSELING whatever number is set.
  */
 class SlotService {
-  /** Resolve the servicing hub for a pincode (via ServiceablePincode.hubId, else first active hub). */
+  /**
+   * Resolve the servicing hub for a pincode.
+   *
+   * When a pin is given it is the front door: an unmapped or unserviceable
+   * pin is a hard miss (`PINCODE_UNSERVICEABLE`). The first-active-hub
+   * fallback is ONLY used when the caller omitted a pin (ops tools, tests
+   * that browse slots without an address).
+   */
   async resolveHub({ tenantId, pincode }) {
-    const sp = await ServiceablePincode.findOne({ tenantId, pincode, isServiceable: true }).lean();
-    if (sp?.hubId) {
-      const hub = await Hub.findOne({ _id: sp.hubId, isActive: true });
-      if (hub) return hub;
+    const pin = pincode == null || pincode === '' ? null : String(pincode).trim();
+    if (pin) {
+      const sp = await ServiceablePincode.findOne({ tenantId, pincode: pin, isServiceable: true }).lean();
+      if (sp?.hubId) {
+        const hub = await Hub.findOne({ _id: sp.hubId, isActive: true });
+        if (hub) return hub;
+      }
+      throw badRequest(`We don't deliver to ${pin} yet`, 'PINCODE_UNSERVICEABLE');
     }
     const hub = await Hub.findOne({ tenantId, isActive: true }).sort({ createdAt: 1 });
     if (!hub) throw notFound('No active hub configured for this tenant', 'HUB_NOT_FOUND');
     return hub;
+  }
+
+  /** Checkout/quote gate: an address pin must map to a live hub. */
+  async assertServiceable({ tenantId, pincode }) {
+    const pin = pincode == null || pincode === '' ? null : String(pincode).trim();
+    if (!pin) throw badRequest('Delivery pincode is required', 'PINCODE_REQUIRED');
+    return this.resolveHub({ tenantId, pincode: pin });
   }
 
   /**
@@ -102,7 +120,15 @@ class SlotService {
    * This prevents the timezone trap and supports the frontend's `days: 3` request.
    */
   async listAvailable({ tenantId, pincode, date, fromDate, toDate, days }) {
-    const hub = await this.resolveHub({ tenantId, pincode });
+    let hub;
+    try {
+      hub = await this.resolveHub({ tenantId, pincode });
+    } catch (err) {
+      if (err?.code === 'PINCODE_UNSERVICEABLE') {
+        return { serviceable: false, pincode: pincode || null, hub: null, slots: [] };
+      }
+      throw err;
+    }
     
     // --- DEEP FIX: Build a robust date filter ---
     let dateQuery;
@@ -153,7 +179,12 @@ class SlotService {
       };
     });
 
-    return { hub: { id: hub._id, name: hub.name }, slots: result };
+    return {
+      serviceable: true,
+      pincode: pincode || null,
+      hub: { id: hub._id, name: hub.name },
+      slots: result,
+    };
   }
 
   /**

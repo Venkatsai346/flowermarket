@@ -10,7 +10,7 @@ describe('shared status metadata', () => {
     for (const s of ['not_submitted', 'pending', 'approved', 'rejected']) assert.ok(KYC_STATUS_META[s]?.tone);
     for (const s of ['unverified', 'pending', 'verified', 'failed']) assert.ok(BANK_VERIFICATION_META[s]?.tone);
     for (const s of ['pending', 'running', 'done', 'failed']) assert.ok(EXPORT_STATUS_META[s]?.tone);
-    for (const s of ['active', 'inactive', 'blocked']) assert.ok(TENANT_STATUS_META[s]?.tone);
+    for (const s of ['active', 'inactive', 'blocked', 'suspended']) assert.ok(TENANT_STATUS_META[s]?.tone);
     for (const s of ['active', 'suspended']) assert.ok(VENDOR_STATUS_LIFECYCLE_META[s]?.tone);
     for (const s of ['pending_approval', 'processing', 'paid', 'failed']) assert.ok(PAYOUT_STATE_META[s]?.tone);
     for (const s of ['customer', 'vendor', 'admin', 'super_admin']) assert.equal(typeof USER_ROLE_META[s]?.label, 'string');

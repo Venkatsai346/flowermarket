@@ -67,6 +67,9 @@ class PaymentProvider {
         success: false,
         pending: true, // simulate the razorpay async flow (webhook will confirm)
         gatewayOrderId: `mord_test_${idempotencyKey.slice(0, 8)}`,
+        keyId: config.razorpay.keyId || null,
+        amountPaise: amountInPaise,
+        currency,
         provider: 'mock',
         raw: { mock: true, pending: true },
       };
@@ -103,7 +106,10 @@ class PaymentProvider {
       success: false,
       pending: true, // awaiting client payment + webhook
       gatewayOrderId: order.id,
-      clientSecret: order.receipt ? null : null, // kept for parity; checkout uses order id
+      keyId: config.razorpay.keyId,
+      amountPaise: Math.round(amount * 100),
+      currency: currency || 'INR',
+      clientSecret: null, // Checkout.js uses order_id + key_id
       provider: 'razorpay',
       raw: order,
     };

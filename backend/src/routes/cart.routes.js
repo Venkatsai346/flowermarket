@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import CartController from '../controllers/cart.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
+import { requireActiveTenant } from '../middleware/requireActiveTenant.js';
 import { validate } from '../middleware/validate.js';
 import {
   addCartItemSchema,
@@ -19,20 +20,21 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/', CartController.getCart);
-router.post('/items', validate(addCartItemSchema), CartController.addItem);
-router.patch('/items/:id', validate(updateCartItemSchema), CartController.updateQty);
-router.delete('/items/:id', CartController.removeItem);
-router.delete('/', CartController.clear);
-router.post('/revalidate', CartController.revalidate);
-router.post('/quote', validate(checkoutQuoteSchema), CartController.quote);
-router.post('/checkout', validate(checkoutSchema), CartController.checkout);
+router.post('/items', requireActiveTenant, validate(addCartItemSchema), CartController.addItem);
+router.patch('/items/:id', requireActiveTenant, validate(updateCartItemSchema), CartController.updateQty);
+router.delete('/items/:id', requireActiveTenant, CartController.removeItem);
+router.delete('/', requireActiveTenant, CartController.clear);
+router.delete('/clear', requireActiveTenant, CartController.clear);
+router.post('/revalidate', requireActiveTenant, CartController.revalidate);
+router.post('/quote', requireActiveTenant, validate(checkoutQuoteSchema), CartController.quote);
+router.post('/checkout', requireActiveTenant, validate(checkoutSchema), CartController.checkout);
 
 // coupons (Phase 3.5)
-router.post('/coupon', validate(cartCouponSchema), CartController.applyCoupon);
-router.delete('/coupon', CartController.removeCoupon);
+router.post('/coupon', requireActiveTenant, validate(cartCouponSchema), CartController.applyCoupon);
+router.delete('/coupon', requireActiveTenant, CartController.removeCoupon);
 
 // slotted delivery (customer)
 router.get('/slots', CartController.listSlots);
-router.post('/slots/:id/reserve', validate(slotReserveSchema, 'params'), CartController.reserveSlot);
+router.post('/slots/:id/reserve', requireActiveTenant, validate(slotReserveSchema, 'params'), CartController.reserveSlot);
 
 export default router;

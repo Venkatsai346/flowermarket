@@ -26,7 +26,14 @@ export async function authenticate(req, res, next) {
     const payload = TokenService.verifyAccessToken(token);
     if (!payload?.sub) throw unauthorized('Invalid token payload', 'INVALID_TOKEN');
 
-    if (payload.tenant && req.tenantId && String(payload.tenant) !== String(req.tenantId)) {
+    // Super-admin is platform-scoped: they can still act after suspending
+    // the tenant their token was minted on (admin header stays alive).
+    if (
+      payload.tenant
+      && req.tenantId
+      && String(payload.tenant) !== String(req.tenantId)
+      && payload.role !== 'super_admin'
+    ) {
       throw unauthorized('Token does not belong to this tenant', 'TENANT_MISMATCH');
     }
 

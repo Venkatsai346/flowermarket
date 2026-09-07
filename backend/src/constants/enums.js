@@ -28,6 +28,14 @@ export const TENANT_PLAN = Object.freeze({
   ENTERPRISE: 'enterprise',
 });
 
+/** Store lifecycle. Host resolution only serves `active`. */
+export const TENANT_STATUS = Object.freeze({
+  ACTIVE: 'active',
+  INACTIVE: 'inactive',
+  BLOCKED: 'blocked',
+  SUSPENDED: 'suspended',
+});
+
 // ---------------- Users ----------------
 export const USER_ROLES = Object.freeze({
   CUSTOMER: 'customer', // default — same semantics as BigBasket end user

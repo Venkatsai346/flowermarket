@@ -128,6 +128,21 @@ test('fulfillment, returns, rider and policies helpers map correctly', async () 
   check(api, client.calls, ['POST', '/policies/delivery-fee']);
 });
 
+test('marketplace tenant status and shop serviceability/invoice helpers map correctly', async () => {
+  const client = routeMock();
+  const api = createEndpoints(client);
+
+  api.marketplace.adminSetTenantStatus('t_1', { status: 'suspended', reason: 'non-paying' });
+  check(api, client.calls, ['POST', '/marketplace/admin/tenants/t_1/status']);
+
+  api.shop.serviceability('533001');
+  const svc = check(api, client.calls, ['GET', '/catalog/serviceability']);
+  assert.deepEqual(svc.opts.query, { pincode: '533001' });
+
+  api.shop.orderInvoice('o_1');
+  check(api, client.calls, ['GET', '/tax/orders/o_1/invoice']);
+});
+
 test('catalog tenant and catalog admin helpers map correctly', async () => {
   const client = routeMock();
   const api = createEndpoints(client);

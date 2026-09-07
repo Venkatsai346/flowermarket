@@ -155,6 +155,19 @@ class MarketplaceController {
     res.status(200).json(success(result.items, { message: 'Tenants fetched', meta: result.meta }));
   });
 
+  setTenantStatus = asyncHandler(async (req, res) => {
+    const result = await storeService.setStatus({
+      tenantId: req.params.id,
+      status: req.body.status,
+      reason: req.body.reason || null,
+      actorId: req.auth.userId,
+      req,
+    });
+    res.status(200).json(success(result.tenant, {
+      message: result.unchanged ? 'Already in this state' : `Store ${req.body.status}`,
+    }));
+  });
+
   listPlansAdmin = asyncHandler(async (req, res) => {
     res.status(200).json(success(await planService.listAll(), { message: 'Plans fetched' }));
   });

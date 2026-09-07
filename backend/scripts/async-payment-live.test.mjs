@@ -101,6 +101,8 @@ const order = co.data?.order || co.data;
 ok(co.status === 201 && co.data?.paymentPending === true, 'checkout → 201 + paymentPending', `status ${co.status}, data ${JSON.stringify(co.data).slice(0, 120)}`);
 ok(Boolean(co.data?.gatewayOrderId), 'gatewayOrderId returned', co.data?.gatewayOrderId);
 ok(order?.status === 'payment_pending', 'order status payment_pending', order?.status);
+ok(typeof co.data?.amountPaise === 'number' && co.data.amountPaise > 0, 'Checkout.js amountPaise', co.data?.amountPaise);
+ok(co.data?.customer && typeof co.data.customer === 'object', 'Checkout.js customer prefill', JSON.stringify(co.data?.customer).slice(0, 80));
 
 console.log('— 2. polling endpoint shows pending —');
 const p1 = (await req(`/orders/${order.id}/payment`, { token: custTok })).data;

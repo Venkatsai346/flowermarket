@@ -1,5 +1,5 @@
 import TenantRefundPolicy from '../models/tenantRefundPolicy.model.js';
-import { notFound } from '../utils/ApiError.js';
+import config from '../config/index.js';
 
 /**
  * RefundCalculatorService — the blueprint §5 fix.
@@ -34,15 +34,19 @@ class RefundCalculatorService {
       || { refundDeliveryFeeWhen: 'full_order_return_only', refundFeePct: 100 };
 
     // ---- per-item components (persisted at order time) ----
+    const inclusive = config.tax.pricesInclusive !== false;
     let refundItemAmount = 0;
     let refundTaxAmount = 0;
     for (const line of returnedOrderItems) {
       const price = line.priceAtOrder?.sellingPrice ?? 0;
       const qty = line.returnedQtyTotal ?? 1; // caller passes requested qty
-      // per-unit price minus per-unit discount (tax tracked separately below)
-      const unitItem = round2(price - (line.discountAllocatedPerUnit || 0));
+      const unitGross = round2(price - (line.discountAllocatedPerUnit || 0));
+      const unitTax = round2(line.taxPerUnit || 0);
+      // Inclusive MRP: shelf already contains GST, so goods = gross − tax.
+      // Exclusive: goods is the pre-tax shelf and tax is added on top.
+      const unitItem = inclusive ? round2(unitGross - unitTax) : unitGross;
       refundItemAmount = round2(refundItemAmount + unitItem * qty);
-      refundTaxAmount = round2(refundTaxAmount + (line.taxPerUnit || 0) * qty);
+      refundTaxAmount = round2(refundTaxAmount + unitTax * qty);
     }
 
     // ---- fee decision: is this a FULL return? ----

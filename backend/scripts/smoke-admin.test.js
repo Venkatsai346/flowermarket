@@ -231,10 +231,10 @@ async function main() {
   r = await call(`/admin/analytics/dashboard?from=${from}&to=${to}`, { token: adminTok });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   const k = r.body.data.kpis;
-  // 2 delivered orders × ₹362.95 each (299 + 14.95 tax + 49 fee)
+  // 2 delivered orders × ₹348 each (₹299 MRP incl. GST + ₹49 fee)
   assert.equal(k.ordersCreated, 2, 'ordersCreated = 2');
-  assert.equal(k.gmv, 2 * 362.95, 'gmv = 2 × 362.95');
-  assert.equal(k.aov, 362.95, 'aov');
+  assert.equal(k.gmv, 2 * 348, 'gmv = 2 × 348');
+  assert.equal(k.aov, 348, 'aov');
   assert.equal(k.delivered, 2, 'delivered = 2');
   assert.equal(k.cancelled, 0);
   assert.equal(k.deliverySuccessRate, 1);
@@ -244,7 +244,7 @@ async function main() {
   assert.equal(r.status, 200);
   assert.equal(r.body.data[0].tenantProductId, listing.id, 'top product = the ordered listing');
   assert.equal(r.body.data[0].qty, 2);
-  assert.equal(r.body.data[0].revenue, 2 * (299 + 14.95), 'revenue = 2 × (item + tax)');
+  assert.equal(r.body.data[0].revenue, 2 * 299, 'revenue = 2 × inclusive MRP');
   ok('analytics: top products exact (qty 2, revenue matches)');
 
   r = await call('/admin/analytics/rebuild', { method: 'POST', token: adminTok, body: { from, to } });
@@ -252,7 +252,7 @@ async function main() {
   const daily = await M.AnalyticsDaily.findOne({ tenantId: tenant.id, hubId: null, date: today });
   assert.ok(daily, 'rollup row upserted');
   assert.equal(daily.ordersCreated, 2);
-  assert.equal(daily.gmv, 2 * 362.95);
+  assert.equal(daily.gmv, 2 * 348);
   assert.equal(daily.delivered, 2);
   assert.equal(daily.topProducts.length, 1);
   assert.equal(daily.topProducts[0].qty, 2);
@@ -267,7 +267,7 @@ async function main() {
   assert.deepEqual([...buf.subarray(0, 3)], [0xEF, 0xBB, 0xBF], 'CSV has UTF-8 BOM bytes');
   const text = buf.toString('utf8').replace(/^\uFEFF/, '');
   assert.ok(text.startsWith('Date,Hub,Orders'), 'CSV header present');
-  assert.ok(text.includes(`${today},ALL,2,${2 * 362.95}`), `CSV row has date ${today}, ALL, orders 2, gmv ${2 * 362.95}`);
+  assert.ok(text.includes(`${today},ALL,2,${2 * 348}`), `CSV row has date ${today}, ALL, orders 2, gmv ${2 * 348}`);
   ok('analytics: export.csv with BOM + data row');
 
   console.log(`\nADMIN SMOKE: ${passed} assertions passed ✔`);

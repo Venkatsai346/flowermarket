@@ -21,7 +21,8 @@ import { serializeList } from '../utils/serialize.js';
 import { badRequest, conflict, notFound, forbidden } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
 import config from '../config/index.js';
-import { USER_ROLES, PRODUCT_MASTER_STATUS, TENANT_LISTING_STATUS } from '../constants/enums.js';
+import { USER_ROLES, PRODUCT_MASTER_STATUS, TENANT_LISTING_STATUS, TENANT_STATUS, AUDIT_ACTION } from '../constants/enums.js';
+import tenantDomainService from './tenantDomain.service.js';
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -253,7 +254,7 @@ class StoreService {
     if (query.plan) q.plan = query.plan;
     if (query.search) q.$or = [{ name: { $regex: query.search, $options: 'i' } }, { slug: { $regex: query.search, $options: 'i' } }];
     const [docs, total] = await Promise.all([
-      Tenant.find(q).select('name slug plan status ownerUserId store createdAt').sort({ createdAt: -1 })
+        Tenant.find(q).select('name slug plan status statusReason statusChangedAt ownerUserId store createdAt').sort({ createdAt: -1 })
         .skip((page - 1) * limit).limit(limit).lean(),
       Tenant.countDocuments(q),
     ]);
@@ -262,6 +263,47 @@ class StoreService {
     const subByTenant = new Map(subs.map((s) => [String(s.tenantId), s]));
     const items = rows.map((r) => ({ ...r, subscription: subByTenant.get(r.id) || null }));
     return { items, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+  }
+
+  /**
+   * Platform kill-switch. Host resolution only serves `active` tenants, so a
+   * suspend 404s the storefront immediately (after cache drop). Admin traffic
+   * uses the header path and keeps working so operators can still refund.
+   */
+  async setStatus({ tenantId, status, reason = null, actorId = null, req = null }) {
+    const allowed = new Set(Object.values(TENANT_STATUS));
+    if (!allowed.has(status)) throw badRequest('Invalid tenant status', 'BAD_TENANT_STATUS');
+
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant) throw notFound('Store not found', 'STORE_NOT_FOUND');
+
+    const before = { status: tenant.status, reason: tenant.statusReason || null };
+    if (tenant.status === status) {
+      return { tenant, unchanged: true };
+    }
+
+    tenant.status = status;
+    tenant.statusReason = reason ? String(reason).slice(0, 500) : null;
+    tenant.statusChangedAt = new Date();
+    tenant.statusChangedBy = actorId || null;
+    await tenant.save({ validateModifiedOnly: true });
+
+    tenantDomainService.invalidateTenant(tenant.slug);
+    tenantDomainService.invalidate();
+
+    await auditService.record({
+      action: AUDIT_ACTION.STATUS_CHANGE,
+      entityType: 'tenant',
+      entityId: tenant._id,
+      tenantId: tenant._id,
+      actorId,
+      actorType: 'admin',
+      before,
+      after: { status: tenant.status, reason: tenant.statusReason },
+      req,
+    }).catch(() => {});
+
+    return { tenant, unchanged: false };
   }
 }
 

@@ -15,7 +15,7 @@ describe('platform lifecycle meta', () => {
   });
 
   test('covers tenant and vendor lifecycle states', () => {
-    for (const s of ['active', 'inactive', 'blocked']) assert.ok(TENANT_STATUS_META[s]?.tone);
+    for (const s of ['active', 'inactive', 'blocked', 'suspended']) assert.ok(TENANT_STATUS_META[s]?.tone);
     for (const s of ['active', 'suspended']) assert.ok(VENDOR_STATUS_LIFECYCLE_META[s]?.tone);
   });
 

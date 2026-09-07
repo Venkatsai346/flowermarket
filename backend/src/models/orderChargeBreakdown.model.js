@@ -20,12 +20,15 @@ const OrderChargeBreakdownSchema = new Schema(
     orderId: { type: Types.ObjectId, ref: 'Order', required: true },
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
 
-    itemSubtotal: { type: Number, required: true, min: 0 }, // Σ sellingPrice×qty (before discount/tax)
+    itemSubtotal: { type: Number, required: true, min: 0 }, // Σ sellingPrice×qty (shelf / MRP)
     deliveryFee: { type: Number, required: true, min: 0 },
     taxTotal: { type: Number, required: true, min: 0 },
     discountTotal: { type: Number, required: true, min: 0 },
     grandTotal: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'INR', maxlength: 8 },
+    // Indian MRP is GST-inclusive. Snapshot so a later flag flip cannot
+    // re-interpret a historical invoice.
+    pricesInclusive: { type: Boolean, default: true },
 
     // ---- policy audit refs (which policy versions produced these numbers) ----
     deliveryFeePolicyId: { type: Types.ObjectId, ref: 'DeliveryFeePolicy', default: null },

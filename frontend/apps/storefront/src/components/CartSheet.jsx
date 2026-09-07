@@ -6,6 +6,7 @@ import { useShop } from '../store.js';
 import { useShopAuth } from '../api.js';
 import { Button, Money, Sheet, Stepper, Empty } from './ui.jsx';
 import { errMsg } from '../lib/utils.js';
+import { isAuthError, withAuthRetry } from '../lib/withAuth.js';
 
 export default function CartSheet() {
   const open = useShop((s) => s.cartOpen);
@@ -30,12 +31,12 @@ export default function CartSheet() {
   const setQty = async (item, qty) => {
     setBusyId(item.id);
     try {
-      const r = qty <= 0
-        ? await api.shop.removeItem(item.id)
-        : await api.shop.updateItem(item.id, { qty });
+      const r = await withAuthRetry(() => (qty <= 0
+        ? api.shop.removeItem(item.id)
+        : api.shop.updateItem(item.id, { qty })));
       setCart(r.data);
     } catch (e) {
-      toast(errMsg(e), 'error');
+      toast(isAuthError(e) ? 'Sign in to update your basket' : errMsg(e), isAuthError(e) ? 'info' : 'error');
     } finally {
       setBusyId(null);
     }
@@ -45,12 +46,12 @@ export default function CartSheet() {
     if (!coupon.trim()) return;
     setCouponBusy(true);
     try {
-      const r = await api.shop.applyCoupon(coupon.trim().toUpperCase());
+      const r = await withAuthRetry(() => api.shop.applyCoupon(coupon.trim().toUpperCase()));
       setCart(r.data);
       toast('Coupon applied', 'success');
       setCoupon('');
     } catch (e) {
-      toast(errMsg(e), 'error');
+      toast(isAuthError(e) ? 'Sign in to apply a coupon' : errMsg(e), isAuthError(e) ? 'info' : 'error');
     } finally {
       setCouponBusy(false);
     }
@@ -59,10 +60,10 @@ export default function CartSheet() {
   const dropCoupon = async () => {
     setCouponBusy(true);
     try {
-      const r = await api.shop.removeCoupon();
+      const r = await withAuthRetry(() => api.shop.removeCoupon());
       setCart(r.data);
     } catch (e) {
-      toast(errMsg(e), 'error');
+      toast(isAuthError(e) ? 'Sign in to update your coupon' : errMsg(e), isAuthError(e) ? 'info' : 'error');
     } finally {
       setCouponBusy(false);
     }
@@ -70,7 +71,12 @@ export default function CartSheet() {
 
   const goCheckout = () => {
     close();
-    if (!isAuth) { openAuth(); return; }
+    if (!isAuth) {
+      openAuth({
+        retry: async () => { navigate('/checkout'); },
+      });
+      return;
+    }
     navigate('/checkout');
   };
 

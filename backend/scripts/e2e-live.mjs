@@ -172,6 +172,24 @@ r = await api(`/orders/${orderId}`, { token: custTok });
 check('4.10', 'order detail (confirmed)', r.status === 200 && (r.data?.data?.order?.status === 'confirmed'), `status=${r.status} ${j(r.data?.data?.order?.status)}`);
 r = await api(`/orders/${orderId}/timeline`, { token: custTok });
 check('4.11', 'order timeline (history rows)', r.status === 200 && (r.data?.data?.history?.length ?? 0) >= 1, `status=${r.status} rows=${r.data?.data?.history?.length}`);
+r = await api('/catalog/serviceability?pincode=533001');
+check('4.12', 'pin 533001 is serviceable', r.status === 200 && r.data?.data?.serviceable === true, j(r.data?.data));
+r = await api('/catalog/serviceability?pincode=110001');
+check('4.13', 'pin 110001 is unserviceable', r.status === 200 && r.data?.data?.serviceable === false, j(r.data?.data));
+r = await api('/users/me/addresses', { method: 'POST', token: custTok, body: {
+  name: 'Delhi', phone: '9876543210', line1: 'Connaught Place', city: 'Delhi', state: 'Delhi', pincode: '110001',
+} });
+const delhiId = r.data?.data?.id || r.data?.data?._id;
+check('4.14', 'unserviceable address can be saved (stamped, not blocked)', [200, 201].includes(r.status) && Boolean(delhiId), `status=${r.status}`);
+r = await api(`/cart/slots?pincode=110001&date=${today}`, { token: custTok });
+check('4.15', 'unserviceable pin has no slots', r.status === 200 && r.data?.data?.serviceable === false && (r.data?.data?.slots || []).length === 0, j(r.data?.data));
+r = await api('/cart/items', { method: 'POST', token: custTok, body: { tenantProductId: tpId, qty: 1 } });
+r = await api(`/cart/slots?pincode=533001&date=${today}`, { token: custTok });
+const trapSlot = (r.data?.data?.slots || []).find((s) => (s.remaining ?? s.available) > 0);
+r = await api(`/cart/slots/${trapSlot?.id || trapSlot?._id}/reserve`, { method: 'POST', token: custTok });
+const trapHold = r.data?.data?.id || r.data?.data?._id;
+r = await api('/cart/checkout', { method: 'POST', token: custTok, body: { slotReservationId: trapHold, addressId: delhiId, paymentMethod: 'upi', confirmPriceChanges: true } });
+check('4.16', 'Delhi pin cannot check out of a Kakinada store', r.status === 400 && r.data?.code === 'PINCODE_UNSERVICEABLE', `status=${r.status} ${j(r.data)}`);
 
 // ===========================================================================
 section('5. admin auth + RBAC');
@@ -209,7 +227,7 @@ r = await api('/auth/otp/verify', { method: 'POST', body: { purpose: 'login', ch
 const riderTok = r.data?.data?.accessToken || r.data?.data?.tokens?.accessToken;
 check('6.4', 'rider OTP login (rider role)', r.status === 200 && (r.data?.data?.user?.role === 'rider' || r.data?.data?.role === 'rider'), `status=${r.status} ${j(r.data?.data?.user?.role ?? r.data?.data?.role)}`);
 r = await api('/rider/deliveries', { token: riderTok });
-const delivery = (r.data?.data?.deliveries || r.data?.data || []).find((d) => String(d.orderId) === String(orderId)) || (r.data?.data?.deliveries || r.data?.data || [])[0];
+const delivery = (r.data?.data?.deliveries || r.data?.data || []).find((d) => String(d.orderId) === String(orderId)) || (r.data?.data?.deliveries || r.data?.data)[0];
 const deliveryId = delivery?.id || delivery?._id;
 check('6.5', 'rider sees the delivery', r.status === 200 && Boolean(deliveryId), j(r.data).slice(0, 160));
 r = await api(`/rider/deliveries/${deliveryId}/accept`, { method: 'POST', token: riderTok });
@@ -246,10 +264,13 @@ const walletAfter = r.data?.data?.balance;
 check('7.4', 'refund credited to wallet (>0)', r.status === 200 && Number(walletAfter) > 0, `status=${r.status} balance=${walletAfter}`);
 r = await api('/wallet/refunds', { token: custTok });
 check('7.5', 'wallet refunds ledger', r.status === 200 && (r.data?.data?.length ?? 0) >= 1, j(r.data?.data).slice(0, 120));
+r = await api(`/tax/orders/${orderId}/invoice`, { token: custTok });
+const inv = Array.isArray(r.data?.data) ? r.data.data[0] : (r.data?.data?.items || [])[0];
+check('7.6', 'GST invoice HTML after delivery', r.status === 200 && Boolean(inv?.html || inv?.number), `status=${r.status} ${j(r.data).slice(0, 160)}`);
 
 // ===========================================================================
 section('8. wallet checkout + cancellation saga');
-const marigold = (await api('/catalog?q=marigold')).data?.data?.[0];
+const marigold = allListings.find((l) => /marigold/i.test(l?.product?.title || '')) || allListings.find((l) => l.listingId !== tpId) || allListings[0];
 r = await api('/cart/clear', { method: 'DELETE', token: custTok });
 r = await api('/cart/items', { method: 'POST', token: custTok, body: { tenantProductId: marigold?.listingId, qty: 1 } });
 check('8.1', 'cart refilled (marigold)', r.status === 200, j(r.data).slice(0, 120));

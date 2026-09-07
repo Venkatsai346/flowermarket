@@ -72,10 +72,13 @@ const TenantSchema = new Schema(
     // ---- Status ----
     status: {
       type: String,
-      enum: ['active', 'inactive', 'blocked'],
+      enum: ['active', 'inactive', 'blocked', 'suspended'],
       default: 'active',
       index: true,
     },
+    statusReason: { type: String, default: null, maxlength: 500 },
+    statusChangedAt: { type: Date, default: null },
+    statusChangedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
 
     // ---- Ownership ----
     ownerUserId: {

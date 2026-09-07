@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Flower2, Package, Search, ShoppingBag, X } from 'lucide-react';
+import { Flower2, MapPin, Package, Search, ShoppingBag, X } from 'lucide-react';
 import { useShop } from '../store.js';
 import { api } from '../api.js';
 import AccountMenu from './AccountMenu.jsx';
@@ -10,6 +10,9 @@ export default function Header({ query, onQuery }) {
   const store = useShop((s) => s.store);
   const count = useShop((s) => s.itemCount());
   const openCart = useShop((s) => s.openCart);
+  const openPin = useShop((s) => s.openPin);
+  const pincode = useShop((s) => s.pincode);
+  const serviceability = useShop((s) => s.serviceability);
   const [local, setLocal] = useState(query || '');
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
@@ -104,6 +107,15 @@ export default function Header({ query, onQuery }) {
         </form>
 
         <nav className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            onClick={openPin}
+            className="flex h-10 max-w-[7.5rem] items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 sm:max-w-[9.5rem] sm:px-3"
+            aria-label="Set delivery pincode"
+          >
+            <MapPin className={`h-4 w-4 shrink-0 ${serviceability && !serviceability.serviceable ? 'text-rose-500' : ''}`} />
+            <span className="truncate tabular-nums">{pincode || 'Set pin'}</span>
+          </button>
           <Link
             to="/orders"
             className="hidden h-10 w-10 items-center justify-center rounded-full text-slate-600 transition hover:bg-slate-100 sm:flex"
