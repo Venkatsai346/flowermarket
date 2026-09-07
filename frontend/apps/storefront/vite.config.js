@@ -21,5 +21,17 @@ export default defineConfig({
       '/media/local': { target: process.env.VITE_API_TARGET || 'http://localhost:4000', changeOrigin: true },
     },
   },
-  build: { outDir: 'dist', sourcemap: false },
+  build: {
+    outDir: 'dist',
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules/lucide-react')) return 'lucide';
+          if (id.includes('node_modules/react-dom') || id.includes('node_modules/react-router') || id.includes('node_modules/react/')) return 'react';
+          return undefined;
+        },
+      },
+    },
+  },
 });

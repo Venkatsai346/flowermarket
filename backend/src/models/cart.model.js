@@ -47,10 +47,23 @@ const CartSchema = new Schema(
   { collection: 'carts' }
 );
 
-// one active cart per (tenant, user)
+// one active cart per (tenant, user) — partial so guest carts (no userId) do not collide
 CartSchema.index(
   { tenantId: 1, userId: 1, status: 1 },
-  { unique: true, partialFilterExpression: { status: 'active' } }
+  {
+    unique: true,
+    name: 'uniq_active_user_cart',
+    partialFilterExpression: { status: 'active', userId: { $exists: true, $type: 'objectId' } },
+  }
+);
+// one active cart per (tenant, guest key)
+CartSchema.index(
+  { tenantId: 1, guestKey: 1, status: 1 },
+  {
+    unique: true,
+    name: 'uniq_active_guest_cart',
+    partialFilterExpression: { status: 'active', guestKey: { $type: 'string' } },
+  }
 );
 // abandoned-cart TTL (30 days)
 CartSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0, partialFilterExpression: { status: 'active' } });

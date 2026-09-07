@@ -239,6 +239,7 @@ class SearchService {
       product: {
         id: String(d.masterId),
         title: d.title,
+        slug: d.slug || null,
         categoryId: d.categoryId ? String(d.categoryId) : null,
         brandName: d.brandName,
         defaultSellingUnit: d.unit,

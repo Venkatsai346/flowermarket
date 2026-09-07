@@ -80,6 +80,7 @@ export function createApiClient({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refreshToken: rt }),
+      credentials: 'same-origin',
     });
     let json = null;
     try { json = await res.json(); } catch { json = null; }
@@ -114,7 +115,7 @@ export function createApiClient({
 
     let res;
     try {
-      res = await fetchImpl(url, { method, headers: h, body: payload, signal });
+      res = await fetchImpl(url, { method, headers: h, body: payload, signal, credentials: 'same-origin' });
     } catch (err) {
       throw new ApiError(err.message || 'Network error', { status: 0, code: 'NETWORK_ERROR' });
     }

@@ -54,3 +54,14 @@ export async function authenticate(req, res, next) {
     next(err);
   }
 }
+
+/**
+ * Like authenticate, but a missing Bearer token is not an error — the
+ * handler proceeds as a guest. A *present but invalid* token still 401s so
+ * a corrupted session cannot silently fall through to someone else's cart.
+ */
+export async function optionalAuthenticate(req, res, next) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Bearer ') || header.length < 16) return next();
+  return authenticate(req, res, next);
+}

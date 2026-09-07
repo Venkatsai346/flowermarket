@@ -141,6 +141,19 @@ test('marketplace tenant status and shop serviceability/invoice helpers map corr
 
   api.shop.orderInvoice('o_1');
   check(api, client.calls, ['GET', '/tax/orders/o_1/invoice']);
+
+  api.shop.productBySlug('ros-red-bunch');
+  check(api, client.calls, ['GET', '/catalog/p/ros-red-bunch']);
+
+  api.shop.mergeCart();
+  check(api, client.calls, ['POST', '/cart/merge']);
+
+  api.shop.notifications({ limit: 8 });
+  const n = check(api, client.calls, ['GET', '/users/me/notifications']);
+  assert.deepEqual(n.opts.query, { limit: 8 });
+
+  api.shop.markNotificationRead('n_1');
+  check(api, client.calls, ['POST', '/users/me/notifications/n_1/read']);
 });
 
 test('catalog tenant and catalog admin helpers map correctly', async () => {

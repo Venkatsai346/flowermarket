@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
+import ProductImage from '../models/productImage.model.js';
 import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
 import inventoryService from './inventory.service.js';
@@ -66,8 +67,8 @@ class CatalogSearchService {
         },
       });
     }
-    if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': query.categoryId } });
-    if (query.brandId) pipeline.push({ $match: { 'master.brandId': query.brandId } });
+    if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': toObjectId(query.categoryId) } });
+    if (query.brandId) pipeline.push({ $match: { 'master.brandId': toObjectId(query.brandId) } });
     if (query.type) pipeline.push({ $match: { 'master.type': query.type } });
     if (query.minPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $gte: Number(query.minPrice) } } });
     if (query.maxPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $lte: Number(query.maxPrice) } } });
@@ -85,6 +86,7 @@ class CatalogSearchService {
 
     const totalAgg = await TenantProduct.aggregate([...pipeline, { $count: 'total' }]);
     const total = totalAgg[0]?.total ?? 0;
+    const facets = await this.computeFacets(pipeline);
 
     pipeline.push({ $skip: skip }, { $limit: limit });
 
@@ -131,7 +133,78 @@ class CatalogSearchService {
       }
     }
 
-    return { items: rows, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: skip + rows.length < total } };
+    await this.attachPrimaryImages(rows);
+
+    return {
+      items: rows,
+      meta: {
+        page, limit, total,
+        totalPages: Math.ceil(total / limit),
+        hasMore: skip + rows.length < total,
+        facets,
+      },
+    };
+  }
+
+  /** Facet counts over the SAME filter pipeline the list used, minus skip/limit. */
+  async computeFacets(filterPipeline) {
+    try {
+      const [rows] = await TenantProduct.aggregate([
+        ...filterPipeline,
+        {
+          $facet: {
+            categories: [
+              { $group: { _id: '$master.categoryId', count: { $sum: 1 } } },
+              { $sort: { count: -1 } },
+              { $limit: 12 },
+            ],
+            availability: [
+              { $group: { _id: { $gt: ['$stockQty', 0] }, count: { $sum: 1 } } },
+            ],
+            price: [
+              { $group: { _id: null, min: { $min: '$price.sellingPrice' }, max: { $max: '$price.sellingPrice' } } },
+            ],
+          },
+        },
+      ]);
+      const catIds = (rows?.categories || []).map((c) => c._id).filter(Boolean);
+      const cats = catIds.length
+        ? await Category.find({ _id: { $in: catIds } }).select('name').lean()
+        : [];
+      const nameById = new Map(cats.map((c) => [String(c._id), c.name]));
+      return {
+        categories: (rows?.categories || [])
+          .filter((c) => c._id)
+          .map((c) => ({ id: String(c._id), name: nameById.get(String(c._id)) || null, count: c.count })),
+        inStock: (rows?.availability || []).find((a) => a._id === true)?.count || 0,
+        outOfStock: (rows?.availability || []).find((a) => a._id === false)?.count || 0,
+        priceRange: rows?.price?.[0]
+          ? { min: rows.price[0].min || 0, max: rows.price[0].max || 0 }
+          : null,
+      };
+    } catch {
+      return { categories: [], inStock: 0, outOfStock: 0, priceRange: null };
+    }
+  }
+
+  async attachPrimaryImages(rows) {
+    const ids = [...new Set(rows.map((r) => r.product?.id).filter(Boolean))];
+    if (!ids.length) return rows;
+    const images = await ProductImage.find({
+      productMasterId: { $in: ids },
+      status: 'active',
+      isDeleted: { $ne: true },
+    }).sort({ isPrimary: -1, sortOrder: 1 }).lean();
+    const byMaster = new Map();
+    for (const img of images) {
+      const k = String(img.productMasterId);
+      if (!byMaster.has(k)) byMaster.set(k, img.url);
+    }
+    for (const r of rows) {
+      const url = byMaster.get(String(r.product?.id));
+      if (url) r.product.imageUrl = url;
+    }
+    return rows;
   }
 
   /** Search across GLOBAL masters (admin/taxonomy view). */

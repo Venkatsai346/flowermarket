@@ -291,6 +291,7 @@ export const inventoryOpSchema = Joi.object({
 // ---------------- Customer catalog query ----------------
 export const catalogQuerySchema = Joi.object({
   search: Joi.string().max(120).allow('', null),
+  q: Joi.string().max(120).allow('', null),
   categoryId: optionalObjectId,
   brandId: optionalObjectId,
   type: Joi.string().valid(...Object.values(PRODUCT_TYPE)),
@@ -319,4 +320,8 @@ export const bulkQuerySchema = Joi.object({
 
 export const idParamSchema = Joi.object({
   id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+});
+
+export const slugParamSchema = Joi.object({
+  slug: Joi.string().max(200).pattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).required(),
 });

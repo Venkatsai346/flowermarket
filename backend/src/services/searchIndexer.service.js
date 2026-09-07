@@ -90,6 +90,7 @@ class SearchIndexerService {
       vendorId: master.vendorId || null,
 
       title,
+      slug: master.slug || null,
       searchText,
       brandName,
       categoryId: master.categoryId || null,

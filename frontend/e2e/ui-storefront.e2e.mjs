@@ -1,8 +1,8 @@
 // Storefront UI E2E — the complete customer journey through the real browser.
-// The storefront cart is server-side and auth-gated, so the journey is:
-// browse/filter/search/PDP → OTP sign-in → cart → checkout (address/slot/UPI)
-// → order detail → cancel → 2nd order → delivered (fulfillment API) → return
-// → returns list → wallet → console-error audit.
+// Wave 3: shareable PDP `/p/:slug`, `/search?q=`, guest cart merge-on-login.
+// Journey: browse/filter/search URL/PDP → guest add → OTP (cart preserved)
+// → checkout (address/slot/UPI) → order detail → cancel → 2nd order →
+// delivered (fulfillment API) → return → returns list → wallet → audit.
 import {
   launchBrowser, makePage, shot, Runner, bodyText, waitText, waitGone,
   clickText, typeInto, hasSelector, countSel, logOffset, grabOtp,
@@ -31,37 +31,38 @@ await shot(page, 's01-home');
 
 await R.check('S02', 'Home: 5 seeded products in grid', async () => {
   await waitText(page, /5 products?/, 15000);
-  const n = await countSel(page, 'button[aria-label^="View "]');
+  const n = await countSel(page, 'a[aria-label^="View "]');
   if (n < 5) throw new Error(`expected 5 product cards, saw ${n}`);
   return `${n} product cards`;
 });
 
 await R.check('S03', 'Home: category chip filters grid', async () => {
-  const before = await countSel(page, 'button[aria-label^="View "]');
+  const before = await countSel(page, 'a[aria-label^="View "]');
   await clickText(page, 'Bouquets', { exact: true });
   await new Promise((r) => setTimeout(r, 900));
-  const after = await countSel(page, 'button[aria-label^="View "]');
+  const after = await countSel(page, 'a[aria-label^="View "]');
   if (after >= before || after < 1) throw new Error(`chip filter: ${before} -> ${after}`);
   await clickText(page, 'All', { exact: true });
   await new Promise((r) => setTimeout(r, 900));
-  const back = await countSel(page, 'button[aria-label^="View "]');
+  const back = await countSel(page, 'a[aria-label^="View "]');
   if (back < 5) throw new Error(`back to All: ${back}`);
   return `${before} -> ${after} -> ${back}`;
 });
 
-await R.check('S04', 'Home: search box filters by query (Enter)', async () => {
+await R.check('S04', 'Search URL: /search?q=rose is shareable', async () => {
   const inp = await page.$('input[placeholder="Search flowers, plants, gifts…"]');
   await inp.click();
   await inp.type('rose', { delay: 40 });
   await new Promise((r) => setTimeout(r, 600));
   await inp.press('Enter');
   await waitText(page, /for “rose”/, 15000);
-  const n = await countSel(page, 'button[aria-label^="View "]');
+  const url = page.url();
+  if (!/\/search\?q=rose/i.test(url)) throw new Error(`expected /search?q=rose, got ${url}`);
+  const n = await countSel(page, 'a[aria-label^="View "]');
   if (n < 1) throw new Error('search returned no products');
-  // clear via the X button
   await page.click('button[aria-label="Clear search"]', { timeout: 5000 });
   await new Promise((r) => setTimeout(r, 1200));
-  return `${n} result(s)`;
+  return `${n} result(s) at ${url.replace(/^https?:\/\/[^/]+/, '')}`;
 });
 
 await R.check('S05', 'Home: sort control + in-stock chip render', async () => {
@@ -72,15 +73,25 @@ await R.check('S05', 'Home: sort control + in-stock chip render', async () => {
 });
 
 let firstTitle = null;
-await R.check('S06', 'PDP sheet: open product, price + Add to basket', async () => {
-  const handle = await page.$('button[aria-label^="View "]');
+await R.check('S06', 'PDP /p/:slug: gallery, care, JSON-LD, guest add', async () => {
+  await page.goto(BASE + '/', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /products?/, 15000);
+  const handle = await page.$('a[aria-label^="View "]');
   firstTitle = await handle.evaluate((el) => el.getAttribute('aria-label').replace('View ', ''));
   await handle.click();
-  await waitText(page, /Add to basket|Out of stock/, 10000);
+  await waitText(page, /Add to basket|Out of stock/, 15000);
+  const url = page.url();
+  if (!/\/p\//.test(url)) throw new Error(`expected /p/:slug, got ${url}`);
   const t = await bodyText(page);
-  if (!/₹\s?[\d,]+/.test(t)) throw new Error('no price in PDP sheet');
-  if (!/per bunch|Slot delivery/i.test(t)) throw new Error('no product meta');
-  return `“${firstTitle}”`;
+  if (!/₹\s?[\d,]+/.test(t)) throw new Error('no price on PDP');
+  if (!/Vase life|Care|Slot delivery/i.test(t)) throw new Error('no care / vase-life / slot meta');
+  const ld = await page.$eval('script[type="application/ld+json"]', (el) => el.textContent).catch(() => null);
+  if (!ld || !/Product/.test(ld)) throw new Error('JSON-LD Product missing');
+  await clickText(page, /Add to basket/, { timeout: 6000 });
+  await new Promise((r) => setTimeout(r, 1500));
+  const badge = await page.$eval('button[aria-label^="Cart,"]', (e) => e.getAttribute('aria-label'));
+  if (!/Cart, 1 item$/.test(badge)) throw new Error(`guest add badge: ${badge}`);
+  return `“${firstTitle}” ${url.replace(/^https?:\/\/[^/]+/, '')} ${badge}`;
 });
 await shot(page, 's06-pdp');
 
@@ -137,14 +148,11 @@ await R.check('S09', 'Auth: signed-in account menu appears in header', async () 
 });
 
 // ---------------------------------------------------------------- cart (post-auth)
-await R.check('S10', 'Cart: add from PDP after sign-in → badge', async () => {
-  const handle = await page.$('button[aria-label^="View "]');
-  await handle.click();
-  await waitText(page, /Add to basket|Out of stock/, 10000);
-  await clickText(page, /Add to basket/, { timeout: 6000 });
-  await new Promise((r) => setTimeout(r, 1500));
+await R.check('S10', 'Cart: guest basket survived OTP (merge-on-login)', async () => {
+  await page.goto(BASE + '/', { waitUntil: 'networkidle2', timeout: 30000 });
+  await waitText(page, /products?/, 15000);
   const badge = await page.$eval('button[aria-label^="Cart,"]', (e) => e.getAttribute('aria-label'));
-  if (!/Cart, 1 item$/.test(badge)) throw new Error(`badge: ${badge}`);
+  if (!/Cart, 1 item$/.test(badge)) throw new Error(`merged cart badge: ${badge}`);
   return badge;
 });
 

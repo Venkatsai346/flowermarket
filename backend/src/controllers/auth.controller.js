@@ -1,4 +1,6 @@
 import AuthService from '../services/auth.service.js';
+import cartService from '../services/cart.service.js';
+import { parseGuestKey, clearGuestCookie } from '../middleware/guestCart.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 
@@ -35,6 +37,7 @@ class AuthController {
         deviceInfo: req.body.device || {},
         ip: req.ip,
       });
+      await this.mergeGuestOnLogin(req, res, result);
       return res.status(200).json(success(result, { message: result.isNewUser ? 'Account created & logged in' : 'Logged in' }));
     }
 
@@ -67,8 +70,23 @@ class AuthController {
       deviceInfo: req.body.device || {},
       ip: req.ip,
     });
+    await this.mergeGuestOnLogin(req, res, result);
     res.status(200).json(success(result, { message: 'Logged in' }));
   });
+
+  /** Fold the anonymous cart into the just-signed-in user. Never fails login. */
+  async mergeGuestOnLogin(req, res, result) {
+    const guestKey = parseGuestKey(req);
+    const userId = result?.user?.id || result?.user?._id || result?.userId;
+    const tenantId = req.tenantId;
+    if (!guestKey || !userId || !tenantId) return;
+    try {
+      await cartService.mergeGuestCart({ tenantId, userId, guestKey });
+      clearGuestCookie(res);
+    } catch {
+      // login succeeded; the next authenticated GET /cart will retry the merge
+    }
+  }
 
   /** POST /auth/refresh — rotate refresh token, get new access token. */
   refresh = asyncHandler(async (req, res) => {

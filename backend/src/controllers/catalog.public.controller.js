@@ -4,9 +4,13 @@ import config from '../config/index.js';
 import productMasterService from '../services/productMaster.service.js';
 import inventoryService from '../services/inventory.service.js';
 import slotService from '../services/slot.service.js';
+import ProductMaster from '../models/productMaster.model.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
+import { PRODUCT_MASTER_STATUS } from '../constants/enums.js';
+
+const OBJECT_ID_RX = /^[0-9a-fA-F]{24}$/;
 
 /**
  * CatalogPublicController — customer-facing read endpoints.
@@ -26,12 +30,15 @@ class CatalogPublicController {
    */
   search = asyncHandler(async (req, res) => {
     const resolvedTenantId = req.tenantId || req.headers['x-tenant-id'];
-    console.log("🔍 CATALOG DEBUG - Resolved Tenant ID:", resolvedTenantId);
+    const query = {
+      ...req.query,
+      search: req.query.search || req.query.q || undefined,
+    };
     if (config.search.rankedCatalog) {
       try {
         const ranked = await searchService.search({
           tenantId: resolvedTenantId,
-          query: req.query,
+          query,
           sessionKey: req.get('x-session-id') || req.ip || null,
         });
         // The index must never shadow a live catalogue. The ranked path
@@ -40,7 +47,7 @@ class CatalogPublicController {
         // one (an event handler failed mid-drain) both serve fewer listings
         // than actually exist. Probe the legacy scan with the same query:
         // if the live catalogue is larger than the index, serve it instead.
-        const legacyProbe = await catalogSearchService.search({ tenantId: req.tenantId, query: req.query });
+        const legacyProbe = await catalogSearchService.search({ tenantId: req.tenantId, query });
         if (legacyProbe.meta.total > (ranked.meta?.total ?? 0)) {
           // eslint-disable-next-line no-console
           console.warn(`[search] index stale — ranked ${ranked.meta?.total} < live ${legacyProbe.meta.total} listings; serving legacy scan`);
@@ -58,7 +65,7 @@ class CatalogPublicController {
         console.error('[search] ranked path failed, falling back to the legacy scan:', err.message);
       }
     }
-    const result = await catalogSearchService.search({ tenantId: resolvedTenantId, query: req.query });
+    const result = await catalogSearchService.search({ tenantId: resolvedTenantId, query });
     res.status(200).json(success(result.items, { message: 'Catalog fetched', meta: result.meta }));
   });
 
@@ -74,38 +81,92 @@ class CatalogPublicController {
     res.status(200).json(success(brands, { message: 'Brands fetched' }));
   });
 
-  /** GET /catalog/products/:id — one merged product (tenant context). */
-  productDetail = asyncHandler(async (req, res) => {
-    const { tenantId } = req;
-    const { id } = req.params;
-
-    const [master, listing, stockMap] = await Promise.all([
-      productMasterService.getMaster(id),
-      (async () => {
-        const TenantProduct = (await import('../models/tenantProduct.model.js')).default;
-        return TenantProduct.findOne({ tenantId, productMasterId: id, status: 'active' }).lean();
-      })(),
-      (async () => {
-        const TenantProduct = (await import('../models/tenantProduct.model.js')).default;
-        const lp = await TenantProduct.findOne({ tenantId, productMasterId: id, status: 'active' }).lean();
-        return lp ? inventoryService.getStock({ tenantId, listingId: lp._id }) : null;
-      })(),
+  /**
+   * Assemble the shareable PDP payload: master (images + EAV) + this store's
+   * listing + related listings in the same category.
+   */
+  async assembleProductPage({ tenantId, masterId }) {
+    const TenantProduct = (await import('../models/tenantProduct.model.js')).default;
+    const [master, listing] = await Promise.all([
+      productMasterService.getMaster(masterId),
+      TenantProduct.findOne({ tenantId, productMasterId: masterId, status: 'active' }).lean(),
     ]);
-
     if (!listing) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
 
-    res.status(200).json(
-      success({
-        product: master,
-        listing: {
-          id: listing._id,
-          price: listing.price,
-          status: listing.status,
-          orderLimits: listing.orderLimits,
-          availability: stockMap ? { status: stockMap.qtyAvailable > 0 ? 'in_stock' : 'out_of_stock', qtyAvailable: stockMap.qtyAvailable } : listing.availability,
+    const stockMap = await inventoryService.getStock({ tenantId, listingId: listing._id });
+    const stockQty = stockMap?.qtyAvailable ?? listing.stockQty ?? 0;
+
+    const relatedRaw = await catalogSearchService.search({
+      tenantId,
+      query: {
+        categoryId: master.categoryId ? String(master.categoryId) : undefined,
+        limit: 9,
+      },
+    });
+    const related = (relatedRaw.items || [])
+      .filter((r) => String(r.listingId) !== String(listing._id))
+      .slice(0, 8);
+
+    const images = (master.images || []).map((img) => ({
+      url: img.url,
+      altText: img.altText || master.title,
+      isPrimary: Boolean(img.isPrimary),
+    }));
+    const imageUrl = images.find((i) => i.isPrimary)?.url || images[0]?.url || null;
+
+    return {
+      product: {
+        ...master,
+        imageUrl,
+        images,
+      },
+      listing: {
+        id: listing._id,
+        listingId: String(listing._id),
+        price: listing.price,
+        status: listing.status,
+        orderLimits: listing.orderLimits,
+        stockQty,
+        availability: {
+          status: stockQty > 0 ? 'in_stock' : 'out_of_stock',
+          qtyAvailable: stockQty,
         },
-      }, { message: 'Product fetched' })
-    );
+      },
+      related,
+    };
+  }
+
+  /** GET /catalog/products/:id — one merged product (tenant context). */
+  productDetail = asyncHandler(async (req, res) => {
+    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: req.params.id });
+    res.status(200).json(success(page, { message: 'Product fetched' }));
+  });
+
+  /**
+   * GET /catalog/p/:slug — shareable PDP. Accepts a master slug, and as a
+   * fallback a 24-char ObjectId so cards that only have an id still work
+   * before the search index has been reindexed with slugs.
+   */
+  productBySlug = asyncHandler(async (req, res) => {
+    const { slug } = req.params;
+    let master = null;
+    if (OBJECT_ID_RX.test(slug)) {
+      master = await ProductMaster.findOne({
+        _id: slug,
+        status: PRODUCT_MASTER_STATUS.ACTIVE,
+        isDeleted: { $ne: true },
+      }).lean();
+    }
+    if (!master) {
+      master = await ProductMaster.findOne({
+        slug,
+        status: PRODUCT_MASTER_STATUS.ACTIVE,
+        isDeleted: { $ne: true },
+      }).lean();
+    }
+    if (!master) throw notFound('Product not found', 'PRODUCT_NOT_FOUND');
+    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: master._id });
+    res.status(200).json(success(page, { message: 'Product fetched' }));
   });
 
   /** GET /catalog/serviceability?pincode= — the front door. Public, no auth. */

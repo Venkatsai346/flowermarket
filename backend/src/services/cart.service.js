@@ -23,30 +23,101 @@ import {
  *   returns the diff; checkout refuses to proceed until the customer
  *   explicitly confirms price changes (stale-cart problem solved).
  * - Item limit (50) keeps carts bounded.
+ * - Identity is either `{ userId }` (signed-in) or `{ guestKey }` (anonymous
+ *   cookie). Checkout still requires a user — guest carts merge on login.
  */
 class CartService {
-  /** Get the active cart for a user, creating it lazily. */
-  async getOrCreateActive({ tenantId, userId }) {
-    let cart = await Cart.findOne({ tenantId, userId, status: CART_STATUS.ACTIVE });
+  constructor() {
+    this._indexesReady = false;
+  }
+
+  /**
+   * Drop the pre-guest unique index `{ tenantId, userId, status }` (which
+   * treated missing userId as null and allowed only one guest cart per tenant)
+   * and install the named partial indexes from the schema.
+   */
+  async ensureIndexes() {
+    if (this._indexesReady) return;
+    try {
+      const col = Cart.collection;
+      const indexes = await col.indexes();
+      for (const idx of indexes) {
+        if (idx.name === '_id_') continue;
+        const keys = Object.keys(idx.key || {});
+        const isOldUserUnique = idx.unique
+          && keys.includes('tenantId')
+          && keys.includes('userId')
+          && keys.includes('status')
+          && idx.name !== 'uniq_active_user_cart';
+        if (isOldUserUnique) {
+          // eslint-disable-next-line no-await-in-loop
+          await col.dropIndex(idx.name).catch(() => {});
+        }
+      }
+      await Cart.syncIndexes();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[cart] index sync failed:', err.message);
+    }
+    this._indexesReady = true;
+  }
+
+  /** Authenticated XOR guest. Checkout paths always pass userId. */
+  ownerFilter({ tenantId, userId, guestKey }) {
+    if (!tenantId) throw badRequest('Tenant required', 'TENANT_REQUIRED');
+    if (userId) return { tenantId, userId, status: CART_STATUS.ACTIVE };
+    if (guestKey) return { tenantId, guestKey, status: CART_STATUS.ACTIVE };
+    throw badRequest('Cart identity missing', 'CART_IDENTITY_REQUIRED');
+  }
+
+  emptyCart({ guest = false, guestKey = null } = {}) {
+    const dual = config.money.dualWritePaise !== false;
+    return {
+      id: null,
+      status: CART_STATUS.ACTIVE,
+      itemCount: 0,
+      distinctItems: 0,
+      subtotal: 0,
+      items: [],
+      guest: Boolean(guest),
+      ...(guestKey ? { guestKey } : {}),
+      ...(dual ? { subtotalPaise: 0 } : {}),
+    };
+  }
+
+  /** Get the active cart for a user or guest, creating it lazily. */
+  async getOrCreateActive({ tenantId, userId, guestKey }) {
+    await this.ensureIndexes();
+    const q = this.ownerFilter({ tenantId, userId, guestKey });
+    let cart = await Cart.findOne(q);
     if (!cart) {
-      cart = await Cart.create({ tenantId, userId, status: CART_STATUS.ACTIVE });
+      const doc = { tenantId, status: CART_STATUS.ACTIVE };
+      if (userId) doc.userId = userId;
+      else doc.guestKey = guestKey;
+      cart = await Cart.create(doc);
     }
     return cart;
   }
 
-  /** Internal view: raw cart doc + items. */
-  async fetchCart({ tenantId, userId }) {
-    const cart = await this.getOrCreateActive({ tenantId, userId });
+  /** Internal view: raw cart doc + items. Missing cart → null (GET stays lazy). */
+  async fetchCart({ tenantId, userId, guestKey, create = true }) {
+    let cart;
+    if (create) {
+      cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
+    } else {
+      await this.ensureIndexes();
+      try {
+        cart = await Cart.findOne(this.ownerFilter({ tenantId, userId, guestKey }));
+      } catch {
+        cart = null;
+      }
+    }
+    if (!cart) return { cart: null, items: [] };
     const items = await CartItem.find({ cartId: cart._id }).sort({ createdAt: 1 }).lean();
     return { cart, items: serializeList(items) };
   }
 
-  /**
-   * Public cart shape — flat, so clients read `cart.items` / `cart.subtotal`
-   * directly: { id, status, itemCount, distinctItems, subtotal, couponCode, …, items }.
-   */
-  async getCart({ tenantId, userId }) {
-    const { cart, items } = await this.fetchCart({ tenantId, userId });
+  shapeCart(cart, items, { guest = false, guestKey = null } = {}) {
     const plain = cart.toObject ? cart.toObject() : { ...cart };
     const { _id, ...rest } = plain;
     const dual = config.money.dualWritePaise !== false;
@@ -57,14 +128,28 @@ class CartService {
       ...rest,
       id: _id,
       items: withPaise,
+      guest: Boolean(guest || rest.guestKey),
+      ...(guestKey && !rest.userId ? { guestKey } : {}),
       ...(dual ? { subtotalPaise: toPaise(rest.subtotal || 0) } : {}),
     };
   }
 
+  /**
+   * Public cart shape — flat, so clients read `cart.items` / `cart.subtotal`
+   * directly: { id, status, itemCount, distinctItems, subtotal, couponCode, …, items }.
+   * GET without identity returns an empty virtual cart (no row written).
+   */
+  async getCart({ tenantId, userId, guestKey }) {
+    if (!userId && !guestKey) return this.emptyCart({ guest: true });
+    const { cart, items } = await this.fetchCart({ tenantId, userId, guestKey, create: false });
+    if (!cart) return this.emptyCart({ guest: !userId, guestKey });
+    return this.shapeCart(cart, items, { guest: !userId, guestKey });
+  }
+
   /** Add or increment an item; snapshots price/stock from the live listing. */
-  async addItem({ tenantId, userId, tenantProductId, qty }) {
+  async addItem({ tenantId, userId, guestKey, tenantProductId, qty }) {
     const q = Math.max(1, Math.floor(Number(qty) || 1));
-    const cart = await this.getOrCreateActive({ tenantId, userId });
+    const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
 
     const existing = await CartItem.findOne({ cartId: cart._id, tenantProductId });
     const distinctCount = existing ? await CartItem.countDocuments({ cartId: cart._id }) : await CartItem.countDocuments({ cartId: cart._id }) + 1;
@@ -97,14 +182,13 @@ class CartService {
     };
     const lineTotal = roundMoney(snapshot.sellingPrice * nextQty);
 
-    let item;
     if (existing) {
       existing.qty = nextQty;
       existing.lineTotal = lineTotal;
       existing.updatedAt = new Date();
-      item = await existing.save();
+      await existing.save();
     } else {
-      item = await CartItem.create({
+      await CartItem.create({
         cartId: cart._id,
         tenantId,
         tenantProductId: listing._id,
@@ -122,14 +206,14 @@ class CartService {
     }
 
     await this.refreshTotals(cart);
-    return this.getCart({ tenantId, userId });
+    return this.getCart({ tenantId, userId, guestKey });
   }
 
-  async updateQty({ tenantId, userId, itemId, qty }) {
-    const cart = await this.getOrCreateActive({ tenantId, userId });
+  async updateQty({ tenantId, userId, guestKey, itemId, qty }) {
+    const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
     const item = await CartItem.findOne({ _id: itemId, cartId: cart._id });
     if (!item) throw notFound('Cart item not found', 'CART_ITEM_NOT_FOUND');
-    if (qty <= 0) return this.removeItem({ tenantId, userId, itemId });
+    if (qty <= 0) return this.removeItem({ tenantId, userId, guestKey, itemId });
 
     const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId });
     const stock = listing ? await inventoryService.getStock({ tenantId, listingId: listing._id }) : { qtyAvailable: 0 };
@@ -141,20 +225,73 @@ class CartService {
     item.updatedAt = new Date();
     await item.save();
     await this.refreshTotals(cart);
-    return this.getCart({ tenantId, userId });
+    return this.getCart({ tenantId, userId, guestKey });
   }
 
-  async removeItem({ tenantId, userId, itemId }) {
-    const cart = await this.getOrCreateActive({ tenantId, userId });
+  async removeItem({ tenantId, userId, guestKey, itemId }) {
+    const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
     await CartItem.deleteOne({ _id: itemId, cartId: cart._id });
     await this.refreshTotals(cart);
-    return this.getCart({ tenantId, userId });
+    return this.getCart({ tenantId, userId, guestKey });
   }
 
-  async clear({ tenantId, userId }) {
-    const cart = await this.getOrCreateActive({ tenantId, userId });
+  async clear({ tenantId, userId, guestKey }) {
+    const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
     await CartItem.deleteMany({ cartId: cart._id });
     await this.refreshTotals(cart);
+    return this.getCart({ tenantId, userId, guestKey });
+  }
+
+  /**
+   * Fold a guest draft into the signed-in cart. Same listing → summed qty
+   * (capped at live stock). Guest row is abandoned so the unique guest index
+   * frees the key. Idempotent if the guest cart is already gone.
+   */
+  async mergeGuestCart({ tenantId, userId, guestKey }) {
+    if (!tenantId || !userId || !guestKey) {
+      return this.getCart({ tenantId, userId });
+    }
+    await this.ensureIndexes();
+    const guest = await Cart.findOne({ tenantId, guestKey, status: CART_STATUS.ACTIVE });
+    if (!guest) return this.getCart({ tenantId, userId });
+
+    const userCart = await this.getOrCreateActive({ tenantId, userId });
+    if (String(guest._id) === String(userCart._id)) {
+      return this.getCart({ tenantId, userId });
+    }
+
+    const items = await CartItem.find({ cartId: guest._id });
+    for (const it of items) {
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await CartItem.findOne({ cartId: userCart._id, tenantProductId: it.tenantProductId });
+      if (existing) {
+        // eslint-disable-next-line no-await-in-loop
+        const listing = await TenantProduct.findOne({ _id: it.tenantProductId, tenantId });
+        // eslint-disable-next-line no-await-in-loop
+        const stock = listing ? await inventoryService.getStock({ tenantId, listingId: listing._id }) : { qtyAvailable: 0 };
+        const available = stock.qtyAvailable ?? 0;
+        const nextQty = Math.min(existing.qty + it.qty, Math.max(available, existing.qty));
+        existing.qty = nextQty;
+        existing.lineTotal = roundMoney((existing.priceSnapshot?.sellingPrice || 0) * nextQty);
+        existing.updatedAt = new Date();
+        // eslint-disable-next-line no-await-in-loop
+        await existing.save();
+        // eslint-disable-next-line no-await-in-loop
+        await CartItem.deleteOne({ _id: it._id });
+      } else {
+        it.cartId = userCart._id;
+        // eslint-disable-next-line no-await-in-loop
+        await it.save();
+      }
+    }
+
+    if (!userCart.couponCode && guest.couponCode) {
+      userCart.couponCode = guest.couponCode;
+      userCart.couponId = guest.couponId;
+    }
+    guest.status = CART_STATUS.ABANDONED;
+    await guest.save();
+    await this.refreshTotals(userCart);
     return this.getCart({ tenantId, userId });
   }
 
@@ -164,13 +301,15 @@ class CartService {
    * re-confirms (passes confirmPriceChanges=true).
    * @returns { changed: boolean, diffs: Array, total: number }
    */
-  async revalidate({ tenantId, userId }) {
-    const { cart, items } = await this.fetchCart({ tenantId, userId });
+  async revalidate({ tenantId, userId, guestKey }) {
+    const { cart, items } = await this.fetchCart({ tenantId, userId, guestKey, create: false });
+    if (!cart) return { changed: false, diffs: [], total: 0, itemCount: 0 };
     const diffs = [];
     let changed = false;
     let total = 0;
 
     for (const item of items) {
+      // eslint-disable-next-line no-await-in-loop
       const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId }).lean();
       if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
         changed = true;
@@ -187,6 +326,7 @@ class CartService {
           from: snapshotPrice, to: livePrice,
         });
       }
+      // eslint-disable-next-line no-await-in-loop
       const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
       if (item.qty > (stock.qtyAvailable ?? 0)) {
         changed = true;
@@ -203,25 +343,25 @@ class CartService {
   }
 
   /** Apply a coupon to the cart (validated against live subtotal). */
-  async applyCoupon({ tenantId, userId, code }) {
-    const { cart } = await this.fetchCart({ tenantId, userId });
+  async applyCoupon({ tenantId, userId, guestKey, code }) {
+    const { cart } = await this.fetchCart({ tenantId, userId, guestKey });
     const { coupon, discountAmount } = await pricingPolicyService.applyCoupon({
       tenantId, code, userId, cartSubtotal: cart.subtotal,
     });
     cart.couponCode = coupon.code;
     cart.couponId = coupon._id;
     await cart.save();
-    const base = await this.getCart({ tenantId, userId });
+    const base = await this.getCart({ tenantId, userId, guestKey });
     return { ...base, coupon: { id: coupon._id, code: coupon.code, discountType: coupon.discountType, value: coupon.value, discountAmount } };
   }
 
   /** Remove the coupon from the cart. */
-  async removeCoupon({ tenantId, userId }) {
-    const { cart } = await this.fetchCart({ tenantId, userId });
+  async removeCoupon({ tenantId, userId, guestKey }) {
+    const { cart } = await this.fetchCart({ tenantId, userId, guestKey });
     cart.couponCode = null;
     cart.couponId = null;
     await cart.save();
-    return this.getCart({ tenantId, userId });
+    return this.getCart({ tenantId, userId, guestKey });
   }
 
   /**
@@ -232,24 +372,29 @@ class CartService {
    *   - qty capped at available stock; zero-stock lines dropped
    * @returns { refreshed, dropped: [{listingId, title}] }
    */
-  async applyLivePrices({ tenantId, userId }) {
-    const { cart, items } = await this.fetchCart({ tenantId, userId });
+  async applyLivePrices({ tenantId, userId, guestKey }) {
+    const { cart, items } = await this.fetchCart({ tenantId, userId, guestKey });
     const dropped = [];
     for (const item of items) {
+      // eslint-disable-next-line no-await-in-loop
       const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId }).lean();
       if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
         dropped.push({ listingId: item.tenantProductId, title: item.titleSnapshot });
+        // eslint-disable-next-line no-await-in-loop
         await CartItem.deleteOne({ _id: item.id });
         continue;
       }
+      // eslint-disable-next-line no-await-in-loop
       const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
       const available = stock.qtyAvailable ?? 0;
       if (available <= 0) {
         dropped.push({ listingId: item.tenantProductId, title: item.titleSnapshot });
+        // eslint-disable-next-line no-await-in-loop
         await CartItem.deleteOne({ _id: item.id });
         continue;
       }
       const price = listing.price?.sellingPrice ?? 0;
+      // eslint-disable-next-line no-await-in-loop
       await CartItem.updateOne(
         { _id: item.id },
         {

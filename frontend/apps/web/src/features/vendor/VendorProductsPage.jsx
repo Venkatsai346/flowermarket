@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Package, Plus } from 'lucide-react';
+import { Package, Pencil, Plus } from 'lucide-react';
 import { fmtDate, pickMeta, PRODUCT_MASTER_STATUS_META, titleCase } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi, useAction } from '../../lib/useApi.js';
@@ -25,6 +25,10 @@ const PRODUCT_TYPES = {
 export default function VendorProductsPage() {
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editRow, setEditRow] = useState(null);
+  const [editForm, setEditForm] = useState({
+    title: '', shortDescription: '', description: '', tags: '', isPerishable: true, minOrderQty: 1, maxOrderQty: 100,
+  });
   const { data, meta, loading, refetch } = useApi(
     () => api.marketplace.vendorProducts({ page, limit: 20 }),
     [page]
@@ -91,6 +95,30 @@ export default function VendorProductsPage() {
               <Badge tone={r.marketplaceListed ? 'emerald' : 'slate'}>{r.marketplaceListed ? 'Listed' : 'Not listed'}</Badge>
             ) },
             { key: 'createdAt', header: 'Created', render: (r) => fmtDate(r.createdAt) },
+            { key: 'actions', header: '', render: (r) => (
+              r.status === 'pending_review' ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={Pencil}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setEditRow(r);
+                    setEditForm({
+                      title: r.title || '',
+                      shortDescription: r.shortDescription || '',
+                      description: r.description || '',
+                      tags: Array.isArray(r.tags) ? r.tags.join(', ') : (r.tags || ''),
+                      isPerishable: r.isPerishable !== false,
+                      minOrderQty: r.minOrderQty || 1,
+                      maxOrderQty: r.maxOrderQty || 100,
+                    });
+                  }}
+                >
+                  Edit
+                </Button>
+              ) : <span className="text-[11px] text-slate-400">Locked</span>
+            ) },
           ]}
         />
       </Card>
@@ -147,6 +175,67 @@ export default function VendorProductsPage() {
             onChange={(e) => setForm({ ...form, isPerishable: e.target.checked })}
           />
         </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(editRow)}
+        onClose={() => setEditRow(null)}
+        title="Edit product"
+        subtitle="Pending items can be revised until platform review. Live products are locked."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditRow(null)}>Cancel</Button>
+            <Button
+              loading={busy}
+              onClick={async () => {
+                try {
+                  await run(() => api.marketplace.updateVendorProduct(editRow.id, {
+                    title: editForm.title,
+                    shortDescription: editForm.shortDescription,
+                    description: editForm.description,
+                    tags: editForm.tags.split(',').map((s) => s.trim()).filter(Boolean),
+                    isPerishable: editForm.isPerishable,
+                    minOrderQty: editForm.minOrderQty,
+                    maxOrderQty: editForm.maxOrderQty,
+                  }));
+                  toast.success('Product updated');
+                  setEditRow(null);
+                  refetch();
+                } catch (err) {
+                  toast.error(errMsg(err));
+                }
+              }}
+            >
+              Save changes
+            </Button>
+          </>
+        }
+      >
+        {editRow && (
+          <div className="space-y-4">
+            <Field label="Title" required>
+              <Input required value={editForm.title} onChange={(e) => setEditForm({ ...editForm, title: e.target.value })} />
+            </Field>
+            <Field label="Short description">
+              <Textarea value={editForm.shortDescription} onChange={(e) => setEditForm({ ...editForm, shortDescription: e.target.value })} />
+            </Field>
+            <Field label="Description">
+              <Textarea value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })} />
+            </Field>
+            <Field label="Tags" hint="Comma-separated">
+              <Input value={editForm.tags} onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })} />
+            </Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Min qty"><Input type="number" min={1} value={editForm.minOrderQty} onChange={(e) => setEditForm({ ...editForm, minOrderQty: Number(e.target.value) })} /></Field>
+              <Field label="Max qty"><Input type="number" min={1} value={editForm.maxOrderQty} onChange={(e) => setEditForm({ ...editForm, maxOrderQty: Number(e.target.value) })} /></Field>
+            </div>
+            <Checkbox
+              label="Perishable product"
+              checked={editForm.isPerishable}
+              onChange={(e) => setEditForm({ ...editForm, isPerishable: e.target.checked })}
+            />
+          </div>
+        )}
       </Modal>
     </div>
   );

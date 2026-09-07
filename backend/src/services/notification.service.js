@@ -170,11 +170,21 @@ class NotificationService {
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
     const q = { tenantId, userId };
     if (query.status) q.status = query.status;
-    const [docs, total] = await Promise.all([
+    const unreadQ = { tenantId, userId, status: { $ne: NOTIFICATION_STATUS.READ } };
+    const [docs, total, unread] = await Promise.all([
       Notification.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       Notification.countDocuments(q),
+      Notification.countDocuments(unreadQ),
     ]);
-    return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+    return {
+      items: serializeList(docs),
+      meta: {
+        page, limit, total,
+        totalPages: Math.ceil(total / limit),
+        hasMore: (page - 1) * limit + docs.length < total,
+        unread,
+      },
+    };
   }
 
   async markRead({ tenantId, userId, notificationId }) {

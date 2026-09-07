@@ -27,7 +27,11 @@ export const useShop = create((set, get) => ({
 
   // ---- cart snapshot ----
   cart: null,
-  setCart: (cart) => set({ cart }),
+  setCart: (cart) => {
+    if (cart?.guestKey) persistGuestKey(cart.guestKey);
+    if (cart && cart.guest === false) clearGuestKey();
+    set({ cart });
+  },
   itemCount: () => (get().cart?.items || []).reduce((a, i) => a + (i.qty || 0), 0),
 
   // ---- pincode (the front door) ----

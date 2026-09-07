@@ -4,21 +4,31 @@ import { Flower2, MapPin, Package, Search, ShoppingBag, X } from 'lucide-react';
 import { useShop } from '../store.js';
 import { api } from '../api.js';
 import AccountMenu from './AccountMenu.jsx';
+import NotificationBell from './NotificationBell.jsx';
 import { cn } from '../lib/utils.js';
 
-export default function Header({ query, onQuery }) {
+export default function Header() {
   const store = useShop((s) => s.store);
   const count = useShop((s) => s.itemCount());
   const openCart = useShop((s) => s.openCart);
   const openPin = useShop((s) => s.openPin);
   const pincode = useShop((s) => s.pincode);
   const serviceability = useShop((s) => s.serviceability);
-  const [local, setLocal] = useState(query || '');
+  const [local, setLocal] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const debounce = useRef(null);
+
+  useEffect(() => {
+    if (pathname === '/search') {
+      const q = new URLSearchParams(search).get('q') || '';
+      setLocal(q);
+    } else if (pathname === '/') {
+      setLocal('');
+    }
+  }, [pathname, search]);
 
   /**
    * Debounced autocomplete. 160 ms is short enough to feel instant and long
@@ -35,18 +45,21 @@ export default function Header({ query, onQuery }) {
     return () => clearTimeout(debounce.current);
   }, [local]);
 
+  const goSearch = (text) => {
+    const q = (text || '').trim();
+    setShowSuggest(false);
+    if (!q) { navigate('/'); return; }
+    navigate(`/search?q=${encodeURIComponent(q)}`);
+  };
+
   const submit = (e) => {
     e?.preventDefault();
-    setShowSuggest(false);
-    if (pathname !== '/') navigate('/');
-    onQuery?.(local.trim());
+    goSearch(local);
   };
 
   const pick = (text) => {
     setLocal(text);
-    setShowSuggest(false);
-    if (pathname !== '/') navigate('/');
-    onQuery?.(text);
+    goSearch(text);
   };
 
   return (
@@ -98,7 +111,7 @@ export default function Header({ query, onQuery }) {
             <button
               type="button"
               aria-label="Clear search"
-              onClick={() => { setLocal(''); onQuery?.(''); }}
+              onClick={() => { setLocal(''); navigate('/'); }}
               className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
             >
               <X className="h-4 w-4" />
@@ -123,6 +136,7 @@ export default function Header({ query, onQuery }) {
           >
             <Package className="h-5 w-5" />
           </Link>
+          <NotificationBell />
           <AccountMenu />
           <button
             type="button"

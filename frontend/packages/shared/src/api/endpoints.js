@@ -393,6 +393,7 @@ export function createEndpoints(client) {
       searchEvent: (body) => c.post('/search/events', body),
       products: (q = {}) => c.get('/catalog', { query: q }),
       product: (id) => c.get(`/catalog/products/${id}`),
+      productBySlug: (slug) => c.get(`/catalog/p/${slug}`),
       stock: (id) => c.get(`/catalog/products/${id}/stock`),
       serviceability: (pincode) => c.get('/catalog/serviceability', { query: { pincode } }),
       categories: () => c.get('/catalog/categories'),
@@ -404,6 +405,7 @@ export function createEndpoints(client) {
 
       // cart
       cart: () => c.get('/cart'),
+      mergeCart: () => c.post('/cart/merge'),
       addItem: (body) => c.post('/cart/items', body),
       updateItem: (id, body) => c.patch(`/cart/items/${id}`, body),
       removeItem: (id) => c.del(`/cart/items/${id}`),
@@ -441,6 +443,8 @@ export function createEndpoints(client) {
       walletTopup: (body) => c.post('/wallet/topup', body),
       walletTransactions: (q = {}) => c.get('/wallet/transactions', { query: q }),
       walletRefunds: (q = {}) => c.get('/wallet/refunds', { query: q }),
+      notifications: (q = {}) => c.get('/users/me/notifications', { query: q }),
+      markNotificationRead: (id) => c.post(`/users/me/notifications/${id}/read`),
       // Phase 16 — wallet ledger reconcile + backfill (SUPER_ADMIN)
       walletReconcile: () => c.get('/wallet/admin/reconcile'),
       walletReconcileRepair: () => c.post('/wallet/admin/reconcile/repair'),

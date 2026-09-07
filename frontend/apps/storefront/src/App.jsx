@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { Flower2, ServerCrash } from 'lucide-react';
 import { api, useShopAuth } from './api.js';
@@ -10,6 +10,8 @@ import AuthSheet from './components/AuthSheet.jsx';
 import PincodeSheet from './components/PincodeSheet.jsx';
 import { Toasts } from './components/ui.jsx';
 import Home from './pages/Home.jsx';
+import Product from './pages/Product.jsx';
+import Search from './pages/Search.jsx';
 import Checkout from './pages/Checkout.jsx';
 import Orders from './pages/Orders.jsx';
 import OrderDetail from './pages/OrderDetail.jsx';
@@ -67,8 +69,6 @@ export default function App() {
   const pincode = useShop((s) => s.pincode);
   const setServiceability = useShop((s) => s.setServiceability);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
-  const [query, setQuery] = useState('');
-
   // 1. who is this store?
   useEffect(() => {
     let alive = true;
@@ -121,7 +121,7 @@ export default function App() {
           <Route path="/returns" element={<Returns />} />
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/addresses" element={<Addresses />} />
-          <Route path="*" element={<Home query={query} />} />
+          <Route path="*" element={<Home />} />
         </Routes>
       </main>
 

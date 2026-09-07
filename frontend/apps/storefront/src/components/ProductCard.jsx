@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { Check, Plus } from 'lucide-react';
 import { Money, Stepper } from './ui.jsx';
 import { cn } from '../lib/utils.js';
@@ -17,12 +18,12 @@ export default function ProductCard({ listing, qty = 0, busy, onAdd, onQty, onOp
   const stock = listing.stockQty ?? 0;
   const out = stock <= 0;
   const low = !out && stock <= 5;
+  const href = `/p/${p.slug || p.id || listing.listingId}`;
 
   return (
     <article className={cn('card group relative flex flex-col overflow-hidden transition hover:shadow-lift', out && 'opacity-70')}>
-      <button
-        type="button"
-        onClick={() => onOpen?.(listing)}
+      <Link
+        to={href}
         className="relative block aspect-square w-full overflow-hidden bg-slate-50 text-left"
         aria-label={`View ${p.title}`}
       >
@@ -52,7 +53,7 @@ export default function ProductCard({ listing, qty = 0, busy, onAdd, onQty, onOp
             Out of stock
           </span>
         )}
-      </button>
+      </Link>
 
       <div className="flex flex-1 flex-col gap-1 p-3">
         <h3 className="line-clamp-2 text-sm font-medium leading-snug text-slate-800">{p.title}</h3>

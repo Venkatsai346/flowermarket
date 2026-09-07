@@ -78,8 +78,8 @@ The money and the saga are done. The remaining work is **product completion, pro
 |---|---|---|
 | Land on a branded store from Host | ✅ bootstrap, theme CSS variables, WCAG ink | + Open Graph, sitemap, canonical, floral photography |
 | Know we deliver to *my* pin | ❌ hero always says “same-day slots”; no pin gate | Pin entry → serviceable / not, before browsing |
-| Browse | ✅ grid, chips, sort, in-stock, autocomplete | + `/search?q=`, facets, pagination, related, recently viewed |
-| Product | ⚠️ bottom sheet, no URL | `/p/:slug` PDP, gallery, vase-life, care, share, JSON-LD |
+| Browse | ✅ grid, chips, sort, in-stock, autocomplete, `/search?q=` + facets | Wave 4: recently viewed, photography |
+| Product | ✅ `/p/:slug` PDP (gallery, EAV care/vase-life, related, JSON-LD) | Wave 4: photography, occasion bundles |
 | Cart | ⚠️ **auth-gated** (add-to-cart 401s until OTP) | Guest cart (cookie/device) → merge on login |
 | Coupon | ✅ API + cart apply | Surface on checkout (today easy to miss) |
 | Address book | ✅ add / edit / default / delete | + Google/India pin lookup, serviceability badge |
@@ -87,7 +87,7 @@ The money and the saga are done. The remaining work is **product completion, pro
 | Pay | ⚠️ UPI/Card/COD buttons; **no Razorpay Checkout.js**; mock confirms instantly | Real UPI/card widget; COD only when `slot.codAllowed`; wallet already gated on quote |
 | Track | ✅ 5-state rail + timeline | + live rider status, map optional, push/SMS |
 | Invoice | ❌ `GET /tax/orders/:id/invoice` exists, UI never links it | Download GST invoice + credit note (PDF) |
-| Notify | ❌ inbox API exists, no client helper, no bell | Bell + mark-read |
+| Notify | ✅ `shop.notifications` + storefront/console bell | — |
 | Profile | ⚠️ name from OTP only | Edit name, language (te/en), marketing consent |
 
 ### 2.2 Store operator (admin console)
@@ -102,7 +102,7 @@ The money and the saga are done. The remaining work is **product completion, pro
 | Branding + custom domains | ✅ | live storefront preview on real Host |
 | Billing (store) | ✅ | |
 | Tenant suspend / force-plan / close | ❌ Lifecycle panel is **read-only** — no `POST /marketplace/admin/tenants/:id/status` | The single highest-leverage backend gap |
-| Vendor product **edit** | ❌ helper typed, no UI | Small |
+| Vendor product **edit** | ✅ pending-product edit modal | — |
 
 ### 2.3 Platform operator
 
@@ -297,10 +297,10 @@ B3 paise dual-write on cart/quote/order/wallet (`*Paise` siblings, rupee API unc
 
 **Exit still needing live keys:** one full day of staging traffic with `rounding_difference = 0`, settlement ingest matching Razorpay, a vendor payout batch that stops in PROCESSING on a timeout (no retry button — already true in UI). Live S3/MSG91/RazorpayX cannot be proven without credentials — seams refuse to mock-succeed.
 
-### Wave 3 — 1 week · operator completeness
-A-LIFE buttons · A-VEDIT · A-CHUNK · notification bell (storefront + a tiny console view) · guest cart merge · `/p/:slug` PDP (functional, not yet “stunning”) · `/search?q=` · global rate limit.
+### Wave 3 — 1 week · operator completeness · **SHIPPED**
+A-LIFE buttons (Wave 1) · A-VEDIT (vendor pending-product edit modal) · A-CHUNK (`manualChunks` for lucide + charts) · notification bell (storefront + console inbox) · guest cart (httpOnly cookie / `x-guest-key`, merge-on-login) · `/p/:slug` PDP (gallery, care/vase-life from EAV, related, JSON-LD) · `/search?q=` with facets · global rate limit (Wave 2).
 
-**Exit:** admin Chromium 44 still green; new UI e2e for PDP, search URL, guest→login cart merge.
+**Exit:** admin Chromium 44 still green; storefront UI e2e covers PDP `/p/:slug`, `/search?q=`, guest→login cart merge.
 
 ### Wave 4 — 2 weeks · stunning
 Brand kits + photography + PDP gallery/care/related · pin-aware delivery promise in the hero · footer GSTIN · image pipeline WebP · storefront code-split · command palette on admin · i18n chrome `te`/`en`.

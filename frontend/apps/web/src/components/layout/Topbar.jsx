@@ -1,5 +1,6 @@
 import { useAuthStore } from '@flower-market/shared';
 import Badge from '../ui/Badge.jsx';
+import InboxBell from './InboxBell.jsx';
 
 export default function Topbar() {
   const user = useAuthStore((s) => s.user);
@@ -11,6 +12,7 @@ export default function Topbar() {
         <code className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[11px] text-slate-600">{tenant}</code>
       </div>
       <div className="flex items-center gap-2">
+        <InboxBell />
         <Badge tone="amber">demo</Badge>
         <span className="hidden text-xs text-slate-500 sm:inline">
           {user?.email?.address || user?.phone?.number || ''}

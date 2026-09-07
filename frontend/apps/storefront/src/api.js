@@ -13,7 +13,24 @@
  */
 import { createApiClient, createEndpoints, createAuthStore } from '@flower-market/shared';
 
-const storageKey = `fm-shop:${typeof window !== 'undefined' ? window.location.hostname : 'server'}`;
+const host = typeof window !== 'undefined' ? window.location.hostname : 'server';
+const storageKey = `fm-shop:${host}`;
+const guestStorageKey = `fm-guest:${host}`;
+
+export function readGuestKey() {
+  if (typeof window === 'undefined') return null;
+  return window.sessionStorage.getItem(guestStorageKey);
+}
+
+export function persistGuestKey(key) {
+  if (typeof window === 'undefined' || !key) return;
+  window.sessionStorage.setItem(guestStorageKey, key);
+}
+
+export function clearGuestKey() {
+  if (typeof window === 'undefined') return;
+  window.sessionStorage.removeItem(guestStorageKey);
+}
 
 export const useShopAuth = createAuthStore({
   name: storageKey,
@@ -26,6 +43,10 @@ const client = createApiClient({
   getRefreshToken: () => useShopAuth.getState().refreshToken,
   saveTokens: (tokens) => useShopAuth.getState().setTokens(tokens),
   clearSession: () => useShopAuth.getState().clear(),
+  extraHeaders: () => {
+    const key = readGuestKey();
+    return key ? { 'x-guest-key': key } : {};
+  },
 });
 
 export const api = createEndpoints(client);
