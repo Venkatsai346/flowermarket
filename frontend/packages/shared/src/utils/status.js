@@ -327,6 +327,13 @@ export const OPS_ORDER_STATUS_META = {
 
 export const PAYMENT_STATUS_META = {
   pending: { label: 'Pending', tone: 'amber' },
+  /**
+   * Cash on delivery: the order is confirmed and the flowers are on their way,
+   * but no money has changed hands. Deliberately NOT labelled like `pending` —
+   * pending means "a gateway may still capture this", and telling a customer
+   * their cash order is "pending" invites them to go and pay online.
+   */
+  awaiting_collection: { label: 'Cash due on delivery', tone: 'amber' },
   success: { label: 'Success', tone: 'emerald' },
   failed: { label: 'Failed', tone: 'rose' },
   refunded: { label: 'Refunded', tone: 'slate' },
@@ -345,6 +352,8 @@ export const PAYMENT_PROVIDER_META = {
   mock: { label: 'Mock gateway', tone: 'slate' },
   razorpay: { label: 'Razorpay', tone: 'violet' },
   wallet: { label: 'Internal wallet', tone: 'emerald' },
+  // No gateway is ever called — a rider collects at the door.
+  cod: { label: 'Cash on delivery', tone: 'amber' },
 };
 
 export const ASSIGNMENT_STATUS_META = {

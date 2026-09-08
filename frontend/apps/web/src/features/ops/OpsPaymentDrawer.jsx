@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { Banknote, ChevronDown, ChevronRight, Landmark } from 'lucide-react';
 import { fmtDateTime, inr, num, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
+import { errMsg } from '../../lib/utils.js';
+import { toast } from '../../lib/toasts.js';
 import Badge from '../../components/ui/Badge.jsx';
+import Button from '../../components/ui/Button.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import {
@@ -89,13 +92,15 @@ function WebhookEvents({ events }) {
   );
 }
 
-export default function OpsPaymentDrawer({ payment, onClose }) {
-  const { data, loading, error } = useApi(() => api.fulfillment.payment(payment?.id), [payment?.id]);
+export default function OpsPaymentDrawer({ payment, onClose, onChanged }) {
+  const { data, loading, error, refetch } = useApi(() => api.fulfillment.payment(payment?.id), [payment?.id]);
+  const [busy, setBusy] = useState(false);
   if (loading && !data) return <Modal open onClose={onClose} title="Payment" size="lg"><LoadingBlock compact /></Modal>;
   if (error) return <Modal open onClose={onClose} title="Payment" size="lg"><p className="text-sm text-rose-600">{error.message}</p></Modal>;
 
   const p = data?.payment || data || {};
   const txns = data?.transactions || [];
+  const isCod = p.provider === 'cod' || p.method === 'cod';
   return (
     <Modal open onClose={onClose} title={`Payment ${p.id || payment?.order || ''}`} subtitle={fmtDateTime(p.createdAt || payment?.createdAt)} size="lg">
       <div className="space-y-5">
@@ -111,6 +116,79 @@ export default function OpsPaymentDrawer({ payment, onClose }) {
           <Tile label="Refunded" value={inr(p.refundedAmount)} />
           <Tile label="Paid" value={p.paidAt ? fmtDateTime(p.paidAt) : '—'} />
         </div>
+
+        {/* Cash on delivery: the two moments that turn a receivable into banked
+            money, and which of them has happened. Nothing else in this drawer
+            involves somebody physically counting notes. */}
+        {isCod && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="flex items-center gap-1.5 text-sm font-semibold text-amber-900">
+                  <Banknote className="h-4 w-4" /> Cash on delivery
+                </p>
+                <p className="mt-1 text-xs text-amber-800">
+                  {p.status === 'awaiting_collection'
+                    ? `Outstanding — ${inr(p.amount)} is owed at the door. Nobody is holding this money yet.`
+                    : p.depositedAt
+                      ? `Collected ${fmtDateTime(p.collectedAt)} and banked ${fmtDateTime(p.depositedAt)}${p.depositRef ? ` (${p.depositRef})` : ''}.`
+                      : `Collected ${p.collectedAt ? fmtDateTime(p.collectedAt) : ''} — notes are in hand but not yet banked.`}
+                </p>
+              </div>
+              <div className="shrink-0 text-right">
+                <p className="text-[11px] font-semibold uppercase text-amber-500">Collected</p>
+                <p className="text-sm font-semibold text-amber-900">{p.amountCollected != null ? inr(p.amountCollected) : '—'}</p>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {p.status === 'awaiting_collection' && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={Banknote}
+                  loading={busy}
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await api.fulfillment.collectCodCash(p.id || payment?.id);
+                      toast.success('Cash collection recorded');
+                      refetch();
+                      onChanged?.();
+                    } catch (e) { toast.error(errMsg(e)); } finally { setBusy(false); }
+                  }}
+                >
+                  Record collection
+                </Button>
+              )}
+              {p.collectedAt && !p.depositedAt && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  icon={Landmark}
+                  loading={busy}
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await api.fulfillment.depositCodCash(p.id || payment?.id);
+                      toast.success('Cash deposited to bank');
+                      refetch();
+                      onChanged?.();
+                    } catch (e) { toast.error(errMsg(e)); } finally { setBusy(false); }
+                  }}
+                >
+                  Mark banked
+                </Button>
+              )}
+              {p.status === 'awaiting_collection' && (
+                <span className="self-center text-[11px] text-amber-700">
+                  Recording a collection posts DR cash on hand / CR COD receivable.
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         {p.failureReason && (
           <div className="rounded-xl border border-rose-100 bg-rose-50/70 p-4 text-sm text-rose-700">

@@ -17,6 +17,7 @@ import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import domainEventService from './domainEvent.service.js';
 import ledgerPostingService from './ledgerPosting.service.js';
+import { checkCodAllowed } from './payment.service.js';
 import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
@@ -34,6 +35,7 @@ import {
   DELIVERY_ASSIGNMENT_STATUS,
   DOMAIN_EVENT_TYPE,
   PAYMENT_STATUS,
+  PAYMENT_METHOD,
   USER_ROLES,
 } from '../constants/enums.js';
 
@@ -80,8 +82,29 @@ class OrderService {
 
     // ---- 4. create order + items ----
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
+
+    // ---- 4a. price the basket ONCE, then run the cash pre-flight on it ----
+    // Enforced here rather than inside charge() on purpose: charge() runs after
+    // the order document exists and has moved to PAYMENT_PENDING, so a refusal
+    // from there would leave a half-built order and a live slot hold for the
+    // sweeper to clean up. Failing here is a clean 422 with no side effects.
+    // (The same guard also runs inside charge() as defence in depth, because
+    // charge() has other callers.)
+    const precomputed = paymentMethod === PAYMENT_METHOD.COD
+      ? await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold })
+      : null;
+    if (precomputed) {
+      this.assertCodCheckoutAllowed({
+        tenantId,
+        total: precomputed.charges?.grandTotal,
+        slot: precomputed.slotDoc,
+        slotId: hold?.slotId,
+      });
+    }
+
     const order = await this.createOrderDoc({
       tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
+      precomputed,
     });
 
     // ---- 5. charge (idempotent) ----
@@ -544,6 +567,42 @@ class OrderService {
   }
 
   /**
+   * Cash pre-flight for checkout: is cash allowed for THIS basket on THIS slot?
+   *
+   * Two rules, both of which the storefront already applies when deciding
+   * whether to show the option — and both of which a client can bypass by
+   * calling the API directly, so they are enforced again here:
+   *
+   *   1. the platform has cash switched on, and the basket is within the risk
+   *      cap (cash is an unsecured credit line to a stranger);
+   *   2. the chosen slot allows cash — a hub with no float in the till cannot
+   *      give change, which is exactly what `slot.codAllowed` is for.
+   *
+   * @throws 422 COD_UNAVAILABLE / COD_LIMIT_EXCEEDED / COD_NOT_ALLOWED_FOR_SLOT
+   */
+  assertCodCheckoutAllowed({ tenantId = null, total = 0, slot = null, slotId = null }) {
+    const verdict = checkCodAllowed(total);
+    if (!verdict.allowed) throw badRequest(verdict.message, verdict.code, verdict.details);
+
+    // `slot.codAllowed` exists because a hub with no float in the till cannot
+    // give change. The storefront hides such slots; a client calling the API
+    // directly must be refused here.
+    if (slot && slot.codAllowed === false) {
+      throw badRequest(
+        'Cash on delivery is not available for this delivery slot — please pay online or choose another slot',
+        'COD_NOT_ALLOWED_FOR_SLOT',
+        {
+          tenantId: tenantId ? String(tenantId) : null,
+          slotId: String(slotId || slot._id || null),
+          slotDate: slot.date || null,
+          amountDue: total,
+        },
+      );
+    }
+    return verdict;
+  }
+
+  /**
    * Copy the authoritative money state off the Payment row onto the order's
    * denormalised `paymentSummary`.
    *
@@ -858,10 +917,14 @@ class OrderService {
     };
   }
 
-  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null }) {
-    const { charges, slotDoc, categoryByMaster, vendorByMaster } = await this.computeOrderChargesForCart({
-      tenantId, userId, cart, items, hold,
-    });
+  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null, precomputed = null }) {
+    // `precomputed` lets checkout price the basket ONCE and then use the same
+    // numbers for the cash pre-flight and for the order document. Pricing twice
+    // would not merely be wasteful — the two passes could disagree (a coupon
+    // expiring between them), and the cap would be judged on a total that is not
+    // the one being charged.
+    const { charges, slotDoc, categoryByMaster, vendorByMaster } = precomputed
+      || await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
 
     // resolve category per line for tax lookup (computeOrderCharges already
     // used the category; here we just mirror the breakdown onto the items)

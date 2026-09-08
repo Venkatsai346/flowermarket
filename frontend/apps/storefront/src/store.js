@@ -27,6 +27,13 @@ export const useShop = create((set, get) => ({
   store: null,
   theme: {},
   features: {},
+  /**
+   * Which payment methods this storefront may offer, from the tenant bootstrap.
+   * `{ cod: { enabled, maxAmount, maxAmountPaise, fee, feePaise } }` — the cap
+   * lets Checkout hide cash per-cart instead of letting the backend refuse it
+   * after the customer has filled in the whole form.
+   */
+  payments: {},
   routing: null,
   booted: false,
   bootError: null,

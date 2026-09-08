@@ -60,6 +60,10 @@ export default function Checkout() {
   const cart = useShop((s) => s.cart);
   const setCart = useShop((s) => s.setCart);
   const toast = useShop((s) => s.toast);
+  // Published by the tenant bootstrap: which payment methods this store may
+  // actually offer, and the cash risk cap. Read from config server-side, so
+  // switching cash off is an env flip, not a deploy.
+  const payments = useShop((s) => s.payments);
   const navigate = useNavigate();
   const isAuth = useShopAuth((s) => s.isAuthenticated());
   
@@ -112,6 +116,37 @@ export default function Checkout() {
   const orderTotal = Number(quote?.grandTotal) || 0;
   const canWalletPay = Boolean(isAuth && wallet && quote && walletBalance >= orderTotal && quote.grandTotal != null);
 
+  /**
+   * Cash on delivery — three independent gates, and the UI must honour all of
+   * them BEFORE offering the option. A radio button the server will refuse is a
+   * broken promise: the customer picks cash, fills in the form, taps pay and
+   * gets a 422. So availability is computed here and the option is hidden (with
+   * a reason) instead.
+   *
+   *   1. platform  — cash switched off entirely (monsoon, fraud spike, a city
+   *                  where riders are being robbed). From the bootstrap, so it
+   *                  is an env flip, not a deploy.
+   *   2. slot      — some slots do not allow cash (a hub with no float).
+   *   3. cap       — cash is an unsecured credit line to a stranger; above the
+   *                  risk cap the order must be prepaid.
+   */
+  const codCfg = payments?.cod || {};
+  const codEnabled = codCfg.enabled !== false;
+  const codCapPaise = Number(codCfg.maxAmountPaise) || 0;
+  const codCap = Number(codCfg.maxAmount) || 0;
+  const slotAllowsCod = Boolean(slotsArray.find((s) => String(s.id) === slotId)?.codAllowed);
+  // Only judge the cap once a quote exists: before that the total is unknown,
+  // and hiding cash on an empty number would flicker it out of the UI.
+  const codOverCap = Boolean(quote && codCapPaise > 0 && Math.round(orderTotal * 100) > codCapPaise);
+  const codAvailable = codEnabled && slotAllowsCod && !codOverCap;
+  const codReason = !codEnabled
+    ? 'Cash on delivery is not available right now'
+    : !slotAllowsCod
+      ? 'Cash on delivery is not available for this slot'
+      : codOverCap
+        ? `Cash on delivery is available up to ${codCap ? `₹${codCap.toLocaleString('en-IN')}` : 'the limit'} — this order is over it`
+        : null;
+
   useEffect(() => {
     if (!addressId && addressesArray.length) {
       setAddressId(String(addressesArray.find((a) => a.isDefault)?.id || addressesArray[0].id));
@@ -128,6 +163,13 @@ export default function Checkout() {
   useEffect(() => {
     if (payment === 'wallet' && !canWalletPay) setPayment('upi');
   }, [payment, canWalletPay]);
+
+  // Same rule for cash: if it stops being available (slot changed, total grew
+  // past the cap, the platform switched cash off) fall back rather than submit
+  // a method the backend will reject.
+  useEffect(() => {
+    if (payment === 'cod' && !codAvailable) setPayment('upi');
+  }, [payment, codAvailable]);
 
   useEffect(() => {
     setSlotId('');
@@ -332,7 +374,7 @@ export default function Checkout() {
             Payment
           </h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {PAYMENTS.filter(([id]) => id !== 'cod' || Boolean(slotsArray.find((s) => String(s.id) === slotId)?.codAllowed)).map(([id, label, Icon]) => (
+            {PAYMENTS.filter(([id]) => id !== 'cod' || codAvailable).map(([id, label, Icon]) => (
               <button
                 key={id}
                 type="button"
@@ -346,6 +388,16 @@ export default function Checkout() {
                 <Icon className="h-4 w-4 text-slate-500" />{label}
               </button>
             ))}
+            {/* An unavailable option is still INFORMATION: silently dropping
+                "Cash on delivery" reads as a bug, and a customer who wanted
+                cash has no way to know why it vanished. So when cash is off for
+                a reason the customer can act on, say which reason. */}
+            {codReason && slotId && (
+              <p className="sm:col-span-2 lg:col-span-3 -mt-1 flex items-start gap-1.5 text-xs text-slate-500">
+                <Banknote className="mt-px h-3.5 w-3.5 shrink-0 text-slate-400" />
+                <span>{codReason}</span>
+              </p>
+            )}
             {isAuth && (
               <button
                 key="wallet"

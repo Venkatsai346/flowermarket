@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, RotateCcw, Truck,
+  ArrowLeft, Banknote, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, RotateCcw, Truck,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
@@ -58,6 +58,16 @@ export default function OrderDetail() {
   // every 5s so the page flips to "confirmed" the moment the bank confirms —
   // no manual refresh needed for the customer.
   const awaitingPayment = order?.status === 'payment_pending';
+
+  /**
+   * Cash on delivery: the order is confirmed and the flowers are moving, but no
+   * money has changed hands. This is NOT `awaitingPayment` — nothing needs to be
+   * paid online, and showing the gateway widget here would invite the customer
+   * to pay twice. It gets its own banner: keep cash ready for the rider.
+   */
+  const cashDue = order?.paymentSummary?.status === 'awaiting_collection';
+  const isCod = order?.paymentMethod === 'cod' || order?.paymentSummary?.method === 'cod';
+  const totalLabel = cashDue ? 'Due on delivery' : isCod ? 'Paid in cash' : 'Total paid';
   useEffect(() => {
     if (!awaitingPayment) return undefined;
     let alive = true;
@@ -182,6 +192,25 @@ export default function OrderDetail() {
         </div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ${orderMeta.tone}`}>{orderMeta.label}</span>
       </div>
+
+      {/* cash on delivery: nothing to pay online, but the rider needs the cash */}
+      {cashDue && (
+        <div className="card mb-5 border-amber-200 bg-amber-50/70 p-5">
+          <div className="flex items-start gap-3">
+            <Banknote className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden />
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-amber-900">
+                Keep <Money value={order.totalAmount} className="text-base font-bold text-amber-900" /> ready for the rider
+              </p>
+              <p className="mt-1 text-xs text-amber-800">
+                This is a cash-on-delivery order — nothing is due online. Your rider will collect the
+                amount above when your flowers arrive, and this page will show it as paid the moment
+                they record it.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* async payment: the order exists but the gateway hasn't captured it yet */}
       {awaitingPayment && (
@@ -363,7 +392,9 @@ export default function OrderDetail() {
           <div className="flex justify-between text-slate-600"><dt>Delivery</dt><dd><Money value={order.deliveryFee} /></dd></div>
           <div className="flex justify-between text-slate-600"><dt>GST (included)</dt><dd><Money value={order.taxAmount} /></dd></div>
           <div className="flex justify-between border-t border-slate-100 pt-2 text-base font-bold text-slate-900">
-            <dt>Total paid</dt><dd><Money value={order.totalAmount} /></dd>
+            {/* "Total paid" would be a lie on a cash order nobody has collected
+                yet — the label follows the money, not the layout. */}
+            <dt>{totalLabel}</dt><dd><Money value={order.totalAmount} /></dd>
           </div>
         </dl>
       </div>

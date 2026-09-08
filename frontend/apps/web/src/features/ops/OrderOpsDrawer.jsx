@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  AlertTriangle, ArrowRight, CheckCircle2, Clock3, MapPin, PackageCheck, RefreshCw, Truck,
+  AlertTriangle, ArrowRight, Banknote, CheckCircle2, Clock3, MapPin, PackageCheck, RefreshCw, Truck,
 } from 'lucide-react';
 import { fmtDateTime, fmtTime, inr, num, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -60,6 +60,10 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const [podValue, setPodValue] = useState('');
   const [failReason, setFailReason] = useState('');
   const [showFail, setShowFail] = useState(false);
+  // Cash orders: the operator's explicit confirmation that the money was taken.
+  // Starts false and can never be inferred — an unticked box silently read as
+  // "collected" is how a marketplace books cash it never received.
+  const [codCollected, setCodCollected] = useState(false);
   const action = useAction();
   const { data, loading, error, refetch } = useApi(() => api.admin.order(order?.id), [order?.id]);
 
@@ -95,10 +99,24 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const pick = () => runAction(() => api.fulfillment.startPicking(o.id), 'Picking started');
   const pack = () => runAction(() => api.fulfillment.markPacked(o.id), 'Order packed');
   const retry = () => runAction(() => api.fulfillment.retryDelivery(o.id), 'Delivery retry dispatched');
+  /**
+   * Is this a cash order with the money still outstanding? The backend refuses
+   * to mark such an order delivered (COD_COLLECTION_REQUIRED), so the form has
+   * to collect it here rather than fail on submit.
+   */
+  const codOutstanding = o.paymentSummary?.status === 'awaiting_collection'
+    || (o.paymentMethod === 'cod' && !o.paymentSummary?.paidAt && o.paymentSummary?.status !== 'refunded');
+  const codAmountDue = Number(o.paymentSummary?.amount ?? o.totalAmount ?? 0) || 0;
+
   const deliver = () => runAction(
-    () => api.fulfillment.deliver(o.id, { podType, podValue: podValue || undefined }),
-    'Delivered — POD captured',
-    () => { setDeliverFormOpen(false); setPodValue(''); },
+    () => api.fulfillment.deliver(o.id, {
+      podType,
+      podValue: podValue || undefined,
+      // only sent for cash orders; harmless (and ignored) otherwise
+      ...(codOutstanding ? { codCollected: true } : {}),
+    }),
+    codOutstanding ? 'Delivered — cash collected and POD captured' : 'Delivered — POD captured',
+    () => { setDeliverFormOpen(false); setPodValue(''); setCodCollected(false); },
   );
   const fail = () => runAction(
     () => api.fulfillment.deliveryFailed(o.id, { reason: failReason || undefined }),
@@ -280,8 +298,43 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
                     <Input value={podValue} onChange={(e) => setPodValue(e.target.value)} placeholder={podType === 'otp' ? '1234' : 'https://…'} />
                   </Field>
                 </div>
+                {codOutstanding && (
+                  <div className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                    <div className="flex items-start gap-2">
+                      <Banknote className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-amber-900">
+                          Cash on delivery — {inr(codAmountDue)} outstanding
+                        </p>
+                        <p className="text-xs text-amber-800">
+                          Confirming delivery records the cash as collected: the receivable becomes
+                          cash on hand and the order is paid. Do not tick this until the money is
+                          actually counted — an uncollected order cannot be delivered, because there
+                          is no way to collect it afterwards.
+                        </p>
+                      </div>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-amber-900">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                        checked={codCollected}
+                        onChange={(e) => setCodCollected(e.target.checked)}
+                      />
+                      Cash of {inr(codAmountDue)} counted and received
+                    </label>
+                  </div>
+                )}
                 <div className="flex gap-2">
-                  <Button variant="success" icon={CheckCircle2} loading={action.busy} disabled={!podValue} onClick={deliver}>Confirm delivery</Button>
+                  <Button
+                    variant="success"
+                    icon={CheckCircle2}
+                    loading={action.busy}
+                    disabled={!podValue || (codOutstanding && !codCollected)}
+                    onClick={deliver}
+                  >
+                    {codOutstanding ? 'Collect cash & confirm delivery' : 'Confirm delivery'}
+                  </Button>
                   <Button variant="secondary" onClick={() => setDeliverFormOpen(false)}>Cancel</Button>
                 </div>
               </div>

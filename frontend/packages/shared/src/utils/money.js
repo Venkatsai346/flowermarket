@@ -21,6 +21,19 @@ export const inr = (n) => inrFmt.format(Number(n) || 0);
 /** ₹1,235 (no paise) */
 export const inr0 = (n) => inrFmt0.format(Number(n) || 0);
 
+/**
+ * Integer PAISE → ₹1,234.56.
+ *
+ * The backend stores and reports money in integer paise (no float drift), so
+ * anything reading a `*Paise` field — ledger balances, payout lines, cash
+ * exposure — needs this. Using `inr(paise)` instead is the classic bug: it
+ * renders ₹124,950.00 for a ₹1,249.50 basket.
+ */
+export const inrPaise = (paise) => inrFmt.format(Math.round(Number(paise) || 0) / 100);
+
+/** Integer paise → rupees as a NUMBER (for arithmetic, not display). */
+export const paiseToRupees = (paise) => Math.round(Number(paise) || 0) / 100;
+
 /** ₹1.2L / ₹3.4Cr / ₹1.2k — compact for KPI cards */
 export const compact = (n) => {
   const v = Number(n) || 0;

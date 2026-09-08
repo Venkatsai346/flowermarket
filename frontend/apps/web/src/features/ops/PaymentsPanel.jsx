@@ -14,11 +14,13 @@ import Table from '../../components/ui/Table.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
 import Stat from '../../components/ui/Stat.jsx';
 import OpsPaymentDrawer from './OpsPaymentDrawer.jsx';
+import CodExposurePanel from './CodExposurePanel.jsx';
 import { PAYMENT_METHOD_META, PAYMENT_STATUS_META, WEBHOOK_EVENT_STATUS_META } from './opsMeta.js';
 
 const FILTERS = [
   ['', 'All statuses'],
   ['pending', 'Pending'],
+  ['awaiting_collection', 'Cash due (COD)'],
   ['success', 'Success'],
   ['failed', 'Failed'],
   ['refunded', 'Refunded'],
@@ -99,6 +101,10 @@ export default function PaymentsPanel({ refreshKey = 0, focusPayment = null, onF
         <Stat label="Refunded" value={total(3)} sub="closed out" tone="slate" />
       </div>
 
+      {/* Cash exposure sits above the payment list: it is the only view here
+          where a number means physical risk rather than bookkeeping. */}
+      <CodExposurePanel refreshKey={refreshKey} onChanged={() => { refetch(); refetchCounts(); }} />
+
       <Card
         title="Payments"
         subtitle="Order payments, wallet debits and reconciliation."
@@ -171,7 +177,15 @@ export default function PaymentsPanel({ refreshKey = 0, focusPayment = null, onF
         />
       </Card>
 
-      {selected && <OpsPaymentDrawer payment={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <OpsPaymentDrawer
+          payment={selected}
+          onClose={() => setSelected(null)}
+          // a COD collection changes both the payment list and the exposure
+          // panel, so both refresh
+          onChanged={() => { refetch(); refetchCounts(); }}
+        />
+      )}
     </div>
   );
 }

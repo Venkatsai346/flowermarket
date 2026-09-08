@@ -296,6 +296,17 @@ export function createEndpoints(client) {
       reconcilePayments: (q = {}) => c.post('/fulfillment/reconcile/payments', undefined, { query: q }),
       webhookEvents: (q = {}) => c.get('/fulfillment/payments/webhook-events', { query: q }),
       mockForcePending: (body) => c.post('/fulfillment/payments/mock/force-pending', body),
+
+      /**
+       * Cash on delivery. Three verbs matching the three real-world moments:
+       * what is still owed (`codOutstanding` — "how much of our money is on
+       * bikes?"), a rider handing cash in (`collectCodCash`), and finance
+       * banking it later (`depositCodCash`). Collection is idempotent, so a
+       * double tap posts once.
+       */
+      codOutstanding: (q = {}) => c.get('/fulfillment/payments/cod/outstanding', { query: q }),
+      collectCodCash: (id, body = {}) => c.post(`/fulfillment/payments/${id}/collect-cash`, body),
+      depositCodCash: (id, body = {}) => c.post(`/fulfillment/payments/${id}/deposit-cash`, body),
     },
 
     /** After-sales state machine used by ops/admin. */

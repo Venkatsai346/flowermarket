@@ -28,6 +28,20 @@
  *     entire S3/storage, notification, export and marketplace surfaces — so a
  *     deploy from .env.example silently ran on local-disk storage and default
  *     commission rates.
+ *
+ *  7. REPLAY COVERAGE — every event kind in DOMAIN_EVENT_JOURNAL_KINDS must
+ *     have a `case` in _repostJournal, or the nightly self-heal reports drift it
+ *     can never repair.
+ *
+ *  8. CASH ON DELIVERY WIRING — COD was once offered by the validators and the
+ *     storefront with no backend handling: a cash checkout created a gateway
+ *     order nobody captured, and the reconciliation sweep cancelled it ~15
+ *     minutes later. Ten static links in the chain that must hold.
+ *
+ *  9. ONE DELIVERY CLOCK — returns.service measured the customer's 7-day window
+ *     from paymentSummary.paidAt (into a variable named deliveredAt), charging
+ *     customers for transit time and desynchronising the return gate from the
+ *     payout gate.
  */
 
 import fs from 'node:fs';
@@ -248,6 +262,147 @@ section('6. financial write paths are role-guarded');
     if (!/authorize\s*\(/.test(src)) unguarded.push(`${file} (${what})`);
   }
   check('sensitive routers all apply authorize()', unguarded.length === 0, unguarded.join(', '));
+}
+
+// ---------------------------------------------------------------------------
+section('7. every money FACT that must have a journal can be replayed');
+// ---------------------------------------------------------------------------
+// DOMAIN_EVENT_JOURNAL_KINDS is the promise that "if the event exists, the
+// journal exists — and if it does not, replay() can rebuild it". A kind in that
+// list with no `case` in _repostJournal is a silent hole: findDrift() reports
+// the gap, replay() throws, and the nightly self-heal never closes it.
+{
+  const enums = fs.readFileSync(path.join(BACKEND, 'src/constants/enums.js'), 'utf8');
+  const listBlock = enums.match(/export const DOMAIN_EVENT_JOURNAL_KINDS = Object\.freeze\(\[([\s\S]*?)\]\);/);
+  check('DOMAIN_EVENT_JOURNAL_KINDS is declared', Boolean(listBlock));
+  const kinds = [...(listBlock ? listBlock[1] : '').matchAll(/DOMAIN_EVENT_TYPE\.([A-Z0-9_]+)/g)].map((m) => m[1]);
+  check('the journal-kind list is not empty', kinds.length > 0, `found ${kinds.length}`);
+
+  const svc = fs.readFileSync(path.join(BACKEND, 'src/services/domainEvent.service.js'), 'utf8');
+  const cases = new Set([...svc.matchAll(/case DOMAIN_EVENT_TYPE\.([A-Z0-9_]+)/g)].map((m) => m[1]));
+  const unreplayable = kinds.filter((k) => !cases.has(k));
+  check(
+    `every journal-backed event kind has a _repostJournal case (${kinds.length} kinds)`,
+    unreplayable.length === 0,
+    `no replay case for: ${unreplayable.join(', ')}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+section('8. cash on delivery is wired end to end');
+// ---------------------------------------------------------------------------
+// COD was once offered by the validators and the storefront with NO backend
+// handling: in production a cash checkout created a gateway order that was
+// never captured, and the reconciliation sweep cancelled it ~15 minutes later.
+// Each check below is one link in the chain that has to hold for cash to be
+// real. They are static because the failure mode is structural, not numerical.
+{
+  const paymentSvc = fs.readFileSync(path.join(BACKEND, 'src/services/payment.service.js'), 'utf8');
+  const orderSvc = fs.readFileSync(path.join(BACKEND, 'src/services/order.service.js'), 'utf8');
+  const posting = fs.readFileSync(path.join(BACKEND, 'src/services/ledgerPosting.service.js'), 'utf8');
+  const orderModel = fs.readFileSync(path.join(BACKEND, 'src/models/order.model.js'), 'utf8');
+
+  // (a) a distinct state, because 'pending' is what the sweep hunts
+  check(
+    'AWAITING_COLLECTION exists as its own payment state',
+    /AWAITING_COLLECTION:\s*'awaiting_collection'/.test(fs.readFileSync(path.join(BACKEND, 'src/constants/enums.js'), 'utf8')),
+  );
+  check(
+    'order.paymentSummary.status can hold awaiting_collection (or the write throws)',
+    /'awaiting_collection'/.test(orderModel),
+  );
+
+  // (b) the sweep must only ever look at genuine gateway pendings
+  const sweepBlock = paymentSvc.slice(paymentSvc.indexOf('async reconcilePending'));
+  const sweepFilter = sweepBlock.slice(0, sweepBlock.indexOf('\n  }'));
+  check(
+    'reconcilePending filters on PENDING only — never on awaiting_collection',
+    /status:\s*PAYMENT_STATUS\.PENDING/.test(sweepFilter) && !/AWAITING_COLLECTION/.test(sweepFilter),
+  );
+
+  // (c) COD must short-circuit BEFORE any provider call, or a gateway order is
+  //     created for money that will be handed to a rider in notes
+  const codBranch = paymentSvc.indexOf('if (isCod) {\n      return { payment, transaction: txn, chargeResult: codChargeResult(payment) };');
+  const providerCall = paymentSvc.indexOf('await paymentProvider.charge(');
+  check('charge() short-circuits COD before calling any payment provider', codBranch > 0 && providerCall > 0 && codBranch < providerCall);
+  check(
+    'the COD charge result reports success (so the saga commits stock and slot)',
+    /success: true,\s*\n\s*cod: true,/.test(paymentSvc),
+  );
+
+  // (d) a cash sale must never claim a PSP is holding the money
+  check('a COD sale debits cod_receivable, not gateway_clearing', /codReceivable\(\)/.test(posting) && /isCodPayment/.test(posting));
+  check('cod_receivable and cash_on_hand are registered asset accounts', /COD_RECEIVABLE\]:\s*LEDGER_ACCOUNT_TYPE\.ASSET/.test(fs.readFileSync(path.join(BACKEND, 'src/services/ledger.service.js'), 'utf8')) && /CASH_ON_HAND\]:\s*LEDGER_ACCOUNT_TYPE\.ASSET/.test(fs.readFileSync(path.join(BACKEND, 'src/services/ledger.service.js'), 'utf8')));
+
+  // (e) BOTH delivery paths must refuse to complete with cash outstanding —
+  //     after DELIVERED there is no collection UI left, so the receivable would
+  //     become uncollectable
+  const riderComplete = orderSvc.slice(orderSvc.indexOf("case 'complete':"), orderSvc.indexOf("case 'fail':"));
+  check('the rider delivery path gates on cash collection', /COD_COLLECTION_REQUIRED/.test(riderComplete));
+  const opsDeliver = orderSvc.slice(orderSvc.indexOf('async deliver('), orderSvc.indexOf('async deliveryFailed('));
+  check('the ops delivery path gates on cash collection too', /COD_COLLECTION_REQUIRED/.test(opsDeliver));
+
+  // (f) the risk cap is enforced before the order exists, so a refusal cannot
+  //     strand a half-built order and a live slot hold
+  const capInCheckout = orderSvc.indexOf('assertCodCheckoutAllowed');
+  const createDoc = orderSvc.indexOf('await this.createOrderDoc({');
+  check('the cash cap is enforced before createOrderDoc', capInCheckout > 0 && createDoc > 0 && capInCheckout < createDoc);
+
+  // (g) cancelling uncollected cash must unwind the receivable
+  check('cancelling an uncollected cash order waives the receivable', /postCodReceivableWaived/.test(orderSvc) && /postCodReceivableWaived/.test(posting));
+
+  // (h) the payout settlement gate must accept cash as proof, or every cash
+  //     order is blocked forever once the gate is switched on
+  const payoutSvc = fs.readFileSync(path.join(BACKEND, 'src/services/payout.service.js'), 'utf8');
+  check('payout gate 2 accepts cod_collected as cash-in-hand proof', /LEDGER_JOURNAL_KIND\.COD_COLLECTED/.test(payoutSvc));
+
+  // (i) the storefront must be TOLD, not discover by a failed checkout
+  const bootstrap = fs.readFileSync(path.join(BACKEND, 'src/controllers/domain.controller.js'), 'utf8');
+  check('the storefront bootstrap publishes payments.cod', /cod:\s*\{/.test(bootstrap) && /maxAmountPaise/.test(bootstrap));
+  const checkoutPage = fs.readFileSync(path.join(REPO, 'frontend/apps/storefront/src/pages/Checkout.jsx'), 'utf8');
+  check('Checkout hides cash using the published cap and flag', /codOverCap/.test(checkoutPage) && /codAvailable/.test(checkoutPage));
+
+  // (j) the rider app has somewhere to record the cash
+  const riderRoutes = fs.readFileSync(path.join(BACKEND, 'src/routes/rider.routes.js'), 'utf8');
+  check('the rider API exposes a collect-cash action', /collect-cash/.test(riderRoutes));
+}
+
+// ---------------------------------------------------------------------------
+section('9. the delivery clock has exactly one home');
+// ---------------------------------------------------------------------------
+// returns.service used to measure the customer's 7-day window from
+// paymentSummary.paidAt — assigning it to a variable NAMED deliveredAt — which
+// charged customers for transit time and desynchronised the return gate from the
+// payout gate. Both now resolve the stamp through utils/returnWindow.js.
+{
+  const utilPath = path.join(BACKEND, 'src/utils/returnWindow.js');
+  check('utils/returnWindow.js exists (the single delivery-clock home)', fs.existsSync(utilPath));
+  const util = fs.existsSync(utilPath) ? fs.readFileSync(utilPath, 'utf8') : '';
+  check('the clock helper is pure (injectable now, no imports of models)', /now = Date\.now\(\)/.test(util) && !/from '\.\.\/models\//.test(util));
+
+  for (const [file, what] of [
+    ['src/services/returns.service.js', 'the return window'],
+    ['src/services/payout.service.js', 'payout eligibility (gate 1)'],
+  ]) {
+    const src = fs.readFileSync(path.join(BACKEND, file), 'utf8');
+    check(`${file} reads the clock from utils/returnWindow.js (${what})`, /from '\.\.\/utils\/returnWindow\.js'/.test(src));
+  }
+
+  // The original bug, stated as a pattern: a variable called deliveredAt being
+  // assigned from a payment timestamp.
+  const offenders = [];
+  for (const f of jsFiles(path.join(BACKEND, 'src'))) {
+    const src = fs.readFileSync(f, 'utf8');
+    if (/deliveredAt\s*=\s*[^;\n]*paymentSummary\?\.paidAt/.test(src)
+      || /deliveredAt\s*=\s*[^;\n]*\bpaidAt\b(?!\s*\|\|\s*order\.updatedAt)/.test(src)) {
+      offenders.push(path.relative(BACKEND, f));
+    }
+  }
+  check(
+    'no service derives a delivery moment straight from a payment timestamp',
+    offenders.length === 0,
+    offenders.join(', '),
+  );
 }
 
 // ---------------------------------------------------------------------------
