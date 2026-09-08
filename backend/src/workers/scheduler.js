@@ -119,6 +119,18 @@ export function builtinJobs() {
       },
     },
     {
+      // PENDING_ACCEPT past the 45s window → free the rider and offer the
+      // next candidate. Without this, a missed accept leaves the rider BUSY
+      // forever and new dispatches cannot be assigned.
+      name: 'assignment-accept-sweep',
+      schedule: 'every 15s (expire rider accept window, reassign)',
+      everyMs: 15 * 1000,
+      async run() {
+        const { default: fulfillmentService } = await import('../services/fulfillment.service.js');
+        return fulfillmentService.sweepExpiredAssignments({ limit: 100 });
+      },
+    },
+    {
       // Release inventory reserved by carts idle for ~2h so stock is not
       // locked until the 30-day cart TTL.
       name: 'cart-reservation-sweep',

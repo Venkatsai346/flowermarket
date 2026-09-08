@@ -21,7 +21,10 @@ const { Schema, Types } = mongoose;
 const CartSchema = new Schema(
   {
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
-    userId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
+    // Signed-in carts have a userId; anonymous drafts have a guestKey. Checkout
+    // always requires a user — guest carts merge on login (cart.service).
+    userId: { type: Types.ObjectId, ref: 'User', default: null, index: true },
+    guestKey: { type: String, default: null, trim: true, minlength: 16, maxlength: 64, index: true },
     status: {
       type: String,
       enum: Object.values(CART_STATUS),

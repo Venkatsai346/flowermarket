@@ -23,7 +23,7 @@ const phone = uniquePhone('96');
 // customer checkout via API so the console has a live order to operate on
 const off = logOffset();
 await api('POST', '/auth/otp/request', { purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number: phone } });
-const code = grabOtp(off, { expectPhone: phone });
+const code = await grabOtp(off, { expectPhone: phone });
 if (!code) { console.error('setup: no OTP'); process.exit(2); }
 const rv = await api('POST', '/auth/otp/verify', { purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number: phone }, code });
 const custTok = rv.accessToken || rv.tokens?.accessToken;

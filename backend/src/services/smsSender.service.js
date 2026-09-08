@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs';
 import config from '../config/index.js';
 
 /**
@@ -23,8 +24,13 @@ class SmsSender {
 
     if (provider === 'console') {
       const label = channel === 'phone' ? 'SMS' : 'EMAIL';
-      // eslint-disable-next-line no-console
-      console.log(`[otp:${provider}] ${label} to ${target} | purpose=${purpose} | code=${code}`);
+      const line = `[otp:${provider}] ${label} to ${target} | purpose=${purpose} | code=${code}`;
+      // writeSync so piped API logs (CI / e2e) see the code before the HTTP
+      // response returns — console.log is block-buffered when stdout is not a TTY.
+      try { writeSync(1, `${line}\n`); } catch {
+        // eslint-disable-next-line no-console
+        console.log(line);
+      }
       // dev-only echo so UI flows (storefront OTP sheet) are testable end-to-end;
       // real providers never return the code.
       return { provider, sent: true, code };

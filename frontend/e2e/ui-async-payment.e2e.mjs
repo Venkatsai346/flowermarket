@@ -47,7 +47,7 @@ await R.check('P02', 'Sign in with phone OTP (new customer)', async () => {
   const off = logOffset();
   await clickText(page, 'Send code', { exact: true });
   await new Promise((r) => setTimeout(r, 900));
-  const code = grabOtp(off, { expectPhone: phone });
+  const code = await grabOtp(off, { expectPhone: phone });
   if (!code) throw new Error('OTP not found');
   await typeInto(page, 'input[placeholder="••••••"]', code, { clear: true });
   await clickText(page, 'Verify & continue', { exact: true });
@@ -57,7 +57,7 @@ await R.check('P02', 'Sign in with phone OTP (new customer)', async () => {
 
 // ---------------------------------------------------------------- basket
 await R.check('P03', 'Add a product to the basket from the PDP', async () => {
-  const handle = await page.$('button[aria-label^="View "]');
+  const handle = await page.$('a[aria-label^="View "]');
   await handle.click();
   await waitText(page, /Add to basket|Out of stock/, 10000);
   await clickText(page, /Add to basket/, { timeout: 6000 });

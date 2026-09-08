@@ -129,7 +129,7 @@ await R.check('S08', 'Auth: OTP request + verify (dev code from API echo)', asyn
   if (otpRes) {
     try { code = (await otpRes.json())?.data?.devCode || null; } catch {}
   }
-  if (!code) code = grabOtp(off, { expectPhone: customerPhone });
+  if (!code) code = await grabOtp(off, { expectPhone: customerPhone });
   if (!code) throw new Error('OTP not found (devCode + log)');
   const devHint = await waitText(page, /Development mode — your code is/i, 6000).then(() => true).catch(() => false);
   await typeInto(page, 'input[placeholder="••••••"]', code, { clear: true });
@@ -204,9 +204,9 @@ await R.check('S14', 'Checkout: add a new address via form', async () => {
   await typeInto(page, 'input[placeholder="Full name"]', 'E2E Customer');
   await typeInto(page, 'input[placeholder="Phone"]', customerPhone);
   await typeInto(page, 'input[placeholder="Flat / house / street"]', '12 Lotus Lane');
-  await typeInto(page, 'input[placeholder="City"]', 'Hyderabad');
-  await typeInto(page, 'input[placeholder="State"]', 'Telangana');
-  await typeInto(page, 'input[placeholder="Pincode"]', '500001');
+  await typeInto(page, 'input[placeholder="City"]', 'Kakinada');
+  await typeInto(page, 'input[placeholder="State"]', 'Andhra Pradesh');
+  await typeInto(page, 'input[placeholder="Pincode"]', '533001');
   await clickText(page, 'Save address', { exact: true });
   await waitText(page, /12 Lotus Lane/, 10000);
   return 'address saved';
@@ -293,7 +293,7 @@ await shot(page, 's20-cancelled');
 await R.check('S21', 'Second order placed (reusing saved address)', async () => {
   await page.goto(BASE + '/', { waitUntil: 'networkidle2', timeout: 30000 });
   await waitText(page, /products?/, 15000);
-  const h = await page.$('button[aria-label^="View "]');
+  const h = await page.$('a[aria-label^="View "]');
   await h.click();
   await waitText(page, /Add to basket|Out of stock/, 10000);
   await clickText(page, /Add to basket/, { timeout: 6000 });
@@ -331,16 +331,19 @@ await R.check('S22', 'Order 2 delivered via fulfillment (store+rider API)', asyn
   const RIDER_PHONE = '9000000009';
   const off = logOffset();
   await api('POST', '/auth/otp/request', { purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number: RIDER_PHONE } });
-  const riderCode = grabOtp(off, { expectPhone: RIDER_PHONE });
+  const riderCode = await grabOtp(off, { expectPhone: RIDER_PHONE });
   if (!riderCode) throw new Error('rider OTP not found');
   const rv = await api('POST', '/auth/otp/verify', { purpose: 'login', channel: 'phone', phone: { countryCode: '+91', number: RIDER_PHONE }, code: riderCode });
   const riderTok = rv.accessToken || rv.tokens?.accessToken;
   if (!riderTok) throw new Error('no rider token');
   const dl = await api('GET', '/rider/deliveries', undefined, { token: riderTok });
   const dlist = dl?.deliveries || (Array.isArray(dl) ? dl : []);
-  const delivery = dlist.find((d) => String(d.orderId) === String(oid)) || dlist[0];
+  const delivery = dlist.find((d) => {
+    const did = d.orderId?.id || d.orderId?._id || d.orderId;
+    return String(did) === String(oid);
+  });
   const deliveryId = delivery?.id || delivery?._id;
-  if (!deliveryId) throw new Error('no delivery for rider');
+  if (!deliveryId) throw new Error(`no delivery for rider (order ${oid}, saw ${dlist.length})`);
   await api('POST', `/rider/deliveries/${deliveryId}/accept`, {}, { token: riderTok });
   await api('POST', `/rider/deliveries/${deliveryId}/arrive-hub`, {}, { token: riderTok });
   await api('POST', `/rider/deliveries/${deliveryId}/depart`, { package_verified: true }, { token: riderTok });

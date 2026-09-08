@@ -252,8 +252,7 @@ export function logOffset() {
   }
 }
 
-/** Read the most recent OTP code logged after `offset`. */
-export function grabOtp(offset, { expectPhone } = {}) {
+function readOtpOnce(offset, expectPhone) {
   try {
     const size = fs.statSync(LOG_FILE).size;
     if (size <= offset) return null;
@@ -277,6 +276,16 @@ export function grabOtp(offset, { expectPhone } = {}) {
   } catch {
     return null;
   }
+}
+
+/** Read the most recent OTP code logged after `offset` (polls — piped stdout lags). */
+export async function grabOtp(offset, { expectPhone, tries = 25, delayMs = 80 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    const code = readOtpOnce(offset, expectPhone);
+    if (code) return code;
+    await new Promise((r) => setTimeout(r, delayMs));
+  }
+  return null;
 }
 
 // ---------- backend API (setup / cross-checks) ----------
