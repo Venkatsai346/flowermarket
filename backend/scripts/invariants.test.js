@@ -753,7 +753,65 @@ section('13. a newly registered store is told what it cannot yet do');
 
 // ---------------------------------------------------------------------------
 console.log(`\n${'─'.repeat(60)}`);
+section('14. tax document numbers are unique per supplier, not per platform');
+{
+  // GST Rule 46 requires a serial number that is unique and sequential for each
+  // financial year FOR THE REGISTERED PERSON ISSUING IT. Two suppliers may
+  // lawfully use the same number. A globally-unique index on `number` therefore
+  // contradicted the law it exists to serve — and it made the marketplace's
+  // mainline impossible: issueForOrder writes one document per selling entity,
+  // the prefix is one global config value, and each supplier's sequence starts at
+  // 1, so a vendor's and a store's first invoices in a financial year both
+  // rendered FM/26-27/000001 and the second insert died with E11000.
+  //
+  // This is held statically because the suite that caught it (smoke-gst) needs a
+  // database, and a DB-backed check is the last thing anyone re-runs by hand.
+  const modelSrc = fs.readFileSync(path.join(BACKEND, 'src/models/taxDocument.model.js'), 'utf8');
+  const svcSrc = fs.readFileSync(path.join(BACKEND, 'src/services/taxDocument.service.js'), 'utf8');
+  const cfgSrc = fs.readFileSync(path.join(BACKEND, 'src/config/index.js'), 'utf8');
+
+  check('`number` is not declared globally unique',
+    !/TaxDocumentSchema\.index\(\s*\{\s*number:\s*1\s*\}\s*,\s*\{\s*unique:\s*true/.test(modelSrc),
+    'src/models/taxDocument.model.js: index({ number: 1 }, { unique: true }) is back');
+
+  check('`number` IS unique per supplier (supplierType + tenantId + vendorId)',
+    /TaxDocumentSchema\.index\(\s*\{[^}]*supplierType[^}]*number:\s*1[^}]*\}\s*,\s*\{[^}]*unique:\s*true/.test(modelSrc),
+    'the supplier-scoped unique index is missing');
+
+  // The bug is a scope MISMATCH: a per-owner sequence rendered through a global
+  // prefix, constrained by a global index. Pin the sequence's scope too, so the
+  // two halves cannot drift apart again in either direction.
+  check('the sequence is reserved per owner (ownerType + ownerId + docType + fyLabel)',
+    /ownerType[\s\S]{0,40}?ownerId[\s\S]{0,40}?docType[\s\S]{0,40}?fyLabel/.test(svcSrc),
+    'reserveNumber no longer keys its series on the owner');
+
+  // A schema edit does not touch an index that already exists in a live database,
+  // so the superseded global index has to be dropped explicitly — otherwise the
+  // fix is real in a fresh test DB and fiction in production.
+  check('the superseded global index is dropped at runtime, not just redefined',
+    /isLegacyGlobalNumber/.test(svcSrc)
+      && /dropIndex/.test(svcSrc)
+      && /syncIndexes\(\)/.test(svcSrc),
+    'taxDocument.service.ensureIndexes() must drop unique-on-number-alone and syncIndexes()');
+
+  // GST caps a document number at 16 characters, and FM/26-27/000001 is already
+  // 15 — which is precisely why the number cannot carry a supplier discriminator
+  // and the index had to be scoped instead. Widening the prefix or the sequence
+  // would break the law silently; reserveNumber refuses at runtime, this refuses
+  // at commit time.
+  const prefix = (cfgSrc.match(/invoicePrefix:\s*process\.env\.TAX_INVOICE_PREFIX\s*\|\|\s*'([^']*)'/) || [])[1] || '';
+  const width = Number((cfgSrc.match(/numberWidth:\s*Number\(process\.env\.TAX_NUMBER_WIDTH\)\s*\|\|\s*(\d+)/) || [])[1] || 0);
+  const longest = `${prefix}/26-27/${'0'.repeat(width)}`;
+  check(`the default number "${longest}" fits GST's 16-character cap`,
+    longest.length > 0 && longest.length <= 16, `${longest.length} characters`);
+}
+
+// Printed LAST, only after every section has run. This line used to sit above
+// §14, so the runner announced "88 passed, 0 failed" and then failed two checks —
+// a summary that disagrees with its own gate is worse than no summary, because it
+// teaches the next reader to trust the number and skip the ❌ lines.
 console.log(`invariants: ${passed} passed, ${failed} failed`);
+
 if (failed) {
   console.log('\nFailures:');
   for (const f of failures) console.log(`  • ${f}`);

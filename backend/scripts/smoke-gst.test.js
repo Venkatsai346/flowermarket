@@ -214,6 +214,24 @@ async function main() {
   const vendorDoc = issued.documents.find((d) => d.vendorId);
   const storeDoc = issued.documents.find((d) => !d.vendorId);
 
+  // Each selling entity numbers from ITS OWN sequence, so both start at 1. GST
+  // Rule 46 scopes a serial number to the registered person issuing it, which is
+  // why two suppliers may lawfully render the same string — and why `number` is
+  // unique per supplier rather than per platform. A global unique index made this
+  // second document fail with E11000, breaking the first multi-vendor order of
+  // every financial year. Reaching this line at all is the regression test.
+  eq('vendor numbers from its own sequence', vendorDoc.sequence, 1);
+  eq('store numbers from its own sequence', storeDoc.sequence, 1);
+  if (vendorDoc.number === storeDoc.number) {
+    check('a shared serial belongs to two genuinely different suppliers',
+      vendorDoc.supplier.gstin !== storeDoc.supplier.gstin,
+      `${vendorDoc.number} issued to both ${vendorDoc.supplier.gstin} and ${storeDoc.supplier.gstin}`);
+  } else {
+    check('serials differ, and each fits GST\'s 16-character cap',
+      vendorDoc.number.length <= 16 && storeDoc.number.length <= 16,
+      `${vendorDoc.number} / ${storeDoc.number}`);
+  }
+
   eq('vendor invoice carries the VENDOR gstin', vendorDoc.supplier.gstin, vendorGstin);
   eq('store invoice carries the STORE gstin', storeDoc.supplier.gstin, storeGstin);
   eq('vendor invoice: nil-rated roses, no tax', vendorDoc.totals.totalTaxPaise, 0);

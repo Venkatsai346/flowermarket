@@ -198,8 +198,37 @@ const TaxDocumentSchema = new Schema(
   { collection: 'taxdocuments' }
 );
 
-// numbering: unique per series, and unique globally by number
-TaxDocumentSchema.index({ number: 1 }, { unique: true });
+// Numbering is unique PER SUPPLIER, not per platform. GST Rule 46 requires a
+// serial number that is unique and sequential for each financial year *for the
+// registered person issuing it* — two different suppliers may lawfully use the
+// same serial number.
+//
+// A globally-unique index here made the marketplace's core path impossible:
+// issueForOrder writes one document per selling entity (a multi-vendor order
+// yields one invoice per vendor plus one for the store), `prefix` is a single
+// global config value (TAX_INVOICE_PREFIX), and each supplier's sequence starts
+// at 1 — so a vendor's and the store's first invoices in a financial year both
+// rendered FM/26-27/000001 and the second insert died with E11000. That is not an
+// edge case, it is the platform's mainline: the first multi-vendor order of every
+// financial year.
+//
+// The number cannot carry an owner discriminator instead. FM/26-27/000001 is
+// already 15 of the 16 characters GST allows, a cap reserveNumber enforces, so
+// there is exactly one character of headroom and no room for a supplier id.
+// Scoping the index is the only fix that fits the law's own constraint.
+//
+// The scope is (supplier, number) and deliberately NOT (supplier, series, number):
+// seriesCode is not encoded in the number, so one supplier running two series
+// would render the same string twice. This index refuses that loudly rather than
+// issuing two legally identical documents — encode the series in
+// TAX_INVOICE_PREFIX, or lower TAX_NUMBER_WIDTH, before using a second series.
+//
+// Named so ensureIndexes() can identify and drop the superseded global one: a
+// schema change does not remove an index that already exists in a live database.
+TaxDocumentSchema.index(
+  { supplierType: 1, tenantId: 1, vendorId: 1, number: 1 },
+  { unique: true, name: 'uniq_supplier_number' }
+);
 TaxDocumentSchema.index(
   { supplierType: 1, vendorId: 1, tenantId: 1, docType: 1, fyLabel: 1, seriesCode: 1, sequence: 1 },
   { unique: true }

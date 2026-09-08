@@ -90,6 +90,52 @@ const toId = (v) => (v == null ? null : (v instanceof mongoose.Types.ObjectId ? 
 
 class TaxDocumentService {
   // -------------------------------------------------------------------------
+  // indexes
+  // -------------------------------------------------------------------------
+
+  /**
+   * Bring the live collection's indexes in line with the schema, once per process.
+   *
+   * Changing an index in a schema does NOT change a database that already has the
+   * old one — `Model.init()` only creates what is missing, it never drops what is
+   * superseded. `number` used to be unique GLOBALLY, which made the first
+   * multi-vendor order of every financial year fail with E11000 (see the model).
+   * Any deployment that already ran that version still has the old index enforcing
+   * the wrong scope, so it has to be dropped explicitly before `syncIndexes()`
+   * installs the supplier-scoped replacement. Same shape as
+   * cart.service.ensureIndexes(), which exists for the same reason.
+   */
+  async ensureIndexes() {
+    if (this._indexesReady) return;
+    try {
+      const col = TaxDocument.collection;
+      const indexes = await col.indexes();
+      for (const idx of indexes) {
+        if (idx.name === '_id_') continue;
+        const keys = Object.keys(idx.key || {});
+        // Only the superseded shape is dropped: unique on `number` ALONE. Any
+        // other key set — including the supplier-scoped replacement — is left
+        // untouched, so this is safe to run against a database at any version.
+        const isLegacyGlobalNumber = idx.unique && keys.length === 1 && keys[0] === 'number';
+        if (isLegacyGlobalNumber) {
+          // Sequential on purpose: a one-shot migration that runs at most once per
+          // process, dropping indexes that contend on the same collection. Fanning
+          // these out would be slower, not faster.
+          // eslint-disable-next-line no-await-in-loop
+          await col.dropIndex(idx.name).catch(() => {});
+        }
+      }
+      await TaxDocument.syncIndexes();
+    } catch (err) {
+      // Never fail an issuance because an index could not be rebuilt — but say so
+      // loudly, because the uniqueness the law depends on is then unenforced.
+      // eslint-disable-next-line no-console
+      console.warn('[tax-documents] index sync failed:', err.message);
+    }
+    this._indexesReady = true;
+  }
+
+  // -------------------------------------------------------------------------
   // numbering
   // -------------------------------------------------------------------------
 
@@ -104,6 +150,10 @@ class TaxDocumentService {
    * run nightly — a burnt number is reported, not hidden.
    */
   async reserveNumber({ ownerType, ownerId, docType, at = new Date(), seriesCode = 'A', session = null }) {
+    // Runs its DDL on the default session, never on the caller's `session`: index
+    // builds cannot participate in a transaction. One-shot per process, so this
+    // costs nothing on the hot path after the first issuance.
+    await this.ensureIndexes();
     const fy = fyLabel(at, config.tax.fyStartMonth);
     const prefix = docType === TAX_DOC_TYPE.CREDIT_NOTE ? config.tax.creditNotePrefix : config.tax.invoicePrefix;
     const width = config.tax.numberWidth;
