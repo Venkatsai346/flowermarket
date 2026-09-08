@@ -6,46 +6,7 @@ import { useShop } from '../store.js';
 import { Button, Empty, Skeleton } from '../components/ui.jsx';
 import { errMsg } from '../lib/utils.js';
 import { cn } from '../lib/utils.js';
-
-const BLANK = { name: '', phone: '', line1: '', line2: '', city: '', state: '', pincode: '', label: 'home' };
-
-function AddressForm({ initial, title, onSave, onCancel, busy }) {
-  const [f, setF] = useState(initial);
-  const toast = useShop((s) => s.toast);
-  const [saving, setSaving] = useState(false);
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await onSave(f);
-    } catch (e) {
-      toast(errMsg(e), 'error');
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3 rounded-2xl border border-slate-200 p-4">
-      <p className="text-sm font-semibold text-slate-800">{title}</p>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <input className="input" placeholder="Full name" value={f.name} onChange={set('name')} />
-        <input className="input" placeholder="Phone" inputMode="numeric" value={f.phone} onChange={set('phone')} />
-      </div>
-      <input className="input" placeholder="Flat / house / street" value={f.line1} onChange={set('line1')} />
-      <input className="input" placeholder="Area, landmark (optional)" value={f.line2} onChange={set('line2')} />
-      <div className="grid gap-3 sm:grid-cols-3">
-        <input className="input" placeholder="City" value={f.city} onChange={set('city')} />
-        <input className="input" placeholder="State" value={f.state} onChange={set('state')} />
-        <input className="input" placeholder="Pincode" inputMode="numeric" value={f.pincode} onChange={set('pincode')} />
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
-        <Button size="sm" loading={saving || busy} disabled={!f.line1 || !f.pincode} onClick={save}>Save address</Button>
-      </div>
-    </div>
-  );
-}
+import AddressForm, { BLANK_ADDRESS } from '../components/AddressForm.jsx';
 
 /**
  * Address book — the customer's saved delivery addresses.
@@ -136,7 +97,7 @@ export default function Addresses() {
         <div className="mb-5">
           <AddressForm
             title="New address"
-            initial={BLANK}
+            initial={BLANK_ADDRESS}
             busy={busy}
             onCancel={() => setAdding(false)}
             onSave={add}
@@ -158,7 +119,7 @@ export default function Addresses() {
               {editing?.id === a.id ? (
                 <AddressForm
                   title={`Edit — ${a.name || 'address'}`}
-                  initial={{ ...BLANK, ...a }}
+                  initial={{ ...BLANK_ADDRESS, ...a }}
                   busy={busy}
                   onCancel={() => setEditing(null)}
                   onSave={saveEdit}

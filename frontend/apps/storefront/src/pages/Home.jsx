@@ -22,9 +22,32 @@ const SORTS = [
   ['popularity', 'Popular'],
 ];
 
+function LocalBusinessJsonLd({ store, routing }) {
+  if (!store?.name) return null;
+  const data = {
+    '@context': 'https://schema.org',
+    '@type': 'Florist',
+    name: store.name,
+    description: store.description || store.tagline || undefined,
+    image: store.logoUrl || store.bannerUrl || undefined,
+    url: routing?.canonicalUrl || undefined,
+    telephone: store.phone || undefined,
+    address: {
+      '@type': 'PostalAddress',
+      addressCountry: 'IN',
+      addressLocality: store.city || undefined,
+    },
+    priceRange: '₹₹',
+  };
+  return (
+    <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(data) }} />
+  );
+}
+
 export default function Home() {
   const store = useShop((s) => s.store);
   const theme = useShop((s) => s.theme);
+  const routing = useShop((s) => s.routing);
   const pincode = useShop((s) => s.pincode);
   const serviceability = useShop((s) => s.serviceability);
   const openPin = useShop((s) => s.openPin);
@@ -55,6 +78,7 @@ export default function Home() {
 
   return (
     <>
+      <LocalBusinessJsonLd store={store} routing={routing} />
       {store && (
         <section className="relative min-h-[28rem] overflow-hidden sm:min-h-[32rem]">
           <FloralImage

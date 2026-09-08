@@ -20,6 +20,7 @@ const Orders = lazy(() => import('./pages/Orders.jsx'));
 const OrderDetail = lazy(() => import('./pages/OrderDetail.jsx'));
 const Returns = lazy(() => import('./pages/Returns.jsx'));
 const Addresses = lazy(() => import('./pages/Addresses.jsx'));
+const Account = lazy(() => import('./pages/Account.jsx'));
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
 
 /**
@@ -189,6 +190,7 @@ export default function App() {
             <Route path="/returns" element={<Returns />} />
             <Route path="/wallet" element={<Wallet />} />
             <Route path="/addresses" element={<Addresses />} />
+            <Route path="/account" element={<Account />} />
             <Route path="*" element={<Home />} />
           </Routes>
         </Suspense>

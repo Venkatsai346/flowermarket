@@ -643,6 +643,7 @@ class OrderService {
       keyId: chargeResult.keyId || config.razorpay?.keyId || null,
       amountPaise: chargeResult.amountPaise || toPaise(order.totalAmount),
       currency: order.currency || 'INR',
+      method: order.paymentMethod || null,
       orderNumber: order.orderNumber,
       customer: {
         name,

@@ -26,3 +26,22 @@ export const STATUS_META = {
 
 /** The four milestones a customer actually tracks. */
 export const TRACK_STEPS = ['Placed', 'Confirmed', 'Being prepared', 'On the way', 'Delivered'];
+
+/** One sentence per backend status — shown under the progress rail. */
+export const TRACK_COPY = {
+  created: 'We have your order. Pay to confirm it.',
+  payment_pending: 'Pay to confirm this order. We have not charged you yet.',
+  confirmed: 'The florist has your order and will start preparing it for your slot.',
+  picking: 'Your bouquet is being arranged by the florist.',
+  packed: 'Packed and waiting for the rider.',
+  out_for_delivery: 'On the way — keep your phone nearby for the rider.',
+  delivered: 'Delivered. Trim the stems tonight and change the water in the morning.',
+  delivery_failed: 'The rider could not complete delivery. We will call you to reschedule.',
+  cancelled: 'This order was cancelled. Any payment returns to your wallet.',
+  return_requested: 'We have your return request and will review it shortly.',
+  return_approved: 'Your return is approved. Keep the bunch ready for pickup.',
+  return_rejected: 'We could not approve this return. The florist’s note is on the timeline.',
+  return_picked_up: 'The return has been collected. Quality check is next.',
+  refund_initiated: 'A refund is on the way to your wallet.',
+  refund_completed: 'Refunded to your wallet. You can spend it on the next bunch.',
+};

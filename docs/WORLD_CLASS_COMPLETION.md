@@ -3,7 +3,7 @@
 **Audience:** anyone finishing this platform for real customers, real rupees, and a brand people remember.  
 **Surfaces in scope:** backend API · admin console (`apps/web`) · customer storefront (`apps/storefront`).  
 **Out of scope for “100% of this product” but named:** Expo mobile (login-only scaffold), Phase-7 ideas.  
-**As of:** 2026-09-07 · branch `arena/01a07c11-flowermarket` · Wave 1 live e2e **127/127** · Wave 2 (India-correct money in production) shipped on this branch.
+**As of:** 2026-09-08 · branch `arena/01a07c11-flowermarket` · Wave 1 live e2e **127/127** · Waves 2–5 shipped on this branch.
 
 This document **does not** re-plan Phases 1–6. Those are shipped. It answers one question:
 
@@ -21,7 +21,7 @@ They are **not** yet a world-class florist platform you would put a real city on
 |---|---:|---:|---:|---|
 | Backend | **88%** | **90%** | n/a | India-correct pricing, live providers, tenant lifecycle, PDF invoices, validation density, paise migration |
 | Admin console | **92%** | **85%** | **70%** | Tenant suspend/activate, vendor product edit, chunk split, visual density, component tests |
-| Storefront | **78%** | **78%** | **82%** | Real checkout (Razorpay widget still P0-1); Wave 4 brand/kits/i18n/GSTIN/arrival shipped |
+| Storefront | **84%** | **82%** | **85%** | Wave 5: Checkout.js hardened (no script without keyId), profile, pin locality, sitemap/robots/JSON-LD |
 | Mobile | **8%** | — | — | Not required for web 100%. A later product. |
 | Platform overall | **~80%** | **~82%** | **~60%** | Waves 1–3 below. Wave 4 is the “stunning” leap. |
 
@@ -76,19 +76,19 @@ The money and the saga are done. The remaining work is **product completion, pro
 
 | Step | Today | 100% |
 |---|---|---|
-| Land on a branded store from Host | ✅ bootstrap, theme CSS variables, WCAG ink | + Open Graph, sitemap, canonical, floral photography |
+| Land on a branded store from Host | ✅ bootstrap, theme CSS variables, WCAG ink, OG, LocalBusiness JSON-LD, sitemap.xml, robots.txt | floral photography already on kits |
 | Know we deliver to *my* pin | ❌ hero always says “same-day slots”; no pin gate | Pin entry → serviceable / not, before browsing |
 | Browse | ✅ grid, chips, sort, in-stock, autocomplete, `/search?q=` + facets | Wave 4: recently viewed, photography |
 | Product | ✅ `/p/:slug` PDP (gallery, EAV care/vase-life, related, JSON-LD) | Wave 4: photography, occasion bundles |
 | Cart | ✅ guest cookie/`x-guest-key`, merge on OTP | Guest cart (cookie/device) → merge on login |
 | Coupon | ✅ API + cart apply | Surface on checkout (today easy to miss) |
-| Address book | ✅ add / edit / default / delete | + Google/India pin lookup, serviceability badge |
+| Address book | ✅ add / edit / default / delete + India PIN locality autofill + serviceability badge | no external postal API |
 | Slot | ⚠️ fetched **without pincode**; hub falls back to first active | Slot list for the *address pin*; refuse unserviceable pins |
-| Pay | ⚠️ UPI/Card/COD buttons; **no Razorpay Checkout.js**; mock confirms instantly | Real UPI/card widget; COD only when `slot.codAllowed`; wallet already gated on quote |
-| Track | ✅ 5-state rail + timeline | + live rider status, map optional, push/SMS |
+| Pay | ✅ Checkout.js on `payment_pending` (theme from `--brand`, UPI/card method filter, **no script without keyId**); webhook HMAC SoT; mock no-ops the widget | Live capture still needs Razorpay test keys |
+| Track | ✅ 5-state rail + customer sentences per status + timeline | + live rider status, map optional, push/SMS |
 | Invoice | ❌ `GET /tax/orders/:id/invoice` exists, UI never links it | Download GST invoice + credit note (PDF) |
 | Notify | ✅ `shop.notifications` + storefront/console bell | — |
-| Profile | ⚠️ name from OTP only | Edit name, language (te/en), marketing consent |
+| Profile | ✅ `/account` — name, language (te/en), marketing consent via `PATCH /users/me` | — |
 
 ### 2.2 Store operator (admin console)
 
@@ -140,7 +140,7 @@ Severity: **P0** = cannot launch a real city · **P1** = customers/operators wil
 ### 3.1 P0 — launch blockers (the shop would fail in the real world)
 
 #### P0-1 · Real payments on the storefront
-Backend Razorpay adapter **creates** a gateway order and waits for a webhook. The storefront **never opens Checkout.js**. With mock keys, “Place order” confirms instantly. With live keys, the customer is dumped on `/orders/:id?pay=1` with no way to pay.
+**Wave 5:** Checkout.js opens on `payment_pending` when `keyId` is present; mock mode never injects the script. Remaining: prove a live Razorpay test-mode capture on staging.
 
 **Do:**
 1. Return `{ keyId, gatewayOrderId, amountPaise, currency, customer }` from checkout when `paymentPending`.
@@ -307,7 +307,12 @@ Brand kits (classic rose / marigold temple / tropical green) on `tenant.theme.ki
 
 **Exit:** a stranger on mobile, on a tenant Host, can: enter pin → browse a beautiful PDP → OTP → pay UPI → see “arrives today 4–7 pm” → download invoice. The page does not look like a Tailwind dashboard.
 
-**Mobile (optional Wave 5):** implement the screen map in `ROADMAP.md` on the shared client. Do not start before Wave 1.
+**Mobile (later):** implement the screen map in `ROADMAP.md` on the shared client. Do not start Expo to avoid finishing payments.
+
+### Wave 5 — launch/trust · **SHIPPED**
+Harden Razorpay Checkout.js (brand colour from `--brand`, UPI/card method filter, **never load checkout.razorpay.com without a keyId** — mock e2e safe) · `/account` profile (name, te/en, marketing) · India PIN locality on `GET /catalog/serviceability` (prefix table + hub city, no postal API) + shared AddressForm autofill · `GET /catalog/sitemap.xml` (host-tenant) + storefront `robots.txt` + Home LocalBusiness JSON-LD · order tracking copy · admin branding sticky save. Ledger / payouts / GST / ranking / saga untouched. Expo not started.
+
+**Exit still needing live keys:** a test card / UPI collect on staging captures, webhook confirms, inventory commits. Unit tests cover no-script-without-keyId.
 
 ---
 

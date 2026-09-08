@@ -13,17 +13,19 @@ import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import { Field, Input, Textarea } from '../../components/ui/Field.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
+import StickySaveBar from '../../components/ui/StickySaveBar.jsx';
 
 export default function BrandingPage() {
   const store = useApi(() => api.marketplace.myStore(), []);
   const { busy, run } = useAction();
 
   const [form, setForm] = useState(null);
+  const [saved, setSaved] = useState(null);
 
   useEffect(() => {
     if (store.data?.tenant && !form) {
       const t = store.data.tenant;
-      setForm({
+      const next = {
         name: t.name || '',
         tagline: t.store?.tagline || '',
         description: t.store?.description || '',
@@ -34,13 +36,21 @@ export default function BrandingPage() {
         facebook: t.store?.socialLinks?.facebook || '',
         website: t.store?.socialLinks?.website || '',
         isPublished: Boolean(t.store?.isPublished),
-      });
+      };
+      setForm(next);
+      setSaved(next);
     }
   }, [store.data, form]);
 
   const tenant = store.data?.tenant || null;
   const onboarding = tenant?.store?.onboardingStatus;
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const brandingKey = (f) => {
+    if (!f) return '';
+    const { isPublished, ...rest } = f;
+    return JSON.stringify(rest);
+  };
+  const dirty = Boolean(form && saved && brandingKey(form) !== brandingKey(saved));
 
   const save = async (e) => {
     e.preventDefault();
@@ -61,6 +71,7 @@ export default function BrandingPage() {
         })
       );
       toast.success('Storefront branding saved');
+      setSaved(form);
       store.refetch();
     } catch (err) {
       toast.error(errMsg(err));
@@ -69,8 +80,11 @@ export default function BrandingPage() {
 
   const togglePublish = async () => {
     try {
-      await run(() => api.marketplace.updateStore({ isPublished: !form.isPublished }));
+      const next = !form.isPublished;
+      await run(() => api.marketplace.updateStore({ isPublished: next }));
       toast.success(form.isPublished ? 'Storefront unpublished' : 'Storefront is live! 🎉');
+      setForm((f) => (f ? { ...f, isPublished: next } : f));
+      setSaved((s) => (s ? { ...s, isPublished: next } : s));
       store.refetch();
     } catch (err) {
       toast.error(errMsg(err));
@@ -98,7 +112,7 @@ export default function BrandingPage() {
       <div className="grid gap-6 lg:grid-cols-5">
         <Card title="Branding" className="lg:col-span-3">
           {form ? (
-            <form onSubmit={save} className="space-y-4">
+            <form id="branding-form" onSubmit={save} className="space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Store name" required>
                   <Input required value={form.name} onChange={(e) => set('name', e.target.value)} />
@@ -223,6 +237,13 @@ export default function BrandingPage() {
           </Card>
         </div>
       </div>
+
+      <StickySaveBar
+        dirty={dirty}
+        saving={busy}
+        onSave={() => document.getElementById('branding-form')?.requestSubmit()}
+        onDiscard={() => saved && setForm(saved)}
+      />
     </div>
   );
 }

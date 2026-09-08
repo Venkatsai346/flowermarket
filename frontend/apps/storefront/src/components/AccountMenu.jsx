@@ -6,6 +6,7 @@ import { useShopAuth } from '../api.js';
 import { cn } from '../lib/utils.js';
 
 const LINKS = [
+  { to: '/account', label: 'My profile', icon: User },
   { to: '/orders', label: 'My orders', icon: Package },
   { to: '/returns', label: 'Returns & refunds', icon: RotateCcw },
   { to: '/wallet', label: 'My wallet', icon: Wallet },

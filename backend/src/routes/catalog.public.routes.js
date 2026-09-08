@@ -13,6 +13,7 @@ router.get('/', validate(catalogQuerySchema, 'query'), CatalogPublicController.s
 router.get('/categories', CatalogPublicController.categories);
 router.get('/brands', CatalogPublicController.brands);
 router.get('/serviceability', CatalogPublicController.serviceability);
+router.get('/sitemap.xml', CatalogPublicController.sitemap);
 router.get('/p/:slug', validate(slugParamSchema, 'params'), CatalogPublicController.productBySlug);
 router.get('/products/:id', validate(idParamSchema, 'params'), CatalogPublicController.productDetail);
 router.get('/products/:id/stock', validate(idParamSchema, 'params'), CatalogPublicController.stockCheck);

@@ -4,11 +4,31 @@ import config from '../config/index.js';
 import productMasterService from '../services/productMaster.service.js';
 import inventoryService from '../services/inventory.service.js';
 import slotService from '../services/slot.service.js';
+import tenantDomainService from '../services/tenantDomain.service.js';
 import ProductMaster from '../models/productMaster.model.js';
+import TenantProduct from '../models/tenantProduct.model.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
-import { PRODUCT_MASTER_STATUS } from '../constants/enums.js';
+import { PRODUCT_MASTER_STATUS, TENANT_LISTING_STATUS } from '../constants/enums.js';
+import { localityFromPincode } from '../utils/indiaPin.js';
+
+const SITEMAP_LIMIT = 2000;
+
+function xmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function isoDay(d) {
+  const dt = d instanceof Date ? d : new Date(d || Date.now());
+  if (Number.isNaN(dt.getTime())) return new Date().toISOString().slice(0, 10);
+  return dt.toISOString().slice(0, 10);
+}
 
 const OBJECT_ID_RX = /^[0-9a-fA-F]{24}$/;
 
@@ -173,19 +193,81 @@ class CatalogPublicController {
   serviceability = asyncHandler(async (req, res) => {
     const pincode = String(req.query.pincode || '').replace(/\D/g, '');
     if (!/^\d{6}$/.test(pincode)) throw badRequest('Enter a 6-digit pincode', 'BAD_PINCODE');
+    const locality = localityFromPincode(pincode);
     try {
       const hub = await slotService.resolveHub({ tenantId: req.tenantId, pincode });
+      const city = hub.name || locality.city;
       res.status(200).json(success({
-        pincode, serviceable: true, hub: { id: hub.id || hub._id, name: hub.name },
+        pincode,
+        serviceable: true,
+        hub: { id: hub.id || hub._id, name: hub.name },
+        locality: { city, state: locality.state, region: locality.region },
       }, { message: 'We deliver here' }));
     } catch (err) {
       if (err?.code === 'PINCODE_UNSERVICEABLE' || err?.code === 'HUB_NOT_FOUND') {
         return res.status(200).json(success({
-          pincode, serviceable: false, hub: null,
+          pincode, serviceable: false, hub: null, locality,
         }, { message: err.message || "We don't deliver there yet" }));
       }
       throw err;
     }
+  });
+
+  /**
+   * GET /catalog/sitemap.xml — host-tenant product URLs for crawlers.
+   * Raw XML (not the JSON envelope). Public; tenant comes from Host.
+   */
+  sitemap = asyncHandler(async (req, res) => {
+    const canonical = await tenantDomainService.canonicalHostFor({
+      tenantId: req.tenantId,
+      slug: req.tenant?.slug,
+    });
+    const host = canonical || req.tenantHost || req.get('host') || '';
+    const proto = /localhost|127\.0\.0\.1/.test(host) ? 'http' : 'https';
+    const origin = host ? `${proto}://${host}` : '';
+
+    const listings = await TenantProduct.find({
+      tenantId: req.tenantId,
+      status: TENANT_LISTING_STATUS.ACTIVE,
+      isDeleted: { $ne: true },
+    }).select('productMasterId updatedAt').limit(SITEMAP_LIMIT).lean();
+
+    const masters = await ProductMaster.find({
+      _id: { $in: listings.map((l) => l.productMasterId) },
+      status: PRODUCT_MASTER_STATUS.ACTIVE,
+      isDeleted: { $ne: true },
+      slug: { $exists: true, $nin: [null, ''] },
+    }).select('slug updatedAt').lean();
+    const byId = new Map(masters.map((m) => [String(m._id), m]));
+
+    const urls = [
+      { loc: `${origin}/`, lastmod: isoDay(), changefreq: 'daily', priority: '1.0' },
+    ];
+    for (const listing of listings) {
+      const master = byId.get(String(listing.productMasterId));
+      if (!master?.slug) continue;
+      urls.push({
+        loc: `${origin}/p/${encodeURIComponent(master.slug)}`,
+        lastmod: isoDay(listing.updatedAt || master.updatedAt),
+        changefreq: 'weekly',
+        priority: '0.8',
+      });
+    }
+
+    const body = [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      ...urls.map((u) => (
+        `  <url><loc>${xmlEscape(u.loc)}</loc><lastmod>${u.lastmod}</lastmod>`
+        + `<changefreq>${u.changefreq}</changefreq><priority>${u.priority}</priority></url>`
+      )),
+      '</urlset>',
+      '',
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.status(200).send(body);
   });
 
   /** GET /catalog/products/:id/stock — quick availability check (RN app polling). */

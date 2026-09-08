@@ -9,52 +9,13 @@ import { useShop } from '../store.js';
 import { Button, Money, Empty } from '../components/ui.jsx';
 import { asList, cn, errMsg } from '../lib/utils.js';
 import { kolkataDate } from '../lib/arrival.js';
+import AddressForm from '../components/AddressForm.jsx';
 
 const PAYMENTS = [
   ['upi', 'UPI', BadgeIndianRupee],
   ['card', 'Card', CreditCard],
   ['cod', 'Cash on delivery', Banknote],
 ];
-
-function AddressForm({ onSaved, onCancel }) {
-  const [f, setF] = useState({ name: '', phone: '', line1: '', line2: '', city: '', state: '', pincode: '' });
-  const [busy, setBusy] = useState(false);
-  const toast = useShop((s) => s.toast);
-  
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
-  
-  const save = async () => {
-    setBusy(true);
-    try {
-      const r = await api.shop.addAddress({ ...f, label: 'home' });
-      onSaved?.(r.data);
-    } catch (e) {
-      toast(errMsg(e), 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3 rounded-2xl border border-slate-200 p-4">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <input className="input" placeholder="Full name" value={f.name} onChange={set('name')} />
-        <input className="input" placeholder="Phone" inputMode="numeric" value={f.phone} onChange={set('phone')} />
-      </div>
-      <input className="input" placeholder="Flat / house / street" value={f.line1} onChange={set('line1')} />
-      <input className="input" placeholder="Area, landmark (optional)" value={f.line2} onChange={set('line2')} />
-      <div className="grid gap-3 sm:grid-cols-3">
-        <input className="input" placeholder="City" value={f.city} onChange={set('city')} />
-        <input className="input" placeholder="State" value={f.state} onChange={set('state')} />
-        <input className="input" placeholder="Pincode" inputMode="numeric" value={f.pincode} onChange={set('pincode')} />
-      </div>
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
-        <Button size="sm" loading={busy} disabled={!f.line1 || !f.pincode} onClick={save}>Save address</Button>
-      </div>
-    </div>
-  );
-}
 
 export default function Checkout() {
   const cart = useShop((s) => s.cart);
@@ -238,7 +199,12 @@ export default function Checkout() {
           {adding ? (
             <AddressForm
               onCancel={() => setAdding(false)}
-              onSaved={(a) => { setAdding(false); setAddressId(String(a.id)); refetchAddresses(); }}
+              onSave={async (f) => {
+                const r = await api.shop.addAddress({ ...f, label: 'home' });
+                setAdding(false);
+                setAddressId(String(r.data.id));
+                refetchAddresses();
+              }}
             />
           ) : (
             <div className="space-y-2">

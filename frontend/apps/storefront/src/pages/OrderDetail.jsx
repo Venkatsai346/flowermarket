@@ -8,7 +8,7 @@ import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
 import ReturnSheet from '../components/ReturnSheet.jsx';
-import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
+import { STATUS_META, TRACK_COPY, TRACK_STEPS } from '../lib/status.js';
 import { CANCEL_REASONS, canCancel, canReturn, meta } from '../lib/afterSales.js';
 import { cn, errMsg } from '../lib/utils.js';
 import { openRazorpayCheckout } from '../lib/razorpay.js';
@@ -101,8 +101,10 @@ export default function OrderDetail() {
           amountPaise: d.amountPaise,
           currency: d.currency || 'INR',
           name: store?.name,
-          description: d.order?.orderNumber,
+          description: d.order?.orderNumber || d.orderNumber,
           customer: d.customer || {},
+          method: d.payment?.method || d.method,
+          notes: { orderNumber: d.order?.orderNumber || d.orderNumber || '' },
           onSuccess: () => { toast('Payment submitted — waiting for confirmation', 'success'); refetch(); },
         });
       } catch {
@@ -231,8 +233,10 @@ export default function OrderDetail() {
                     amountPaise: d.amountPaise,
                     currency: d.currency || 'INR',
                     name: store?.name,
-                    description: d.order?.orderNumber,
+                    description: d.order?.orderNumber || d.orderNumber,
                     customer: d.customer || {},
+                    method: d.payment?.method || d.method,
+                    notes: { orderNumber: d.order?.orderNumber || d.orderNumber || '' },
                     onSuccess: () => { toast('Payment submitted — waiting for confirmation', 'success'); refetch(); },
                   });
                 }).catch((e) => toast(errMsg(e), 'error'));
@@ -286,6 +290,10 @@ export default function OrderDetail() {
             </Button>
           </div>
         </div>
+      )}
+
+      {cancelled && TRACK_COPY.cancelled && (
+        <p className="card mb-5 p-4 text-sm leading-relaxed text-slate-600">{TRACK_COPY.cancelled}</p>
       )}
 
       {/* progress rail */}

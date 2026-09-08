@@ -27,7 +27,16 @@ class UserService {
     const allowed = ['profile', 'preferences', 'marketing'];
     for (const key of allowed) {
       if (patch[key] !== undefined) {
-        user[key] = { ...(user[key] || {}), ...patch[key] };
+        user[key] = { ...(user[key]?.toObject?.() || user[key] || {}), ...patch[key] };
+      }
+    }
+    if (patch.marketing && Object.prototype.hasOwnProperty.call(patch.marketing, 'optedIn')) {
+      if (patch.marketing.optedIn) {
+        user.marketing.consentedAt = user.marketing.consentedAt || new Date();
+        user.marketing.revokedAt = null;
+        user.marketing.consentVersion = user.marketing.consentVersion || '2026-09';
+      } else {
+        user.marketing.revokedAt = new Date();
       }
     }
     await user.save();
