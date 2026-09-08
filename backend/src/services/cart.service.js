@@ -168,12 +168,17 @@ class CartService {
     }
 
     const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
-    const available = stock.qtyAvailable ?? 0;
+    const held = existing ? (existing.reservedQty || 0) : 0;
+    const available = (stock.qtyAvailable ?? 0) + held;
     const nextQty = existing ? existing.qty + q : q;
 
     if (nextQty > available) {
-      throw conflict(`Only ${available} available`, 'INSUFFICIENT_STOCK', { available });
+      throw conflict(`Only ${stock.qtyAvailable ?? 0} available`, 'INSUFFICIENT_STOCK', { available: stock.qtyAvailable ?? 0 });
     }
+
+    await inventoryService.syncReservation({
+      tenantId, listingId: listing._id, fromQty: held, toQty: nextQty,
+    });
 
     const snapshot = {
       mrp: listing.price?.mrp ?? null,
@@ -182,30 +187,38 @@ class CartService {
     };
     const lineTotal = roundMoney(snapshot.sellingPrice * nextQty);
 
-    if (existing) {
-      existing.qty = nextQty;
-      existing.lineTotal = lineTotal;
-      existing.updatedAt = new Date();
-      await existing.save();
-    } else {
-      await CartItem.create({
-        cartId: cart._id,
-        tenantId,
-        tenantProductId: listing._id,
-        productMasterId: master._id,
-        variantId: listing.variantId || null,
-        qty: nextQty,
-        priceSnapshot: snapshot,
-        stockSnapshot: { availableQty: available, checkedAt: new Date() },
-        titleSnapshot: master.title,
-        imageUrlSnapshot: null,
-        unitSnapshot: master.defaultSellingUnit || null,
-        lineTotal,
-        isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),
-      });
+    try {
+      if (existing) {
+        existing.qty = nextQty;
+        existing.reservedQty = nextQty;
+        existing.lineTotal = lineTotal;
+        existing.updatedAt = new Date();
+        await existing.save();
+      } else {
+        await CartItem.create({
+          cartId: cart._id,
+          tenantId,
+          tenantProductId: listing._id,
+          productMasterId: master._id,
+          variantId: listing.variantId || null,
+          qty: nextQty,
+          reservedQty: nextQty,
+          priceSnapshot: snapshot,
+          stockSnapshot: { availableQty: available, checkedAt: new Date() },
+          titleSnapshot: master.title,
+          imageUrlSnapshot: null,
+          unitSnapshot: master.defaultSellingUnit || null,
+          lineTotal,
+          isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),
+        });
+      }
+      await this.refreshTotals(cart);
+    } catch (err) {
+      await inventoryService.syncReservation({
+        tenantId, listingId: listing._id, fromQty: nextQty, toQty: held,
+      }).catch(() => {});
+      throw err;
     }
-
-    await this.refreshTotals(cart);
     return this.getCart({ tenantId, userId, guestKey });
   }
 
@@ -217,10 +230,18 @@ class CartService {
 
     const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId });
     const stock = listing ? await inventoryService.getStock({ tenantId, listingId: listing._id }) : { qtyAvailable: 0 };
-    const available = stock.qtyAvailable ?? 0;
-    if (qty > available) throw conflict(`Only ${available} available`, 'INSUFFICIENT_STOCK', { available });
+    const held = item.reservedQty || 0;
+    const available = (stock.qtyAvailable ?? 0) + held;
+    const nextQty = Math.floor(qty);
+    if (nextQty > available) throw conflict(`Only ${stock.qtyAvailable ?? 0} available`, 'INSUFFICIENT_STOCK', { available: stock.qtyAvailable ?? 0 });
 
-    item.qty = Math.floor(qty);
+    if (listing) {
+      await inventoryService.syncReservation({
+        tenantId, listingId: listing._id, fromQty: held, toQty: nextQty,
+      });
+    }
+    item.qty = nextQty;
+    item.reservedQty = nextQty;
     item.lineTotal = roundMoney((item.priceSnapshot?.sellingPrice || 0) * item.qty);
     item.updatedAt = new Date();
     await item.save();
@@ -230,13 +251,32 @@ class CartService {
 
   async removeItem({ tenantId, userId, guestKey, itemId }) {
     const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
-    await CartItem.deleteOne({ _id: itemId, cartId: cart._id });
+    const item = await CartItem.findOne({ _id: itemId, cartId: cart._id });
+    if (item) {
+      const hold = item.reservedQty || item.qty || 0;
+      if (hold > 0) {
+        await inventoryService.syncReservation({
+          tenantId, listingId: item.tenantProductId, fromQty: hold, toQty: 0,
+        });
+      }
+      await CartItem.deleteOne({ _id: item._id });
+    }
     await this.refreshTotals(cart);
     return this.getCart({ tenantId, userId, guestKey });
   }
 
   async clear({ tenantId, userId, guestKey }) {
     const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
+    const items = await CartItem.find({ cartId: cart._id });
+    for (const item of items) {
+      const hold = item.reservedQty || item.qty || 0;
+      if (hold > 0) {
+        // eslint-disable-next-line no-await-in-loop
+        await inventoryService.syncReservation({
+          tenantId, listingId: item.tenantProductId, fromQty: hold, toQty: 0,
+        });
+      }
+    }
     await CartItem.deleteMany({ cartId: cart._id });
     await this.refreshTotals(cart);
     return this.getCart({ tenantId, userId, guestKey });
@@ -265,13 +305,21 @@ class CartService {
       // eslint-disable-next-line no-await-in-loop
       const existing = await CartItem.findOne({ cartId: userCart._id, tenantProductId: it.tenantProductId });
       if (existing) {
+        const held = (existing.reservedQty || 0) + (it.reservedQty || 0);
         // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.tenantProductId, tenantId });
         // eslint-disable-next-line no-await-in-loop
         const stock = listing ? await inventoryService.getStock({ tenantId, listingId: listing._id }) : { qtyAvailable: 0 };
-        const available = stock.qtyAvailable ?? 0;
-        const nextQty = Math.min(existing.qty + it.qty, Math.max(available, existing.qty));
+        const ceiling = (stock.qtyAvailable ?? 0) + held;
+        const nextQty = Math.min(existing.qty + it.qty, Math.max(ceiling, existing.qty));
+        if (listing) {
+          // eslint-disable-next-line no-await-in-loop
+          await inventoryService.syncReservation({
+            tenantId, listingId: listing._id, fromQty: held, toQty: nextQty,
+          });
+        }
         existing.qty = nextQty;
+        existing.reservedQty = nextQty;
         existing.lineTotal = roundMoney((existing.priceSnapshot?.sellingPrice || 0) * nextQty);
         existing.updatedAt = new Date();
         // eslint-disable-next-line no-await-in-loop
@@ -328,12 +376,14 @@ class CartService {
       }
       // eslint-disable-next-line no-await-in-loop
       const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
-      if (item.qty > (stock.qtyAvailable ?? 0)) {
+      const held = item.reservedQty || 0;
+      const availableToThisCart = (stock.qtyAvailable ?? 0) + held;
+      if (item.qty > availableToThisCart) {
         changed = true;
         diffs.push({
           itemId: item.id, listingId: item.tenantProductId,
           issue: 'qty_capped',
-          requested: item.qty, available: stock.qtyAvailable,
+          requested: item.qty, available: availableToThisCart,
         });
       }
       total = moneySum(total, livePrice * item.qty);
@@ -380,18 +430,39 @@ class CartService {
       const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId }).lean();
       if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
         dropped.push({ listingId: item.tenantProductId, title: item.titleSnapshot });
+        const heldInactive = item.reservedQty || item.qty || 0;
+        if (heldInactive > 0) {
+          // eslint-disable-next-line no-await-in-loop
+          await inventoryService.syncReservation({
+            tenantId, listingId: item.tenantProductId, fromQty: heldInactive, toQty: 0,
+          });
+        }
         // eslint-disable-next-line no-await-in-loop
         await CartItem.deleteOne({ _id: item.id });
         continue;
       }
       // eslint-disable-next-line no-await-in-loop
       const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
-      const available = stock.qtyAvailable ?? 0;
+      const held = item.reservedQty || 0;
+      const available = (stock.qtyAvailable ?? 0) + held;
       if (available <= 0) {
         dropped.push({ listingId: item.tenantProductId, title: item.titleSnapshot });
+        if (held > 0) {
+          // eslint-disable-next-line no-await-in-loop
+          await inventoryService.syncReservation({
+            tenantId, listingId: listing._id, fromQty: held, toQty: 0,
+          });
+        }
         // eslint-disable-next-line no-await-in-loop
         await CartItem.deleteOne({ _id: item.id });
         continue;
+      }
+      const nextQty = Math.min(item.qty, available);
+      if (nextQty !== held) {
+        // eslint-disable-next-line no-await-in-loop
+        await inventoryService.syncReservation({
+          tenantId, listingId: listing._id, fromQty: held, toQty: nextQty,
+        });
       }
       const price = listing.price?.sellingPrice ?? 0;
       // eslint-disable-next-line no-await-in-loop
@@ -405,8 +476,9 @@ class CartService {
               currency: listing.price?.currency || 'INR',
             },
             stockSnapshot: { availableQty: available, checkedAt: new Date() },
-            qty: Math.min(item.qty, available),
-            lineTotal: roundMoney(price * Math.min(item.qty, available)),
+            qty: nextQty,
+            reservedQty: nextQty,
+            lineTotal: roundMoney(price * nextQty),
             updatedAt: new Date(),
           },
         }
@@ -424,6 +496,9 @@ class CartService {
     cart.checkedOutAt = new Date();
     cart.lastCheckoutMeta = { orderId };
     await cart.save();
+    // Commit (post-pay) consumes qtyReserved. Zero the cart holds so a later
+    // abandoned-cart sweep cannot release stock that the order already took.
+    await CartItem.updateMany({ cartId }, { $set: { reservedQty: 0 } });
     return cart;
   }
 
@@ -437,6 +512,47 @@ class CartService {
     cart.subtotal = roundMoney(subtotal);
     cart.lastActivityAt = new Date();
     await cart.save();
+  }
+
+  /**
+   * Release stock holds on carts idle ~2h so a forgotten basket cannot lock
+   * inventory for the 30-day cart TTL. Lines stay in the cart (qty unchanged,
+   * reservedQty → 0); checkout re-checks live stock. Carts with a
+   * PAYMENT_PENDING order are skipped — the customer is still on the gateway.
+   */
+  async sweepAbandonedReservations({ idleMs = 2 * 60 * 60 * 1000, limit = 100 } = {}) {
+    const cutoff = new Date(Date.now() - idleMs);
+    const carts = await Cart.find({
+      status: CART_STATUS.ACTIVE,
+      lastActivityAt: { $lte: cutoff },
+    }).limit(limit);
+    const { default: Order } = await import('../models/order.model.js');
+    const { ORDER_STATUS } = await import('../constants/enums.js');
+    let released = 0;
+    let skippedPending = 0;
+    for (const cart of carts) {
+      // eslint-disable-next-line no-await-in-loop
+      const pending = await Order.exists({ cartId: cart._id, status: ORDER_STATUS.PAYMENT_PENDING });
+      if (pending) {
+        skippedPending += 1;
+        continue;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const items = await CartItem.find({ cartId: cart._id, reservedQty: { $gt: 0 } });
+      for (const item of items) {
+        const hold = item.reservedQty || 0;
+        if (hold <= 0) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await inventoryService.syncReservation({
+          tenantId: cart.tenantId, listingId: item.tenantProductId, fromQty: hold, toQty: 0,
+        });
+        item.reservedQty = 0;
+        // eslint-disable-next-line no-await-in-loop
+        await item.save();
+        released += 1;
+      }
+    }
+    return { scanned: carts.length, released, skippedPending };
   }
 }
 

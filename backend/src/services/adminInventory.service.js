@@ -189,11 +189,10 @@ export class AdminInventoryService {
       actorType: 'admin',
     });
 
-    // refresh denormalized listing stock snapshot (same as inventoryService does)
-    await TenantProduct.updateOne(
-      { _id: listingId },
-      { $set: { stockQty: updated.qtyOnHand, stockUpdatedAt: new Date() } }
-    );
+    // stockQty is AVAILABLE (on-hand minus reserved), never raw on-hand
+    const { default: inventoryService } = await import('./inventory.service.js');
+    await inventoryService.refreshListingStock(listing, updated);
+    await inventoryService.publishStock(listing, updated);
 
     await auditService.record({
       action: 'adjust', entityType: 'inventory', entityId: listingId,

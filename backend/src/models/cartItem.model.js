@@ -29,6 +29,8 @@ const CartItemSchema = new Schema(
     variantId: { type: Types.ObjectId, ref: 'ProductVariant', default: null },
 
     qty: { type: Number, required: true, min: 1, max: 999 },
+    /** Units currently held in Inventory.qtyReserved for this line. */
+    reservedQty: { type: Number, default: 0, min: 0, max: 999 },
 
     // ---- snapshots at add-time ----
     priceSnapshot: { type: PriceSnapshotSchema, required: true },

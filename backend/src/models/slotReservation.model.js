@@ -6,8 +6,9 @@
  *   HELD (created at checkout start, TTL 10 min) -> CONFIRMED (payment ok)
  *   HELD -> EXPIRED (TTL sweep / lazy check) | RELEASED (compensation/cancel)
  *
- * The partial TTL index only expires HELD rows — confirmed reservations are
- * durable and never swept.
+ * Holds are expired by SlotService.sweepExpiredHolds (application sweep).
+ * A Mongo TTL index MUST NOT be used — it would delete the HELD row without
+ * decrementing DeliverySlot.reservedCapacity, leaking the slot forever.
  */
 
 import mongoose from 'mongoose';
@@ -38,16 +39,12 @@ const SlotReservationSchema = new Schema(
   { collection: 'slotreservations' }
 );
 
-// one live hold per (user, slot) — prevents double-booking the same slot twice
+// one live hold per user across every slot — switching slots releases the last
 SlotReservationSchema.index(
-  { slotId: 1, userId: 1, status: 1 },
-  { unique: true, partialFilterExpression: { status: 'held' } }
+  { userId: 1, status: 1 },
+  { unique: true, name: 'uniq_live_hold_per_user', partialFilterExpression: { status: 'held' } }
 );
-// partial TTL: only HELD rows expire server-side
-SlotReservationSchema.index(
-  { expiresAt: 1 },
-  { expireAfterSeconds: 0, partialFilterExpression: { status: 'held' } }
-);
+SlotReservationSchema.index({ slotId: 1, status: 1, expiresAt: 1 });
 SlotReservationSchema.index({ userId: 1, status: 1, createdAt: -1 });
 
 SlotReservationSchema.plugin(auditPlugin);

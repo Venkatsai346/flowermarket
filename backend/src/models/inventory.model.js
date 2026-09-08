@@ -7,8 +7,9 @@
  *  - Reservation is atomic: findOneAndUpdate guarded by `qtyReserved + qty <= qtyOnHand`
  *    so over-reservation is impossible even under concurrency.
  *  - `version` for optimistic locking on manual set/adjust.
- *  - The TenantProduct.stockQty is a denormalized snapshot of qtyOnHand, refreshed
- *    by the inventory service so customer queries never join.
+ *  - The TenantProduct.stockQty is a denormalized snapshot of qtyAvailable
+ *    (on-hand minus reserved), refreshed by the inventory service so customer
+ *    queries never join.
  */
 
 import mongoose from 'mongoose';

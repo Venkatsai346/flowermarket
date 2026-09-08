@@ -18,8 +18,8 @@ const toObjectId = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoo
  *    + tenant fields -> filter tenant_status = ACTIVE -> cache"
  *
  * Only listings with status=ACTIVE AND master.status=ACTIVE surface. Stock
- * comes from the denormalized TenantProduct.stockQty (fast); a batch inventory
- * lookup patches exact availability when requested.
+ * is always overlaid from live Inventory.qtyAvailable so a cart hold or
+ * committed order is visible immediately.
  *
  * NOTE: cache (Redis) + search index (Elasticsearch) are the roadmap; this
  * service is the correct source-of-truth query behind them.
@@ -118,20 +118,9 @@ class CatalogSearchService {
       },
     ]);
 
-    // ---- batch stock patch (exact availability when requested) ----
-    if (query.inStock) {
-      const ids = rows.map((r) => r.listingId);
-      if (ids.length) {
-        const stockMap = await inventoryService.bulkGetStock({ tenantId, listingIds: ids });
-        for (const r of rows) {
-          const s = stockMap[r.listingId];
-          if (s) {
-            r.stockQty = s.qtyAvailable;
-            r.availability = { status: s.qtyAvailable > 0 ? 'in_stock' : 'out_of_stock', updatedAt: new Date() };
-          }
-        }
-      }
-    }
+    // Always overlay live available qty — ranked/index stockQty goes stale
+    // the moment a cart reserves or an order commits.
+    await inventoryService.overlayLiveStock({ tenantId, items: rows });
 
     await this.attachPrimaryImages(rows);
 

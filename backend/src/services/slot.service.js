@@ -2,21 +2,57 @@ import DeliverySlot from '../models/deliverySlot.model.js';
 import SlotReservation from '../models/slotReservation.model.js';
 import Hub from '../models/hub.model.js';
 import ServiceablePincode from '../models/serviceablePincode.model.js';
+import Order from '../models/order.model.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
-import { SLOT_RESERVATION_STATUS, SLOT_HOLD_TTL_SECONDS } from '../constants/enums.js';
-import { roundMoney } from '../utils/money.js';
+import { SLOT_RESERVATION_STATUS, SLOT_HOLD_TTL_SECONDS, ORDER_STATUS } from '../constants/enums.js';
+import { kolkataDate, eachYmdInclusive } from '../utils/calendar.js';
+
+/** Checkout/payment window — longer than the browse hold so capture can finish. */
+const SLOT_CHECKOUT_HOLD_TTL_SECONDS = 20 * 60;
 
 /**
  * SlotService — BigBasket-style slotted delivery with ATOMIC capacity control.
  *
- * The concurrency trick (doc §3): reservation is a single guarded
- * findOneAndUpdate — `$expr reservedCapacity < totalCapacity` — so concurrent
- * attempts can never oversell. No separate counter to desync.
- *
- * Capacity numbers come from ops (forecasting); this service prevents
- * OVERSELING whatever number is set.
+ * Holds are application-swept (never Mongo TTL). Mongo TTL used to delete the
+ * HELD row without decrementing reservedCapacity, leaking the slot forever.
+ * One live hold per user; switching slots releases the previous hold first.
  */
 class SlotService {
+  constructor() {
+    this._indexesReady = false;
+  }
+
+  /**
+   * Drop the destructive TTL index (it deleted HELD docs without releasing
+   * capacity) and the old per-(user,slot) unique so one hold per user can
+   * be enforced. Safe to call on every request; no-ops after the first.
+   */
+  async ensureIndexes() {
+    if (this._indexesReady) return;
+    try {
+      const col = SlotReservation.collection;
+      const indexes = await col.indexes();
+      for (const idx of indexes) {
+        if (idx.name === '_id_') continue;
+        const isTtl = idx.expireAfterSeconds != null;
+        const keys = Object.keys(idx.key || {});
+        const isOldSlotUserUnique = idx.unique
+          && keys.includes('slotId')
+          && keys.includes('userId')
+          && keys.includes('status');
+        if (isTtl || isOldSlotUserUnique) {
+          // eslint-disable-next-line no-await-in-loop
+          await col.dropIndex(idx.name).catch(() => {});
+        }
+      }
+      await SlotReservation.syncIndexes();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[slot] index sync failed:', err.message);
+    }
+    this._indexesReady = true;
+  }
+
   /**
    * Resolve the servicing hub for a pincode.
    *
@@ -65,13 +101,9 @@ class SlotService {
       { start: '19:00', end: '22:00', label: '7 PM – 10 PM', type: 'normal' },
     ];
 
-    const dates = [];
-    const d = new Date(`${fromDate}T00:00:00Z`);
-    const end = new Date(`${toDate}T00:00:00Z`);
-    while (d <= end) {
-      dates.push(d.toISOString().slice(0, 10));
-      d.setUTCDate(d.getUTCDate() + 1);
-    }
+    const start = fromDate || kolkataDate(0);
+    const end = toDate || start;
+    const dates = eachYmdInclusive(start, end);
 
     // ---- Phase 3.5: nightly forecast batch. "Forecasting sets the number;
     //      the atomic lock enforces it." When forecast=true, per-hub-day
@@ -116,10 +148,12 @@ class SlotService {
   }
 
   /**
-   * DEEP FIX: Upgraded to support date ranges (fromDate/toDate), arrays, or fallback to UTC 'days'.
-   * This prevents the timezone trap and supports the frontend's `days: 3` request.
+   * Customer slot picker. Dates are Asia/Kolkata civil days (YYYY-MM-DD).
+   * Missing days are generated lazily so the storefront never shows an empty
+   * calendar just because ops has not run the nightly job.
    */
   async listAvailable({ tenantId, pincode, date, fromDate, toDate, days }) {
+    await this.ensureIndexes();
     let hub;
     try {
       hub = await this.resolveHub({ tenantId, pincode });
@@ -129,35 +163,19 @@ class SlotService {
       }
       throw err;
     }
-    
-    // --- DEEP FIX: Build a robust date filter ---
-    let dateQuery;
-    if (fromDate && toDate) {
-      // Range query (Best practice if Controller passes fromDate/toDate)
-      dateQuery = { $gte: fromDate, $lte: toDate };
-    } else if (date) {
-      // Single date query
-      dateQuery = date;
-    } else {
-      // FALLBACK: Generate UTC dates based on 'days' param (defaults to 3 days)
-      // We MUST use UTC methods to match the database format ('YYYY-MM-DD' in UTC)
-      const numDays = days || 3; 
-      const utcDates = [];
-      const now = new Date();
-      for (let i = 0; i < numDays; i++) {
-        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + i));
-        utcDates.push(d.toISOString().slice(0, 10));
-      }
-      dateQuery = { $in: utcDates };
-    }
-    // ---------------------------------------------
+
+    const windowFrom = fromDate || date || kolkataDate(0);
+    const windowTo = toDate || date || kolkataDate(Math.max(0, (Number(days) || 3) - 1));
+    await this.generateForDates({
+      tenantId, hubId: hub._id, fromDate: windowFrom, toDate: windowTo,
+    }).catch(() => {});
 
     const slots = await DeliverySlot.find({
-      tenantId, 
-      hubId: hub._id, 
-      date: dateQuery, // Now safely handles ranges, arrays, or single dates
+      tenantId,
+      hubId: hub._id,
+      date: { $gte: windowFrom, $lte: windowTo },
       status: { $in: ['open', 'full'] },
-    }).sort({ date: 1, startTime: 1 }).lean(); // Added date: 1 to sort by day
+    }).sort({ date: 1, startTime: 1 }).lean();
 
     const now = new Date();
     const result = slots.map((s) => {
@@ -187,27 +205,40 @@ class SlotService {
     };
   }
 
+  holdExpiresAt(ttlSeconds = SLOT_HOLD_TTL_SECONDS) {
+    return new Date(Date.now() + ttlSeconds * 1000);
+  }
+
   /**
    * ATOMIC reserve: increments slot reservedCapacity only if capacity remains,
-   * then creates a HELD reservation (TTL 10 min).
+   * then creates a HELD reservation. One live hold per user — a previous hold
+   * on another slot is released first. Reuse of the same slot extends TTL.
    */
   async reserve({ tenantId, userId, slotId }) {
+    await this.ensureIndexes();
     const slot = await DeliverySlot.findOne({ _id: slotId, tenantId });
     if (!slot) throw notFound('Slot not found', 'SLOT_NOT_FOUND');
-    if (slot.status === 'cancelled') throw conflict('Slot is unavailable', 'SLOT_UNAVAILABLE');
+    if (slot.status === 'cancelled' || slot.status === 'closed') {
+      throw conflict('Slot is unavailable', 'SLOT_UNAVAILABLE');
+    }
     if (slot.lastOrderTime && slot.lastOrderTime <= new Date()) {
       throw conflict('Ordering window for this slot has closed', 'SLOT_CUTOFF_PASSED');
     }
 
-    // one live hold per user per slot
-    const existingHold = await SlotReservation.findOne({
-      slotId, userId, status: SLOT_RESERVATION_STATUS.HELD,
+    const now = new Date();
+    const liveHolds = await SlotReservation.find({
+      userId, tenantId, status: SLOT_RESERVATION_STATUS.HELD,
     });
-    if (existingHold) {
-      if (existingHold.expiresAt > new Date()) return existingHold; // reuse the hold
-      await existingHold.updateOne({ $set: { status: SLOT_RESERVATION_STATUS.EXPIRED, releasedAt: new Date() } });
-      // decrement capacity back (best-effort; the TTL sweep covers stragglers)
-      await this.releaseCapacity({ slotId });
+
+    for (const h of liveHolds) {
+      if (String(h.slotId) === String(slotId) && h.expiresAt > now) {
+        h.expiresAt = this.holdExpiresAt();
+        await h.save();
+        return h;
+      }
+      // other slot, or same slot already expired — free the capacity
+      // eslint-disable-next-line no-await-in-loop
+      await this.expireHold(h, String(h.slotId) === String(slotId) ? 'expired' : 'switched_slot');
     }
 
     // ---- THE atomic gate ----
@@ -215,8 +246,6 @@ class SlotService {
       {
         _id: slot._id,
         status: { $in: ['open', 'full'] },
-        // effective capacity = manualCapacity ?? totalCapacity (Phase 4
-        // intraday override) — still atomic, can never oversell
         $expr: { $lt: ['$reservedCapacity', { $ifNull: ['$manualCapacity', '$totalCapacity'] }] },
       },
       { $inc: { reservedCapacity: 1 } },
@@ -226,17 +255,24 @@ class SlotService {
       throw conflict('Slot capacity exhausted — please pick another slot', 'SLOT_FULL');
     }
 
-    const now = new Date();
-    const reservation = await SlotReservation.create({
-      tenantId, slotId, userId,
-      status: SLOT_RESERVATION_STATUS.HELD,
-      heldAt: now,
-      expiresAt: new Date(now.getTime() + SLOT_HOLD_TTL_SECONDS * 1000),
-    });
-    return reservation;
+    try {
+      const reservation = await SlotReservation.create({
+        tenantId, slotId, userId,
+        status: SLOT_RESERVATION_STATUS.HELD,
+        heldAt: now,
+        expiresAt: this.holdExpiresAt(),
+      });
+      return reservation;
+    } catch (err) {
+      await this.releaseCapacity({ slotId });
+      throw err;
+    }
   }
 
-  /** Confirm a HELD reservation (post-payment) — marks CONFIRMED, keeps capacity reserved. */
+  /**
+   * Confirm a HELD reservation (post-payment). A hold that is already linked
+   * to THIS order is allowed even if the clock expired during capture.
+   */
   async confirm({ reservationId, tenantId, orderId }) {
     const reservation = await SlotReservation.findOne({ _id: reservationId, tenantId });
     if (!reservation) throw notFound('Slot reservation not found', 'RESERVATION_NOT_FOUND');
@@ -244,13 +280,39 @@ class SlotService {
     if (reservation.status !== SLOT_RESERVATION_STATUS.HELD) {
       throw conflict('Reservation is no longer held', 'RESERVATION_NOT_HELD');
     }
-    if (reservation.expiresAt < new Date()) {
+    const linkedToThisOrder = orderId && reservation.orderId
+      && String(reservation.orderId) === String(orderId);
+    if (!linkedToThisOrder && reservation.expiresAt && reservation.expiresAt < new Date()) {
       throw conflict('Slot hold has expired — please reserve again', 'RESERVATION_EXPIRED');
     }
     reservation.status = SLOT_RESERVATION_STATUS.CONFIRMED;
     reservation.confirmedAt = new Date();
-    reservation.orderId = orderId;
+    reservation.orderId = orderId || reservation.orderId;
     await reservation.save();
+    return reservation;
+  }
+
+  /** Stretch a live hold (checkout / payment window) and optionally pin the order. */
+  async extendHold({ reservationId, tenantId, orderId = null, ttlSeconds = SLOT_CHECKOUT_HOLD_TTL_SECONDS }) {
+    const patch = { expiresAt: this.holdExpiresAt(ttlSeconds) };
+    if (orderId) patch.orderId = orderId;
+    const reservation = await SlotReservation.findOneAndUpdate(
+      { _id: reservationId, tenantId, status: SLOT_RESERVATION_STATUS.HELD },
+      { $set: patch },
+      { new: true }
+    );
+    return reservation;
+  }
+
+  async expireHold(reservation, reason = 'expired') {
+    if (![SLOT_RESERVATION_STATUS.HELD].includes(reservation.status)) return reservation;
+    reservation.status = reason === 'switched_slot'
+      ? SLOT_RESERVATION_STATUS.RELEASED
+      : SLOT_RESERVATION_STATUS.EXPIRED;
+    reservation.releasedAt = new Date();
+    reservation.releasedReason = reason;
+    await reservation.save();
+    await this.releaseCapacity({ slotId: reservation.slotId });
     return reservation;
   }
 
@@ -259,6 +321,14 @@ class SlotService {
     const reservation = await SlotReservation.findOne({ _id: reservationId, tenantId });
     if (!reservation) throw notFound('Slot reservation not found', 'RESERVATION_NOT_FOUND');
     if ([SLOT_RESERVATION_STATUS.EXPIRED, SLOT_RESERVATION_STATUS.RELEASED].includes(reservation.status)) {
+      return reservation;
+    }
+    if (reservation.status === SLOT_RESERVATION_STATUS.CONFIRMED) {
+      reservation.status = SLOT_RESERVATION_STATUS.RELEASED;
+      reservation.releasedAt = new Date();
+      reservation.releasedReason = reason;
+      await reservation.save();
+      await this.releaseCapacity({ slotId: reservation.slotId });
       return reservation;
     }
     reservation.status = SLOT_RESERVATION_STATUS.RELEASED;
@@ -277,21 +347,36 @@ class SlotService {
     );
   }
 
-  /** TTL sweep: expire HELD reservations past expiresAt + release capacity. */
+  /**
+   * Application sweep: expire HELD reservations past expiresAt and give
+   * capacity back. Holds pinned to a PAYMENT_PENDING order are extended,
+   * never dropped — the customer is still on the gateway.
+   */
   async sweepExpiredHolds({ limit = 100 }) {
+    await this.ensureIndexes();
     const expired = await SlotReservation.find({
       status: SLOT_RESERVATION_STATUS.HELD,
       expiresAt: { $lte: new Date() },
     }).limit(limit);
     let released = 0;
+    let extended = 0;
     for (const res of expired) {
-      res.status = SLOT_RESERVATION_STATUS.EXPIRED;
-      res.releasedAt = new Date();
-      await res.save();
-      await this.releaseCapacity({ slotId: res.slotId });
+      if (res.orderId) {
+        // eslint-disable-next-line no-await-in-loop
+        const order = await Order.findById(res.orderId).select('status');
+        if (order && order.status === ORDER_STATUS.PAYMENT_PENDING) {
+          res.expiresAt = this.holdExpiresAt(SLOT_CHECKOUT_HOLD_TTL_SECONDS);
+          // eslint-disable-next-line no-await-in-loop
+          await res.save();
+          extended += 1;
+          continue;
+        }
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await this.expireHold(res, 'expired');
       released += 1;
     }
-    return { scanned: expired.length, released };
+    return { scanned: expired.length, released, extended };
   }
 
   /** Ops view: capacity utilization for a hub + date. */

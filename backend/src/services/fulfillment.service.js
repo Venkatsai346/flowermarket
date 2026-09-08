@@ -30,6 +30,8 @@ class FulfillmentService {
   // ---------------- picking ----------------
 
   async createTask({ orderId, tenantId, hubId = null, itemsCount = 0 }) {
+    const existing = await FulfillmentTask.findOne({ orderId, tenantId });
+    if (existing) return existing;
     return FulfillmentTask.create({
       orderId, tenantId, hubId: hubId || null, itemsCount,
       status: FULFILLMENT_TASK_STATUS.QUEUED,

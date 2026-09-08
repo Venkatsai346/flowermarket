@@ -132,30 +132,66 @@ class OrderService {
 
     const tenantId = order.tenantId;
     const commitItems = items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty }));
-    const { committed, failed } = await inventoryService.commitForOrder({ tenantId, items: commitItems });
 
-    if (failed.length > 0) {
-      // ---- compensation B: stock lost the race ----
-      await inventoryService.restoreForOrder({ tenantId, items: committed });
-      await refundService.initiate({
-        tenantId, userId, orderId: order._id, amount: order.totalAmount,
-        reason: REFUND_REASON.ORDER_CANCELLED, paymentId: payment._id, initiatedBy: userId,
-        components: this.fullOrderRefundComponents(order),
-      });
-      await slotService.release({ reservationId: hold._id, tenantId, reason: 'stock_unavailable' });
-      await this.markCancelled(order, {
-        reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
-        cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
-        refundTransactionId: order.cancellation?.refundTransactionId || null,
-      });
-      throw conflict('Some items are no longer in stock — order cancelled & refunded', 'STOCK_UNAVAILABLE', { orderId: order._id, failed });
+    // Webhook retry after a throw past commit must NOT deduct stock twice.
+    let committed = commitItems;
+    if (!order.inventoryCommittedAt) {
+      const result = await inventoryService.commitForOrder({ tenantId, items: commitItems });
+      committed = result.committed;
+      const failed = result.failed;
+
+      if (failed.length > 0) {
+        // ---- compensation B: stock lost the race ----
+        await inventoryService.restoreForOrder({ tenantId, items: committed });
+        await refundService.initiate({
+          tenantId, userId, orderId: order._id, amount: order.totalAmount,
+          reason: REFUND_REASON.ORDER_CANCELLED, paymentId: payment._id, initiatedBy: userId,
+          components: this.fullOrderRefundComponents(order),
+        });
+        const failHoldId = hold?._id || order.slotReservationId;
+        if (failHoldId) {
+          await slotService.release({ reservationId: failHoldId, tenantId, reason: 'stock_unavailable' }).catch(() => {});
+        }
+        await this.markCancelled(order, {
+          reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
+          cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
+          refundTransactionId: order.cancellation?.refundTransactionId || null,
+        });
+        throw conflict('Some items are no longer in stock — order cancelled & refunded', 'STOCK_UNAVAILABLE', { orderId: order._id, failed });
+      }
+
+      order.inventoryCommittedAt = new Date();
+      await order.save();
     }
 
     const reservationId = hold?._id || order.slotReservationId;
     if (!reservationId) {
+      await inventoryService.restoreForOrder({ tenantId, items: committed });
+      order.inventoryCommittedAt = null;
+      await order.save();
       throw conflict('No slot reservation linked to this order', 'RESERVATION_MISSING');
     }
-    await slotService.confirm({ reservationId, tenantId, orderId: order._id });
+    try {
+      await slotService.confirm({ reservationId, tenantId, orderId: order._id });
+    } catch (err) {
+      // Slot confirm failed after stock was taken — put the units back and
+      // reverse the sale so a webhook retry does not leave a ghost debit.
+      await inventoryService.restoreForOrder({ tenantId, items: committed });
+      order.inventoryCommittedAt = null;
+      await order.save();
+      await refundService.initiate({
+        tenantId, userId, orderId: order._id, amount: order.totalAmount,
+        reason: REFUND_REASON.ORDER_CANCELLED, paymentId: payment._id, initiatedBy: userId,
+        components: this.fullOrderRefundComponents(order),
+      }).catch(() => {});
+      await slotService.release({ reservationId, tenantId, reason: 'slot_confirm_failed' }).catch(() => {});
+      await this.markCancelled(order, {
+        reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
+        cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
+        refundTransactionId: order.cancellation?.refundTransactionId || null,
+      }).catch(() => {});
+      throw err;
+    }
     order.slotReservationId = reservationId;
     await fulfillmentService.createTask({
       orderId: order._id, tenantId,
@@ -564,12 +600,19 @@ class OrderService {
       throw conflict(`Order cannot be cancelled in state ${order.status}`, 'CANCELLATION_NOT_ALLOWED');
     }
 
-    // 1. restore inventory (reverse the hard commit)
+    // 1. restore inventory ONLY if the hard commit actually ran.
+    //    CREATED / PAYMENT_PENDING never deducted on-hand (cart still holds
+    //    the reservation). Restoring here would inflate stock.
+    const stockWasCommitted = Boolean(order.inventoryCommittedAt)
+      || ![ORDER_STATUS.CREATED, ORDER_STATUS.PAYMENT_PENDING].includes(order.status);
     const items = await OrderItem.find({ orderId: order._id }).lean();
-    await inventoryService.restoreForOrder({
-      tenantId,
-      items: items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty })),
-    });
+    if (stockWasCommitted) {
+      await inventoryService.restoreForOrder({
+        tenantId,
+        items: items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty })),
+      });
+      order.inventoryCommittedAt = null;
+    }
 
     // 2. release the slot hold
     if (order.slotReservationId) {
@@ -839,6 +882,12 @@ class OrderService {
       fromStatus: null, toStatus: ORDER_STATUS.CREATED,
       actorType: AUDIT_ACTOR_TYPE.SYSTEM, note: 'order created',
     });
+
+    // Pin the hold to this order and stretch TTL across the payment window so
+    // a sweep cannot drop capacity while the customer is on the gateway.
+    await slotService.extendHold({
+      reservationId: hold._id, tenantId, orderId: order._id,
+    }).catch(() => {});
     return order;
   }
 

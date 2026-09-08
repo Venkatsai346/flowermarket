@@ -107,6 +107,28 @@ export function builtinJobs() {
         }
       },
     },
+    {
+      // Expire HELD slot reservations and give capacity back. Must never be
+      // a Mongo TTL — TTL deletes the row without decrementing reservedCapacity.
+      name: 'slot-hold-sweep',
+      schedule: 'every 1m (expire held slots, restore capacity)',
+      everyMs: 60 * 1000,
+      async run() {
+        const { default: slotService } = await import('../services/slot.service.js');
+        return slotService.sweepExpiredHolds({ limit: 200 });
+      },
+    },
+    {
+      // Release inventory reserved by carts idle for ~2h so stock is not
+      // locked until the 30-day cart TTL.
+      name: 'cart-reservation-sweep',
+      schedule: 'every 5m (release idle cart stock holds)',
+      everyMs: 5 * 60 * 1000,
+      async run() {
+        const { default: cartService } = await import('../services/cart.service.js');
+        return cartService.sweepAbandonedReservations({ limit: 200 });
+      },
+    },
   ];
 }
 

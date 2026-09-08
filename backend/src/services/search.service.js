@@ -193,6 +193,8 @@ class SearchService {
     const slice = ranked.slice((page - 1) * limit, page * limit);
 
     const items = slice.map((r) => this.present(r, query.explain === 'true' || query.explain === true));
+    const { default: inventoryService } = await import('./inventory.service.js');
+    await inventoryService.overlayLiveStock({ tenantId, items });
     const facets = await searchProvider.facets({ tenantId, parsed, filters });
 
     const latencyMs = Number(process.hrtime.bigint() - started) / 1e6;
