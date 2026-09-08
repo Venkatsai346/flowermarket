@@ -616,6 +616,51 @@ These are the habits that make the codebase coherent. They are worth writing dow
 
 Ranked by impact. Each is verified against source, with the evidence named. I have deliberately excluded anything I could not confirm — including one hypothesis I chased and **disproved** (see the note at the end).
 
+> **Status: all ten findings are fixed.** The write-ups below are preserved as the
+> original analysis — the evidence and the reasoning are the useful part, and
+> rewriting them into the past tense would lose it. §18.0 records what was
+> actually built against each one, with the commit and the test that holds it.
+
+### 18.0 Resolution log
+
+| # | Sev | What was built | Commit | Held by |
+|---|-----|----------------|--------|---------|
+| **F1** | HIGH | Full COD lifecycle: `pending_collection` charge outcome, pre-flight cap enforcement *before* order creation, `cod_collected` / `cod_shortage` ledger kinds, rider collect-at-delivery step, cash exposure ops, integrity checks, storefront + console UI | `ff75533`, `8ad5f98` | `smoke-cod.test.js`, `cod-ledger.test.js` 23, invariants §8 (15 links) |
+| **F2** | HIGH | `utils/returnWindow.js` — one delivery clock for returns *and* payout eligibility, replacing the `deliveredAt = paidAt` assignment | `ff75533`, `8ad5f98` | `return-window.test.js` 17, invariants §9 |
+| **F3** | MED | OTP gets **two slots** (`OTP_PROVIDER` phone / `OTP_EMAIL_PROVIDER` email) routed by `providerForChannel()`; the guard checks both against `OTP_REQUIRED_CHANNELS`, which defaults to `phone,email` | `c302dce` | `production-guard.test.js` 20 |
+| **F4** | MED | Real zero-dep adapters: `utils/smtpClient.js` (RFC 5321 + STARTTLS + AUTH + full MIME), `utils/fcmClient.js` (HTTP v1, RS256 assertion, token cache), per-channel notification routing. Guard now separates **dev doubles** from **declared seams**, and covers storage + search | `c302dce` | `provider-adapters.test.js` 40, `production-guard.test.js` 20 |
+| **F5** | MED | `registerStore()` seeds a hub, slots and an explicit ₹0 fee policy; `utils/onboardingReadiness.js` decides readiness purely; `GET /marketplace/store/onboarding`; publishing refused with `STORE_NOT_READY`; hardcoded ₹49 removed and made observable | `8844bc0` | `onboarding-readiness.test.js` 26, invariants §13 |
+| **F6** | LOW | `allocateDiscount()` routes through `allocatePaise` — the last instance of "the last line absorbs the rounding" is gone | `3c10fa1` | `discount-allocation.test.js` 25, invariants §11 |
+| **F7** | LOW | Both brand-kit copies made field-identical with one precedence rule; `resolveBrandTheme` is now null-safe and idempotent | `0182092` | invariants §12 (imports **both** modules and compares behaviour over 15 inputs) |
+| **F8** | LOW | Cart N+1s batched (~60 round trips → 3 for a 20-line cart); `eslint.rules.js` as one rule list consumed by both `eslint.config.js` and a zero-dep gate that runs in CI today; ratcheted baseline | `bdb0aff` | `lint.test.js` 28 checks, `lint-baseline.json` |
+| **F9** | LOW | `.env.example` rewritten — the false "not implemented" claims corrected and 17 undocumented variables added | `c302dce` | invariants §5 |
+| **F10** | INFO | `scripts/lib/hermeticMongo.js` — null-safe teardown plus a self-healing version pin that retries with the minimum the distro supports | `7a8d2ae` | `hermetic-bootstrap.test.js` 16, invariants §10 |
+
+**Two bugs found while fixing, which the findings had not identified:**
+
+- `bulkGetStock()` omitted the `warehouseId: null` filter that `getRow()` applies. Since `{tenantProductId, warehouseId}` is a **unique** index, a listing can hold one row per warehouse — the batched read collapsed them and the last row iterated silently won, reporting different stock from the one checkout enforces. It surfaced only because F8 went looking for a batched equivalent to use.
+- `allocateDiscount()` assigned the last line's share **without rounding**, so what reached `OrderItem` was not `−0.01` but `−0.009999999999999787` — a sub-paisa float artifact, persisted, printed on invoices, and never reconcilable against the "paise are integers" view of the same line. F6 had predicted the negative share, not the unrounded one.
+
+**Verification (all runnable without a database):**
+
+```
+invariants                 88 passed, 0 failed      (§1–§13; was 8)
+lint                       28 checks passed         (new)
+provider-adapters          40 scenarios passed      (new)
+production-guard           20 passed                (was 10)
+onboarding-readiness       26 scenarios passed      (new)
+discount-allocation        25 scenarios passed      (new)
+cod-ledger                 23 scenarios passed      (new)
+return-window              17 scenarios passed      (new)
+hermetic-bootstrap         16 scenarios passed      (new)
+frontend                   4 tests, both apps build
+```
+
+The DB-backed suites still require a downloadable mongod binary; F10 is what makes
+their failure legible when one is unavailable.
+
+---
+
 ### F1 · HIGH — Cash on delivery is offered to customers but handled by nothing
 
 **Evidence.** `cod` exists in exactly two places in the backend: `PAYMENT_METHOD.COD` (`enums.js:263`) and the order validator's allowed list (`order.validators.js:23`). A repo-wide grep for `cod|COD|cashOnDelivery` in `src/` returns **no other hit** — no branch in `payment.service.charge()`, no provider adapter, no collection-at-delivery step, no COD reconciliation, no COD ledger treatment.
