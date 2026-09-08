@@ -94,6 +94,32 @@ export function saleSourceAccount({ isWalletPayment = false, isCodPayment = fals
  * order's method hint only for legacy rows predating the provider stamp.
  * PURE: plain objects in, boolean out.
  */
+/**
+ * Is this a bug in our own code rather than an operational failure?
+ *
+ * The distinction decides whether "left to the backfill sweep" is a promise or a
+ * lie. A transient failure — a blip, a duplicate key, a reset connection — really
+ * will succeed when `backfillSales()` retries it later. A deterministic
+ * language-level error will not: the sweep executes the same function with the
+ * same inputs and fails identically, every time, forever.
+ *
+ * Mongo and Mongoose raise their own error classes (`MongoServerError`,
+ * `ValidationError`, …), never these four, so this does not misclassify an
+ * operational failure as a bug.
+ *
+ * A TDZ ReferenceError in `postSale` shipped exactly this way: non-strict posting
+ * swallowed it on every sale, the backfill could never repair it, and it surfaced
+ * only as two missing `sale_captured` journals in the live integrity report.
+ */
+export function isProgrammerError(err) {
+  return (
+    err instanceof ReferenceError
+    || err instanceof TypeError
+    || err instanceof RangeError
+    || err instanceof SyntaxError
+  );
+}
+
 export function isCodPayment(payment, order = null) {
   if (payment) {
     // A COD payment is stamped provider=cod at creation, so that settles it.
@@ -280,9 +306,22 @@ class LedgerPostingService {
     );
     // COD is a third source account, not a flavour of gateway. Wallet wins if
     // both somehow appear (a wallet is real money we hold; COD is a promise).
-    const isCodPayment = !isWalletPayment && isCodPayment(payment, order);
+    //
+    // This binding is deliberately NOT named `isCodPayment`. That is the name of
+    // the module-level predicate being called on the right-hand side, and a
+    // `const` of the same name shadows it *inside its own initializer* — the
+    // temporal dead zone — so the call resolves to the binding under construction
+    // and throws ReferenceError. It threw on every single sale posting: outside
+    // production `safePost` swallowed it as "will be backfilled" while the
+    // backfill re-ran this same line and failed identically forever, and in
+    // production `ledger.strict` is true so it would have failed the order
+    // confirmation itself. scripts/lint.test.js §F now fails the build on this
+    // shape, and safePost() rethrows it instead of deferring it.
+    const isCod = !isWalletPayment && isCodPayment(payment, order);
 
-    const { lines } = await this.buildSaleLines({ order, items: orderItems, isWalletPayment, isCodPayment });
+    const { lines } = await this.buildSaleLines({
+      order, items: orderItems, isWalletPayment, isCodPayment: isCod,
+    });
 
     return ledgerService.post({
       kind: LEDGER_JOURNAL_KIND.SALE_CAPTURED,
@@ -663,15 +702,22 @@ class LedgerPostingService {
    *
    * Money posting must never be the reason a paid order fails to confirm: the
    * customer has already been charged and the stock already committed. So in
-   * non-strict mode a failure is logged and left to `backfillSales()` (posting
-   * is idempotent, so re-posting later is exact). In strict mode (production
-   * default) the error propagates.
+   * non-strict mode an OPERATIONAL failure is logged and left to
+   * `backfillSales()` (posting is idempotent, so re-posting later is exact). In
+   * strict mode (production default) the error propagates.
+   *
+   * A PROGRAMMER error is the exception, and it propagates in both modes. See
+   * `isProgrammerError`: deferring a deterministic bug to a sweep that runs the
+   * same code does not postpone it, it hides it — the journal is never written,
+   * the order still confirms, and the gap only surfaces later as reconciliation
+   * drift with no stack trace attached. Loud at the point of the bug beats
+   * silent in the books.
    */
   async safePost(label, fn) {
     try {
       return await fn();
     } catch (err) {
-      if (config.ledger.strict) throw err;
+      if (config.ledger.strict || isProgrammerError(err)) throw err;
       // eslint-disable-next-line no-console
       console.error(`[ledger] ${label} failed (non-strict, will be backfilled):`, err.code || '', err.message);
       return { journal: null, created: false, error: err };

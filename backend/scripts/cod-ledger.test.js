@@ -32,7 +32,8 @@
 import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 import ledgerService, { ledgerAccounts } from '../src/services/ledger.service.js';
-import ledgerPosting, { saleSourceAccount, isCodPayment } from '../src/services/ledgerPosting.service.js';
+import ledgerPosting, { saleSourceAccount, isCodPayment, isProgrammerError } from '../src/services/ledgerPosting.service.js';
+import config from '../src/config/index.js';
 import { checkCodAllowed, codAgingBand } from '../src/services/payment.service.js';
 import { PAYMENT_PROVIDER, PAYMENT_METHOD, LEDGER_JOURNAL_KIND } from '../src/constants/enums.js';
 
@@ -316,6 +317,73 @@ const PAISE = 124950;
   assert.equal(codAgingBand(5, [4, 8]), 'lte_8h', 'bands are injectable');
   assert.equal(codAgingBand(99, [4, 8]), 'gt_8h');
   ok('aging bands bucket outstanding cash (12/24/48/72h, then overdue)');
+}
+
+// ===========================================================================
+// 7. safePost — a deterministic bug must never be "left to the backfill"
+// ===========================================================================
+{
+  // safePost swallows a failure in non-strict mode so a paid order still
+  // confirms, on the promise that backfillSales() will post it later. That
+  // promise holds only for TRANSIENT failures. A language-level error is
+  // deterministic: the sweep runs the same function on the same inputs and fails
+  // identically, forever. This is the exact shape that shipped — a
+  // temporal-dead-zone ReferenceError in postSale swallowed every sale_captured
+  // journal, and it surfaced only as drift in the live integrity report, two
+  // journals short, with no stack trace anywhere near the money.
+  const strictBefore = config.ledger.strict;
+  const realError = console.error;
+  let logged = 0;
+  console.error = () => { logged += 1; };
+  try {
+    config.ledger.strict = false;
+
+    // An operational failure is deferred: the order confirms, the cause is kept,
+    // and the sweep can genuinely succeed later.
+    const deferred = await ledgerPosting.safePost('sale_captured', async () => {
+      const e = new Error('ECONNRESET while writing journal');
+      e.code = 'ECONNRESET';
+      throw e;
+    });
+    assert.equal(deferred.journal, null);
+    assert.equal(deferred.created, false);
+    assert.ok(deferred.error instanceof Error, 'the cause is returned, not discarded');
+    assert.equal(logged, 1, 'a deferred failure is still logged');
+
+    // A programmer error propagates even though we are non-strict, because
+    // deferring it would defer it forever.
+    for (const err of [
+      new ReferenceError("Cannot access 'isCodPayment' before initialization"),
+      new TypeError('isCodPayment is not a function'),
+      new RangeError('Invalid array length'),
+    ]) {
+      await assert.rejects(
+        () => ledgerPosting.safePost('sale_captured', async () => { throw err; }),
+        (thrown) => thrown === err,
+        `${err.constructor.name} must propagate — a sweep cannot fix a bug`,
+      );
+    }
+    assert.equal(logged, 1, 'a propagated bug is not also logged as "will be backfilled"');
+
+    // Strict mode still propagates everything, exactly as before.
+    config.ledger.strict = true;
+    await assert.rejects(
+      () => ledgerPosting.safePost('sale_captured', async () => { throw new Error('duplicate key'); }),
+      /duplicate key/,
+    );
+  } finally {
+    console.error = realError;
+    config.ledger.strict = strictBefore;
+  }
+
+  assert.equal(isProgrammerError(new ReferenceError('x')), true);
+  assert.equal(isProgrammerError(new TypeError('x')), true);
+  assert.equal(isProgrammerError(new RangeError('x')), true);
+  assert.equal(isProgrammerError(new SyntaxError('x')), true);
+  assert.equal(isProgrammerError(new Error('x')), false, 'a plain Error is operational');
+  assert.equal(isProgrammerError(null), false);
+  assert.equal(isProgrammerError(undefined), false);
+  ok('safePost defers transient failures but propagates deterministic bugs');
 }
 
 // ---------------------------------------------------------------------------

@@ -68,6 +68,7 @@ async function main() {
     import('../src/models/deliveryAssignment.model.js'),
     import('../src/models/auditLog.model.js'),
     import('../src/models/catalogEvent.model.js'),
+    import('../src/models/deliveryFeePolicy.model.js'), // the fee is a policy, not a constant
     import('../src/models/counter.model.js'), // order numbers: unique key index
   ]);
   const M = {};
@@ -79,6 +80,27 @@ async function main() {
 
   const tenant = await M.Tenant.create({ name: 'Flower Market', slug: 'flower-market', status: 'active' });
   await M.TenantAuthConfig.create({ tenantId: tenant.id });
+
+  // The delivery fee is a POLICY, not a constant. Pricing used to hardcode ₹49;
+  // that was replaced with a per-tenant DeliveryFeePolicy whose absence falls back
+  // to ₹0, because charging a fee no merchant chose is a surprise charge. Every
+  // total asserted below includes a ₹49 fee, so this suite now states that fee
+  // explicitly rather than depending on a default that no longer exists — which
+  // also means it exercises the policy path instead of skipping it.
+  //
+  // freeDeliveryThreshold is null on purpose: the carts here total ₹698 and ₹299,
+  // and the seed tenant's usual ₹499 threshold would silently waive the fee on the
+  // larger one and break an assertion that has nothing to do with free delivery.
+  await M.DeliveryFeePolicy.create({
+    tenantId: tenant.id,
+    name: 'default',
+    baseFee: 49,
+    freeDeliveryThreshold: null,
+    expressSurgeMultiplier: 1,
+    distanceFeePerKm: 0,
+    isActive: true,
+    version: 1,
+  });
 
   const admin = await M.User.create({
     tenantId: tenant.id, email: { address: 'admin@flowermarket.in', verified: true },

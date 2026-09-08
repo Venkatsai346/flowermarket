@@ -454,6 +454,61 @@ if (REBASE) {
   process.exit(0);
 }
 
+// ---------------------------------------------------------------------------
+console.log('\nF. temporal dead zone — a binding that calls the name it shadows');
+{
+  // The shape this catches:
+  //
+  //   export function isCodPayment(payment, order) { … }
+  //   …
+  //   const isCodPayment = !isWallet && isCodPayment(payment, order);
+  //
+  // The `const` shadows the module-level predicate, and a binding is inside its
+  // own temporal dead zone until its initializer finishes — so the call on the
+  // right-hand side resolves to the binding under construction and throws
+  // ReferenceError. This is not a style nit. That exact line shipped in postSale,
+  // fired on every sale, was swallowed by non-strict ledger posting as "will be
+  // backfilled", and the backfill re-ran the same line and failed identically
+  // forever. It reached main, and CI's first-ever successful run found it as two
+  // missing sale_captured journals and ₹248 of wallet drift. Review did not.
+  //
+  // It is statically detectable, which is why it belongs in a gate rather than in
+  // someone's memory. Named function and class expressions (`const f = function
+  // f () {}`) are legal self-reference and are excluded.
+  const hits = [];
+  for (const f of ALL) {
+    const src = fs.readFileSync(f, 'utf8');
+
+    // Names bound to a function in this module — declarations plus imports. An
+    // imported *constant* shadowed this way is the same bug, so imports count too.
+    const fnNames = new Set();
+    for (const m of src.matchAll(/(?:^|\n)[ \t]*(?:export[ \t]+)?(?:default[ \t]+)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*([A-Za-z_$][\w$]*)/g)) {
+      fnNames.add(m[1]);
+    }
+    for (const m of src.matchAll(/import[ \t]*\{([\s\S]*?)\}[ \t]*from/g)) {
+      for (const part of m[1].split(',')) {
+        const name = part.trim().split(/\s+as\s+/).pop().trim();
+        if (/^[A-Za-z_$][\w$]*$/.test(name)) fnNames.add(name);
+      }
+    }
+    if (fnNames.size === 0) continue;
+
+    for (const m of src.matchAll(/(?:^|\n)[ \t]*(?:const|let)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*([^\n]*)/g)) {
+      const name = m[1];
+      const init = m[2];
+      if (!fnNames.has(name)) continue;
+      if (/^(?:async[ \t]+)?function\b/.test(init) || /^class\b/.test(init)) continue;
+      // A call, not a property of the same name: `foo(` with no leading dot.
+      const call = new RegExp(`(^|[^.\\w$])${name.replace(/[$]/g, '\\$')}[ \t]*\\(`);
+      if (!call.test(init)) continue;
+      const line = src.slice(0, m.index + 1).split('\n').length;
+      hits.push(`${rel(f)}:${line}  const ${name} = …${name}(…) shadows a function of the same name`);
+    }
+  }
+  check('no const/let initializer calls the function name it shadows (TDZ)', hits,
+    hits.slice(0, 8).join('\n       '));
+}
+
 console.log(`\n${'─'.repeat(64)}`);
 if (notes.length) {
   console.log('Ratchet tightened (lower than baseline — rebase to lock it in):');
