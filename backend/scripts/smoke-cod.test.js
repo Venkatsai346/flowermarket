@@ -35,7 +35,7 @@
  */
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv
 import assert from 'node:assert/strict';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { createHermeticMongo, stopHermeticMongo } from './lib/hermeticMongo.js';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
@@ -58,7 +58,7 @@ async function main() {
   const config = (await import('../src/config/index.js')).default;
   assert.equal(config.cod.maxAmountPaise, 200000, 'the cap under test is ₹2,000');
 
-  mongod = await MongoMemoryServer.create({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
+  mongod = await createHermeticMongo({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
   config.mongoUri = mongod.getUri('flower_market_cod_smoke');
   await mongoose.connect(config.mongoUri, { autoIndex: false });
 
@@ -490,7 +490,7 @@ async function main() {
 main()
   .then(async () => {
     try { await mongoose.disconnect(); } catch { /* best effort */ }
-    try { await mongod?.stop(); } catch { /* best effort */ }
+    await stopHermeticMongo(mongod);
     try { server?.close(); } catch { /* best effort */ }
     process.exit(0);
   })
@@ -498,7 +498,7 @@ main()
     console.error('\nCOD SMOKE FAILED:', err?.message || err);
     if (err?.stack) console.error(err.stack);
     try { await mongoose.disconnect(); } catch { /* best effort */ }
-    try { await mongod?.stop(); } catch { /* best effort */ }
+    await stopHermeticMongo(mongod);
     try { server?.close(); } catch { /* best effort */ }
     process.exit(1);
   });

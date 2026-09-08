@@ -15,6 +15,7 @@
 
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import mongoose from 'mongoose';
+import { createHermeticMongo, stopHermeticMongo } from './lib/hermeticMongo.js';
 import config from '../src/config/index.js';
 
 let passed = 0;
@@ -35,8 +36,7 @@ async function connect() {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
     return `real MongoDB (${process.env.MONGODB_URI.replace(/\/\/[^@]*@/, '//***@')})`;
   }
-  const { MongoMemoryServer } = await import('mongodb-memory-server');
-  mongod = await MongoMemoryServer.create();
+  mongod = await createHermeticMongo();
   const uri = mongod.getUri('flower_market_payout_test');
   config.mongoUri = uri;
   await mongoose.connect(uri, { autoIndex: true });
@@ -811,7 +811,7 @@ async function main() {
 
 async function cleanup() {
   await mongoose.disconnect().catch(() => {});
-  if (mongod) await mongod.stop().catch(() => {});
+  await stopHermeticMongo(mongod);
 }
 
 main()

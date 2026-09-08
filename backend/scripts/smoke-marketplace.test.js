@@ -20,7 +20,7 @@
  */
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { createHermeticMongo, stopHermeticMongo } from './lib/hermeticMongo.js';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
@@ -31,7 +31,7 @@ let mongod;
 
 async function main() {
   const config = (await import('../src/config/index.js')).default;
-  mongod = await MongoMemoryServer.create({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
+  mongod = await createHermeticMongo({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
   config.mongoUri = mongod.getUri('flower_marketplace_smoke');
   await mongoose.connect(config.mongoUri, { autoIndex: false });
 
@@ -472,11 +472,11 @@ async function main() {
   console.log(`\nsmoke-marketplace: ${passed} checks passed ✅`);
   server.close();
   await mongoose.disconnect();
-  await mongod.stop();
+  await stopHermeticMongo(mongod);
 }
 
 main().catch(async (err) => {
   console.error('\nsmoke-marketplace FAILED:', err);
-  if (mongod) await mongod.stop().catch(() => {});
+  await stopHermeticMongo(mongod);
   process.exit(1);
 });

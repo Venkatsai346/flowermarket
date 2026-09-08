@@ -25,7 +25,7 @@
  */
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv
 import assert from 'node:assert/strict';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { createHermeticMongo, stopHermeticMongo } from './lib/hermeticMongo.js';
 import mongoose from 'mongoose';
 
 process.env.NODE_ENV = 'test';
@@ -39,7 +39,7 @@ const ok = (label) => { passed += 1; console.log(`  ✓ ${label}`); };
 
 async function main() {
   const config = (await import('../src/config/index.js')).default;
-  mongod = await MongoMemoryServer.create({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
+  mongod = await createHermeticMongo({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
   config.mongoUri = mongod.getUri('flower_market_audit_smoke');
   await mongoose.connect(config.mongoUri, { autoIndex: false });
 
@@ -452,12 +452,12 @@ async function main() {
 main()
   .then(async () => {
     await mongoose.disconnect();
-    if (mongod) await mongod.stop();
+    await stopHermeticMongo(mongod);
     process.exit(0);
   })
   .catch(async (err) => {
     console.error('\n❌ smoke-audit FAILED:', err);
     await mongoose.disconnect().catch(() => {});
-    if (mongod) await mongod.stop().catch(() => {});
+    await stopHermeticMongo(mongod);
     process.exit(1);
   });

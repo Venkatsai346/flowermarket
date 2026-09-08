@@ -10,7 +10,7 @@
  */
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
 import assert from 'node:assert/strict';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { createHermeticMongo, stopHermeticMongo, stopHermeticMongoSync } from './lib/hermeticMongo.js';
 import mongoose from 'mongoose';
 
 // NOTE: env vars MUST be set before config is imported — config reads env at
@@ -26,11 +26,11 @@ async function main() {
   const config = (await import('../src/config/index.js')).default;
 
   // tiny wiredTiger cache keeps it sandbox-friendly (2GB RAM here)
-  mongod = await MongoMemoryServer.create({
+  mongod = await createHermeticMongo({
     instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] },
   });
   // always try to stop the in-memory server, even on early failures (no /tmp leaks)
-  process.on('exit', () => { try { mongod.stop(); } catch {} });
+  process.on('exit', () => { stopHermeticMongoSync(mongod); });
   config.mongoUri = mongod.getUri('flower_market_smoke');
   await mongoose.connect(config.mongoUri, { autoIndex: false });
 
@@ -224,11 +224,11 @@ async function main() {
 
   server.close();
   await mongoose.disconnect();
-  await mongod.stop();
+  await stopHermeticMongo(mongod);
   process.exit(0);
 }
 
 async function run() {
-  try { await main(); } catch (err) { console.error('❌', err); await mongoose.disconnect().catch(()=>{}); await mongod.stop().catch(()=>{}); process.exit(1); }
+  try { await main(); } catch (err) { console.error('❌', err); await mongoose.disconnect().catch(()=>{}); await stopHermeticMongo(mongod); process.exit(1); }
 }
 run();

@@ -28,6 +28,7 @@
 
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv
 import mongoose from 'mongoose';
+import { createHermeticMongo, stopHermeticMongoSync } from './lib/hermeticMongo.js';
 import config from '../src/config/index.js';
 
 let passed = 0;
@@ -48,8 +49,7 @@ async function connect() {
     await mongoose.connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
     return `real MongoDB (${process.env.MONGODB_URI.replace(/\/\/[^@]*@/, '//***@')})`;
   }
-  const { MongoMemoryServer } = await import('mongodb-memory-server');
-  mongod = await MongoMemoryServer.create({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
+  mongod = await createHermeticMongo({ instance: { args: ['--wiredTigerCacheSizeGB', '0.25'] } });
   const uri = mongod.getUri('flower_market_bank_test');
   config.mongoUri = uri;
   await mongoose.connect(uri, { autoIndex: true });
@@ -347,6 +347,6 @@ async function main() {
 }
 
 main().catch((e) => { console.error('💥', e); process.exit(1); }).finally(() => {
-  if (mongod) mongod.stop().catch(() => {});
+  stopHermeticMongoSync(mongod);
   mongoose.disconnect().catch(() => {});
 });

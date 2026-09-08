@@ -42,6 +42,13 @@
  *     from paymentSummary.paidAt (into a variable named deliveredAt), charging
  *     customers for transit time and desynchronising the return gate from the
  *     payout gate.
+ *
+ * 10. HERMETIC SUITE BOOTSTRAP — 22 DB-backed suites each hand-rolled the same
+ *     `MongoMemoryServer.create()` / `mongod.stop()` pair, and 7 of them called
+ *     stop() unguarded. When the failure happened during create(), `mongod` was
+ *     still undefined, so teardown threw a second TypeError that became the LAST
+ *     line in the log — masking the real cause twice in one day. All of it now
+ *     goes through scripts/lib/hermeticMongo.js.
  */
 
 import fs from 'node:fs';
@@ -403,6 +410,71 @@ section('9. the delivery clock has exactly one home');
     offenders.length === 0,
     offenders.join(', '),
   );
+}
+
+// ---------------------------------------------------------------------------
+section('10. every DB-backed suite bootstraps mongod through the shared helper');
+{
+  const HELPER = path.join(BACKEND, 'scripts/lib/hermeticMongo.js');
+  check('scripts/lib/hermeticMongo.js exists', fs.existsSync(HELPER));
+
+  const suites = jsFiles(path.join(BACKEND, 'scripts'))
+    .filter((f) => /smoke.*\.test\.js$/.test(path.basename(f)));
+  check(`found the DB-backed suite family (${suites.length} suites)`, suites.length >= 20,
+    `only ${suites.length}`);
+
+  const helperSrc = fs.readFileSync(HELPER, 'utf8');
+
+  // The helper is the only place allowed to touch the library directly.
+  check('the helper owns the mongodb-memory-server import',
+    /await import\('mongodb-memory-server'\)/.test(helperSrc));
+  check('the helper retries on a version/distro mismatch instead of failing all 22 suites',
+    /isVersionIncompatible/.test(helperSrc) && /suggestedVersion/.test(helperSrc)
+    && /binary:\s*\{[\s\S]{0,80}?version:\s*suggested/.test(helperSrc));
+  check('stopHermeticMongo is null-safe (the masked-error bug)',
+    /export async function stopHermeticMongo\(mongod\) \{\s*\n\s*if \(!mongod\) return;/.test(helperSrc));
+  check('stopHermeticMongo never lets a teardown error escape',
+    /catch \{[\s\S]{0,80}?teardown is best-effort/.test(helperSrc));
+  check('a synchronous teardown variant exists for .finally()/.catch() contexts',
+    /export function stopHermeticMongoSync\(mongod\) \{\s*\n\s*if \(!mongod\) return;/.test(helperSrc));
+
+  const directCreate = [];
+  const directStop = [];
+  const directImport = [];
+  const missingHelper = [];
+
+  for (const f of suites) {
+    const src = fs.readFileSync(f, 'utf8');
+    const name = path.relative(BACKEND, f);
+
+    // No suite may talk to the library directly: that is how the guards drifted.
+    if (/MongoMemoryServer/.test(src)) directImport.push(name);
+    if (/from 'mongodb-memory-server'|import\('mongodb-memory-server'\)/.test(src)) directImport.push(name);
+
+    // The two shapes that caused the masked error: a bare stop(), or a
+    // hand-written `if (mongod)` guard instead of the helper.
+    if (/[^\w?]mongod\??\.stop\(\)/.test(src)) directStop.push(name);
+    if (/if \(mongod\)\s*(await\s*)?mongod/.test(src)) directStop.push(name);
+
+    // Anything that starts a mongod must start it through the helper.
+    if (/createHermeticMongo\(/.test(src) && !/from '\.\/lib\/hermeticMongo\.js'/.test(src)) {
+      missingHelper.push(name);
+    }
+  }
+
+  check('no suite imports mongodb-memory-server directly', directImport.length === 0,
+    [...new Set(directImport)].join(', '));
+  check('no suite calls mongod.stop() directly (must use the null-safe helper)',
+    directStop.length === 0, [...new Set(directStop)].join(', '));
+  check('every suite that starts mongod imports the helper', missingHelper.length === 0,
+    missingHelper.join(', '));
+
+  // And the positive assertion: the family really is wired up, not merely clean
+  // because nothing matched.
+  const usingHelper = suites.filter((f) => /createHermeticMongo\(/.test(fs.readFileSync(f, 'utf8')));
+  check(`all ${suites.length} suites bootstrap through createHermeticMongo`,
+    usingHelper.length === suites.length,
+    `${usingHelper.length}/${suites.length}`);
 }
 
 // ---------------------------------------------------------------------------
