@@ -1,15 +1,25 @@
 # Flower Market CI
 #
 # Four jobs:
-#   backend      — pure suites + 16 hermetic DB suites (in-memory mongod 6.0.6)
+#   backend      — 21 pure suites + 22 hermetic DB suites (in-memory mongod)
 #   frontend     — per-workspace unit tests + production builds (web + storefront)
-#   live-e2e     — full live stack (mongo rs0 service + API + worker + 2× Vite)
-#                  driven end-to-end: 67 API-level checks
-#   browser-ui   — same stack + real Chromium (@sparticuz/chromium): the two
-#                  browser suites (storefront 27 + admin 36 checks)
+#   live-e2e     — full live stack (mongo rs0 + API + worker + 2× Vite) driven
+#                  end-to-end at the API level
+#   browser-ui   — the same stack driven through real Chromium
+#                  (@sparticuz/chromium)
 #
-# Local parity: `bash scripts/ci/boot-live-stack.sh` boots the identical stack
-# on a dev machine (expects mongod already running on 127.0.0.1:27017).
+# Check counts are deliberately not written here. They live in the suites, which
+# print their own totals. Duplicated numbers rot: this header previously claimed
+# "16 hermetic suites" and "67 API-level checks" against a matrix that actually
+# held 22 and 128, and the job names disagreed with the header about both.
+#
+# MongoDB is started by scripts/ci/start-mongo-rs0.sh rather than a `services:`
+# container — see the header of that script for why (service containers accept no
+# command, and spelling one with `args` fails the whole workflow at parse time,
+# before any job is created).
+#
+# Local parity: `bash scripts/ci/boot-live-stack.sh` boots the identical stack on a
+# dev machine (expects mongod already running on 127.0.0.1:27017).
 name: CI
 
 on:
@@ -27,7 +37,7 @@ env:
 
 jobs:
   backend:
-    name: Backend — pure + 17 hermetic suites
+    name: Backend — 21 pure + 22 hermetic suites
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -49,8 +59,12 @@ jobs:
         # flat configs must still load. Ratcheted against scripts/lint-baseline.json.
         run: npm run lint
       - name: Full hermetic matrix (pure suites + in-memory-mongod suites)
-        # MONGOMS_VERSION pins the in-memory mongod to the same 6.0.6 the
-        # suites are developed against.
+        # MONGOMS_VERSION pins the in-memory mongod to the same 6.0.6 the suites
+        # are developed against. If a base-image bump leaves no 6.0.6 build for the
+        # runner's distro, createHermeticMongo() catches the mismatch, reads the
+        # minimum version the library suggests for that OS, and retries once — the
+        # retry passes binary.version explicitly, which outranks this pin. So the
+        # pin degrades to a warning instead of taking out all 22 suites at once.
         run: npm run smoke:all
         env:
           MONGOMS_VERSION: '6.0.6'
@@ -81,21 +95,13 @@ jobs:
         run: npm run build
 
   live-e2e:
-    name: Live E2E — full stack (121 checks)
+    name: Live E2E — full stack, API level
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    services:
-      mongo:
-        image: mongo:6.0.6
-        args: ['--replSet', 'rs0', '--bind_ip_all']
-        ports: ['27017:27017']
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 15
     steps:
       - uses: actions/checkout@v4
+      - name: Start MongoDB replica set (rs0 on :27017)
+        run: bash scripts/ci/start-mongo-rs0.sh
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -111,33 +117,25 @@ jobs:
         run: npm ci
       - name: Boot live stack (rs0 → seed → API :4000 → worker → Vite :5173/:5174)
         run: bash scripts/ci/boot-live-stack.sh
-      - name: Live E2E — 121 checks (incl. §16 vendor + §17 statutory + §18 GST + §19 bank payable integrity)
+      - name: Live E2E (API level, incl. vendor + statutory + GST + bank payable integrity)
         working-directory: backend
         run: |
           . /tmp/fm-ci/env.sh
           node scripts/e2e-live.mjs
-      - name: Async payment flow — live API proof (14 checks)
+      - name: Async payment flow — live API proof
         working-directory: backend
         run: |
           . /tmp/fm-ci/env.sh
           node scripts/async-payment-live.test.mjs
 
   browser-ui:
-    name: Browser UI — real Chromium (storefront 29 + admin 44 + async-pay 7)
+    name: Browser UI — real Chromium
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    services:
-      mongo:
-        image: mongo:6.0.6
-        args: ['--replSet', 'rs0', '--bind_ip_all']
-        ports: ['27017:27017']
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1})'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 15
     steps:
       - uses: actions/checkout@v4
+      - name: Start MongoDB replica set (rs0 on :27017)
+        run: bash scripts/ci/start-mongo-rs0.sh
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -166,17 +164,17 @@ jobs:
           BROWSER_LIBS_DIR: ${{ runner.temp }}/browser-libs
       - name: Boot live stack
         run: bash scripts/ci/boot-live-stack.sh
-      - name: Storefront browser suite (29 checks)
+      - name: Storefront browser suite
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh
           BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-storefront.e2e.mjs
-      - name: Async-payment browser suite (7 checks)
+      - name: Async-payment browser suite
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh
           BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-async-payment.e2e.mjs
-      - name: Admin browser suite (44 checks)
+      - name: Admin browser suite
         working-directory: frontend/e2e
         run: |
           . /tmp/fm-ci/env.sh
