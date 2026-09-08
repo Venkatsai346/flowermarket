@@ -50,6 +50,10 @@ class CartService {
           && keys.includes('status')
           && idx.name !== 'uniq_active_user_cart';
         if (isOldUserUnique) {
+          // Sequential on purpose: this is a one-shot migration that drops legacy
+          // unique indexes before syncIndexes() rebuilds the current set, it runs
+          // at most once per process, and index builds contend on the same
+          // collection — fanning these out would be slower, not faster.
           // eslint-disable-next-line no-await-in-loop
           await col.dropIndex(idx.name).catch(() => {});
         }
@@ -247,6 +251,44 @@ class CartService {
    * (capped at live stock). Guest row is abandoned so the unique guest index
    * frees the key. Idempotent if the guest cart is already gone.
    */
+  /**
+   * Batch the two reads every cart line needs: the live listing, and its
+   * available stock.
+   *
+   * `revalidate()`, `applyLivePrices()` and `mergeGuestCart()` each used to issue
+   * two sequential queries PER LINE. On the hottest path in the app — every cart
+   * view, every checkout — a 20-line cart cost 40 round trips before it could
+   * answer anything, and each round trip is a network hop to Mongo, not a local
+   * call. Two queries now cover the whole cart regardless of line count.
+   *
+   * `inventoryService.bulkGetStock()` already existed for exactly this and was
+   * not being used. It omits listings with no inventory row, so `availableFor()`
+   * reports 0 for a miss — which is what `getStock()` returned for the same
+   * listing, so batching does not change any answer.
+   *
+   * @returns {Promise<{byListing: Map<string,object>, availableFor: (id:any)=>number}>}
+   */
+  async liveLinesFor({ tenantId, items }) {
+    const listingIds = [...new Set(
+      (items || []).map((i) => (i?.tenantProductId ? String(i.tenantProductId) : null)).filter(Boolean),
+    )];
+
+    const [listings, stockMap] = await Promise.all([
+      listingIds.length
+        ? TenantProduct.find({ _id: { $in: listingIds }, tenantId }).lean()
+        : Promise.resolve([]),
+      inventoryService.bulkGetStock({ tenantId, listingIds }),
+    ]);
+
+    const byListing = new Map(listings.map((l) => [String(l._id), l]));
+    return {
+      byListing,
+      stockMap,
+      listingFor: (id) => byListing.get(String(id)) || null,
+      availableFor: (id) => stockMap[String(id)]?.qtyAvailable ?? 0,
+    };
+  }
+
   async mergeGuestCart({ tenantId, userId, guestKey }) {
     if (!tenantId || !userId || !guestKey) {
       return this.getCart({ tenantId, userId });
@@ -261,27 +303,65 @@ class CartService {
     }
 
     const items = await CartItem.find({ cartId: guest._id });
+
+    // One read of the destination cart, then two batched reads for the lines that
+    // actually collide. `{cartId, tenantProductId}` is UNIQUE, so the map is exact
+    // — a guest line either has one counterpart in the user cart or none.
+    const userItems = items.length
+      ? await CartItem.find({ cartId: userCart._id }).lean()
+      : [];
+    const userItemByListing = new Map(userItems.map((u) => [String(u.tenantProductId), u]));
+
+    const collisions = items.filter((it) => userItemByListing.has(String(it.tenantProductId)));
+    const { listingFor, availableFor } = collisions.length
+      ? await this.liveLinesFor({ tenantId, items: collisions })
+      : { listingFor: () => null, availableFor: () => 0 };
+
+    const ops = [];
     for (const it of items) {
-      // eslint-disable-next-line no-await-in-loop
-      const existing = await CartItem.findOne({ cartId: userCart._id, tenantProductId: it.tenantProductId });
+      const existing = userItemByListing.get(String(it.tenantProductId));
+
       if (existing) {
-        // eslint-disable-next-line no-await-in-loop
-        const listing = await TenantProduct.findOne({ _id: it.tenantProductId, tenantId });
-        // eslint-disable-next-line no-await-in-loop
-        const stock = listing ? await inventoryService.getStock({ tenantId, listingId: listing._id }) : { qtyAvailable: 0 };
-        const available = stock.qtyAvailable ?? 0;
+        // Merge into the line the customer already has, then retire the guest row.
+        // `Math.max(available, existing.qty)` is deliberate: stock may have fallen
+        // since they added it, and silently shrinking a line they already held
+        // during a login merge is worse than leaving it and letting checkout
+        // revalidate it.
+        const listing = listingFor(it.tenantProductId);
+        const available = listing ? availableFor(it.tenantProductId) : 0;
         const nextQty = Math.min(existing.qty + it.qty, Math.max(available, existing.qty));
-        existing.qty = nextQty;
-        existing.lineTotal = roundMoney((existing.priceSnapshot?.sellingPrice || 0) * nextQty);
-        existing.updatedAt = new Date();
-        // eslint-disable-next-line no-await-in-loop
-        await existing.save();
-        // eslint-disable-next-line no-await-in-loop
-        await CartItem.deleteOne({ _id: it._id });
+        ops.push({
+          updateOne: {
+            filter: { _id: existing._id, isDeleted: { $ne: true } },
+            update: {
+              $set: {
+                qty: nextQty,
+                // priced off the line they ALREADY had, not the guest row
+                lineTotal: roundMoney((existing.priceSnapshot?.sellingPrice || 0) * nextQty),
+                updatedAt: new Date(),
+              },
+            },
+          },
+        });
+        ops.push({ deleteOne: { filter: { _id: it._id, isDeleted: { $ne: true } } } });
       } else {
-        it.cartId = userCart._id;
-        // eslint-disable-next-line no-await-in-loop
-        await it.save();
+        // No counterpart: move the guest line across. Safe precisely because the
+        // collision branch above caught every case the unique index would reject.
+        ops.push({
+          updateOne: {
+            filter: { _id: it._id, isDeleted: { $ne: true } },
+            update: { $set: { cartId: userCart._id } },
+          },
+        });
+      }
+    }
+
+    if (ops.length) {
+      const res = await CartItem.bulkWrite(ops, { ordered: false });
+      if (typeof res?.hasWriteErrors === 'function' && res.hasWriteErrors()) {
+        const detail = (typeof res.getWriteErrors === 'function' ? res.getWriteErrors() : [])
+          .map((e) => e?.message).filter(Boolean).join('; ');
+        throw new Error(`Guest cart merge failed for some lines${detail ? `: ${detail}` : ''}`);
       }
     }
 
@@ -304,13 +384,18 @@ class CartService {
   async revalidate({ tenantId, userId, guestKey }) {
     const { cart, items } = await this.fetchCart({ tenantId, userId, guestKey, create: false });
     if (!cart) return { changed: false, diffs: [], total: 0, itemCount: 0 };
+    // Two queries for the whole cart, then a PURE loop: no await inside it, so
+    // the diff is computed from a single consistent read of the catalogue rather
+    // than from a series of reads taken milliseconds apart (which could disagree
+    // with each other mid-cart if a price changed while the loop was running).
+    const { listingFor, availableFor } = await this.liveLinesFor({ tenantId, items });
+
     const diffs = [];
     let changed = false;
     let total = 0;
 
     for (const item of items) {
-      // eslint-disable-next-line no-await-in-loop
-      const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId }).lean();
+      const listing = listingFor(item.tenantProductId);
       if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
         changed = true;
         diffs.push({ itemId: item.id, listingId: item.tenantProductId, issue: 'unavailable' });
@@ -326,14 +411,13 @@ class CartService {
           from: snapshotPrice, to: livePrice,
         });
       }
-      // eslint-disable-next-line no-await-in-loop
-      const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
-      if (item.qty > (stock.qtyAvailable ?? 0)) {
+      const available = availableFor(item.tenantProductId);
+      if (item.qty > available) {
         changed = true;
         diffs.push({
           itemId: item.id, listingId: item.tenantProductId,
           issue: 'qty_capped',
-          requested: item.qty, available: stock.qtyAvailable,
+          requested: item.qty, available,
         });
       }
       total = moneySum(total, livePrice * item.qty);
@@ -374,44 +458,62 @@ class CartService {
    */
   async applyLivePrices({ tenantId, userId, guestKey }) {
     const { cart, items } = await this.fetchCart({ tenantId, userId, guestKey });
+
+    // Two reads for the whole cart instead of two per line, then ONE write
+    // instead of one per line: a 20-line cart went from ~60 round trips to 3.
+    const { listingFor, availableFor } = await this.liveLinesFor({ tenantId, items });
+
     const dropped = [];
+    const ops = [];
+
     for (const item of items) {
-      // eslint-disable-next-line no-await-in-loop
-      const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId }).lean();
-      if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
+      const listing = listingFor(item.tenantProductId);
+      const available = listing ? availableFor(item.tenantProductId) : 0;
+
+      // Gone from the catalogue, or nothing left to sell: drop the line rather
+      // than let the customer discover it at payment.
+      if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE || available <= 0) {
         dropped.push({ listingId: item.tenantProductId, title: item.titleSnapshot });
-        // eslint-disable-next-line no-await-in-loop
-        await CartItem.deleteOne({ _id: item.id });
+        ops.push({ deleteOne: { filter: { _id: item.id, isDeleted: { $ne: true } } } });
         continue;
       }
-      // eslint-disable-next-line no-await-in-loop
-      const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
-      const available = stock.qtyAvailable ?? 0;
-      if (available <= 0) {
-        dropped.push({ listingId: item.tenantProductId, title: item.titleSnapshot });
-        // eslint-disable-next-line no-await-in-loop
-        await CartItem.deleteOne({ _id: item.id });
-        continue;
-      }
+
       const price = listing.price?.sellingPrice ?? 0;
-      // eslint-disable-next-line no-await-in-loop
-      await CartItem.updateOne(
-        { _id: item.id },
-        {
-          $set: {
-            priceSnapshot: {
-              mrp: listing.price?.mrp ?? null,
-              sellingPrice: price,
-              currency: listing.price?.currency || 'INR',
+      const nextQty = Math.min(item.qty, available);
+      ops.push({
+        updateOne: {
+          // the isDeleted guard is explicit because bulkWrite does not match the
+          // soft-delete plugin's /^find/ hook, so it would not be applied for us
+          filter: { _id: item.id, isDeleted: { $ne: true } },
+          update: {
+            $set: {
+              priceSnapshot: {
+                mrp: listing.price?.mrp ?? null,
+                sellingPrice: price,
+                currency: listing.price?.currency || 'INR',
+              },
+              stockSnapshot: { availableQty: available, checkedAt: new Date() },
+              qty: nextQty,
+              lineTotal: roundMoney(price * nextQty),
+              updatedAt: new Date(),
             },
-            stockSnapshot: { availableQty: available, checkedAt: new Date() },
-            qty: Math.min(item.qty, available),
-            lineTotal: roundMoney(price * Math.min(item.qty, available)),
-            updatedAt: new Date(),
           },
-        }
-      );
+        },
+      });
     }
+
+    if (ops.length) {
+      const res = await CartItem.bulkWrite(ops, { ordered: false });
+      // Fail loud. ordered:false runs every op and reports per-op errors instead
+      // of throwing, so an unexamined result would look like a successful refresh
+      // over lines that were never written.
+      if (typeof res?.hasWriteErrors === 'function' && res.hasWriteErrors()) {
+        const detail = (typeof res.getWriteErrors === 'function' ? res.getWriteErrors() : [])
+          .map((e) => e?.message).filter(Boolean).join('; ');
+        throw new Error(`Cart price refresh failed for some lines${detail ? `: ${detail}` : ''}`);
+      }
+    }
+
     await this.refreshTotals(cart);
     return { refreshed: items.length - dropped.length, dropped };
   }

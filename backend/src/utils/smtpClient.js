@@ -47,6 +47,9 @@ const HEADER_UNSAFE = /[\r\n]/;
  */
 export function encodeWord(value, charset = 'UTF-8') {
   const s = String(value ?? '');
+  // A control-character range on purpose: ASCII-safe headers are sent verbatim
+  // and anything else is RFC 2047 encoded. This is the one legitimate use of the
+  // pattern the rule exists to question.
   // eslint-disable-next-line no-control-regex
   if (/^[\x00-\x7F]*$/.test(s)) return s;
   return `=?${charset}?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;

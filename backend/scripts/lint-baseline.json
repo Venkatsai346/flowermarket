@@ -1,0 +1,46 @@
+{
+  "awaitInLoopJustification": {
+    "src/services/bankStatement.service.js": 2,
+    "src/services/payout.service.js": 15,
+    "src/services/search.service.js": 1,
+    "src/services/searchIndexer.service.js": 6,
+    "src/services/taxDocument.service.js": 3,
+    "src/utils/slugify.js": 1
+  },
+  "consoleLog": {
+    "src/config/db.js": 1,
+    "src/server.js": 3,
+    "src/worker.js": 6
+  },
+  "awaitInLoop": {
+    "src/services/adminInventory.service.js": 2,
+    "src/services/adminSlots.service.js": 3,
+    "src/services/analytics.service.js": 9,
+    "src/services/bankStatement.service.js": 1,
+    "src/services/billing.service.js": 4,
+    "src/services/bulkImport.service.js": 5,
+    "src/services/catalogEvent.service.js": 5,
+    "src/services/changeRequest.service.js": 1,
+    "src/services/domainEvent.service.js": 11,
+    "src/services/export.service.js": 1,
+    "src/services/fulfillment.service.js": 6,
+    "src/services/inventory.service.js": 6,
+    "src/services/ledger.service.js": 1,
+    "src/services/ledgerPosting.service.js": 1,
+    "src/services/maintenance.service.js": 1,
+    "src/services/marketplaceAnalytics.service.js": 2,
+    "src/services/notification.service.js": 16,
+    "src/services/payment.service.js": 12,
+    "src/services/plan.service.js": 2,
+    "src/services/refund.service.js": 5,
+    "src/services/returns.service.js": 1,
+    "src/services/slot.service.js": 5,
+    "src/services/slotForecasting.service.js": 2,
+    "src/services/store.service.js": 2,
+    "src/services/taxDocument.service.js": 1,
+    "src/utils/orderNumber.js": 1,
+    "src/utils/smtpClient.js": 2,
+    "src/worker.js": 1,
+    "src/workers/scheduler.js": 5
+  }
+}

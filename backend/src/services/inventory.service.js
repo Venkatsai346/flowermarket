@@ -146,14 +146,39 @@ class InventoryService {
     return row.toObject();
   }
 
-  async bulkGetStock({ tenantId, listingIds }) {
-    const rows = await Inventory.find({ tenantId, tenantProductId: { $in: listingIds } }).lean();
+  /**
+   * Batched `getStock` — one query for many listings instead of one per line.
+   *
+   * The `warehouseId` filter is not optional. `{tenantProductId, warehouseId}` is
+   * a UNIQUE index, so a listing can legitimately hold several inventory rows,
+   * one per warehouse. Without the filter this collapses them into a map keyed by
+   * listing and the LAST row iterated silently wins — a different number from the
+   * one `getStock()` reports for the same listing, and therefore a different
+   * number from the one checkout enforces. Batching must not change the answer,
+   * so this reads exactly the row `getRow()` reads (`warehouseId: null` by
+   * default, the store's sellable stock).
+   *
+   * Listings with no inventory row are ABSENT from the returned map, where
+   * `getStock()` would have returned zeros — callers must treat a miss as 0.
+   *
+   * @returns {Promise<Record<string, {qtyOnHand:number, qtyReserved:number, qtyAvailable:number}>>}
+   */
+  async bulkGetStock({ tenantId, listingIds, warehouseId = null }) {
+    const ids = [...new Set((listingIds || []).filter(Boolean).map(String))];
+    if (!ids.length) return {};
+    const rows = await Inventory.find({
+      tenantId,
+      tenantProductId: { $in: ids },
+      warehouseId: warehouseId || null,
+    }).lean();
     const map = {};
     for (const r of rows) {
       map[String(r.tenantProductId)] = {
         qtyOnHand: r.qtyOnHand,
         qtyReserved: r.qtyReserved,
-        qtyAvailable: Math.max(0, r.qtyOnHand - r.qtyReserved),
+        // same formula as the qtyAvailable virtual, and the same clamp, so a
+        // batched read and a single read can never disagree
+        qtyAvailable: Math.max(0, (r.qtyOnHand || 0) - (r.qtyReserved || 0)),
       };
     }
     return map;

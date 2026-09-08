@@ -15,7 +15,8 @@
     "mobile": "npm run start -w @flower-market/mobile",
     "storefront": "npm run dev -w @flower-market/storefront",
     "build:storefront": "npm run build -w @flower-market/storefront",
-    "test": "npm run test -w @flower-market/storefront"
+    "test": "npm run test -w @flower-market/storefront",
+    "lint:eslint": "eslint ."
   },
   "engines": {
     "node": ">=18"
