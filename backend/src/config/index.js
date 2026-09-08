@@ -34,7 +34,17 @@ const config = {
   },
 
   otp: {
-    provider: process.env.OTP_PROVIDER || 'console', // console | memory | msg91 | twilio | ses
+    provider: process.env.OTP_PROVIDER || 'console', // phone slot: console | memory | msg91 | twilio
+    /**
+     * Email slot. Separate on purpose: MSG91 and Twilio are phone-only, but
+     * signup sends an EMAIL OTP — so a single provider knob forced a choice
+     * between "no email signup" and "no SMS login", and production boots on
+     * msg91 passed the guard and then threw on every signup. Defaults to the
+     * phone provider only when that provider can actually serve email.
+     */
+    emailProvider: process.env.OTP_EMAIL_PROVIDER || (process.env.OTP_PROVIDER === 'smtp' || process.env.OTP_PROVIDER === 'console' || process.env.OTP_PROVIDER === 'memory' ? (process.env.OTP_PROVIDER || 'console') : 'console'),
+    /** Channels this deployment must be able to serve. Both are reachable in code. */
+    requiredChannels: (process.env.OTP_REQUIRED_CHANNELS || 'phone,email').split(',').map((c) => c.trim()).filter(Boolean),
     length: Number(process.env.OTP_LENGTH) || 6,
     ttlSeconds: Number(process.env.OTP_TTL_SECONDS) || 300,
     maxAttempts: Number(process.env.OTP_MAX_ATTEMPTS) || 5,
@@ -128,9 +138,44 @@ const config = {
 
   // ---- Phase 4b: notifications (provider-agnostic; console/mock default) ----
   notifications: {
-    provider: process.env.NOTIFICATION_PROVIDER || 'console', // console | mock | fcm | apns | smtp | twilio
+    /**
+     * The default adapter for every channel. Realistic deployments want
+     * DIFFERENT vendors per channel (FCM for push, SMTP for mail, MSG91 for
+     * SMS), so each channel can override it below — a single knob would force
+     * one vendor to be good at all three, which none are.
+     */
+    provider: process.env.NOTIFICATION_PROVIDER || 'console', // console | mock | fcm | smtp | msg91 | twilio
+    pushProvider: process.env.NOTIFICATION_PUSH_PROVIDER || process.env.NOTIFICATION_PROVIDER || 'console',
+    emailProvider: process.env.NOTIFICATION_EMAIL_PROVIDER || process.env.NOTIFICATION_PROVIDER || 'console',
+    smsProvider: process.env.NOTIFICATION_SMS_PROVIDER || process.env.NOTIFICATION_PROVIDER || 'console',
+    /** From: address for transactional mail ("Flower Market <no-reply@x.in>"). */
+    fromEmail: process.env.NOTIFICATION_FROM_EMAIL || '',
     maxDevicesPerUser: Number(process.env.MAX_DEVICES_PER_USER) || 10,
     workerBatch: Number(process.env.NOTIFICATION_WORKER_BATCH) || 50,
+  },
+
+  // ---- SMTP (transactional mail: OTPs, order notifications) ----
+  // Implemented in utils/smtpClient.js with no mail dependency: the protocol
+  // and MIME building are pure and unit-tested, the socket layer is thin.
+  smtp: {
+    host: process.env.SMTP_HOST || '',
+    port: Number(process.env.SMTP_PORT) || 587,
+    // true = implicit TLS (the 465 convention); false = STARTTLS on 587
+    secure: process.env.SMTP_SECURE === 'true' || Number(process.env.SMTP_PORT) === 465,
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.SMTP_FROM || process.env.NOTIFICATION_FROM_EMAIL || '',
+    timeoutMs: Number(process.env.SMTP_TIMEOUT_MS) || 15000,
+  },
+
+  // ---- FCM HTTP v1 (push) ----
+  // The legacy server-key API was shut down in June 2024, so a service account
+  // is the only path. Supply the JSON file's contents, or its path.
+  fcm: {
+    projectId: process.env.FCM_PROJECT_ID || '',
+    clientEmail: process.env.FCM_CLIENT_EMAIL || '',
+    privateKey: (process.env.FCM_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    serviceAccountPath: process.env.FCM_SERVICE_ACCOUNT_PATH || '',
   },
 
   // ---- Phase 4b: scheduled exports ----
