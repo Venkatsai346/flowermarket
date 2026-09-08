@@ -56,11 +56,20 @@
  *     hand-rolled it. That version could assign a ₹0 freebie a NEGATIVE share
  *     (−0.009999999999999787, unrounded, persisted to OrderItem) and its error
  *     grew with cart size: 1.5 paisa at 4 lines, 9.5 at 20.
+ *
+ * 12. BRAND-KIT PARITY — backend/src/constants/brandKits.js and
+ *     frontend/packages/shared/src/brand/kits.js were joined only by a comment
+ *     saying "keep in lockstep". They had drifted: the frontend grew
+ *     blurb/paper, and the two resolvers applied DIFFERENT precedence to
+ *     heroUrl, so a tenant-stored heroUrl would have been silently discarded by
+ *     the backend. Both modules are imported and compared here — structurally
+ *     and behaviourally — because §3 already exists for exactly this class of
+ *     cross-layer contract drift.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BACKEND = path.resolve(__dirname, '..');
@@ -530,6 +539,116 @@ section('11. every money split uses allocatePaise, not "last line absorbs roundi
   }
   check('no file re-derives a remainder as "total minus what was already allocated"',
     offenders.length === 0, offenders.join(', '));
+}
+
+// ---------------------------------------------------------------------------
+section('12. the two brand-kit copies agree, structurally and behaviourally');
+{
+  const BACKEND_KITS = path.join(BACKEND, 'src/constants/brandKits.js');
+  const SHARED_KITS = path.join(REPO, 'frontend/packages/shared/src/brand/kits.js');
+  check('both brand-kit modules exist',
+    fs.existsSync(BACKEND_KITS) && fs.existsSync(SHARED_KITS),
+    `${rel(BACKEND_KITS)} / ${rel(SHARED_KITS)}`);
+
+  // Import both rather than diffing text: the contract is what the resolvers
+  // RETURN, and a text comparison would pass on two files that differ in ways
+  // that matter (or fail on two that differ only in comments).
+  const be = await import(pathToFileURL(BACKEND_KITS).href);
+  const fe = await import(pathToFileURL(SHARED_KITS).href);
+
+  check('the same kit ids, in the same order',
+    JSON.stringify([...be.BRAND_KIT_IDS]) === JSON.stringify([...fe.BRAND_KIT_IDS]),
+    `backend ${JSON.stringify([...be.BRAND_KIT_IDS])} vs shared ${JSON.stringify([...fe.BRAND_KIT_IDS])}`);
+  check('three kits are offered', be.BRAND_KIT_IDS.length === 3, `${be.BRAND_KIT_IDS.length}`);
+
+  // Every field of every kit, both directions — an extra key on either side is
+  // drift even if all the shared keys match.
+  const fieldDrift = [];
+  for (const id of be.BRAND_KIT_IDS) {
+    const b = be.BRAND_KITS[id] || {};
+    const f = fe.BRAND_KITS[id] || {};
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(f)])].sort();
+    for (const k of keys) {
+      if (!(k in b)) fieldDrift.push(`${id}.${k} missing from backend`);
+      else if (!(k in f)) fieldDrift.push(`${id}.${k} missing from shared`);
+      else if (b[k] !== f[k]) fieldDrift.push(`${id}.${k}: backend ${JSON.stringify(b[k])} vs shared ${JSON.stringify(f[k])}`);
+    }
+  }
+  check('every kit has identical fields and values on both sides',
+    fieldDrift.length === 0, fieldDrift.join('; '));
+
+  // The field that actually diverged. Asserted separately so a future edit that
+  // re-breaks only this one produces an obvious failure.
+  check('both catalogues carry id/name/blurb/primaryColor/accentColor/hero/paper',
+    be.BRAND_KIT_IDS.every((id) => ['id', 'name', 'blurb', 'primaryColor', 'accentColor', 'hero', 'paper']
+      .every((k) => k in be.BRAND_KITS[id] && k in fe.BRAND_KITS[id])));
+
+  const CASES = [
+    ['absent', undefined],
+    ['null (a tenant row with no theme)', null],
+    ['empty', {}],
+    ['rose', { kit: 'rose' }],
+    ['marigold', { kit: 'marigold' }],
+    ['tropical', { kit: 'tropical' }],
+    ['an unknown kit falls back to rose', { kit: 'not-a-kit' }],
+    ['a colour override wins over the kit', { kit: 'tropical', primaryColor: '#112233' }],
+    ['an accent override wins over the kit', { kit: 'tropical', accentColor: '#445566' }],
+    ['both colours overridden', { kit: 'marigold', primaryColor: '#111111', accentColor: '#222222' }],
+    ['THE DIVERGENCE: a tenant heroUrl must survive', { kit: 'rose', heroUrl: '/media/tenant-hero.jpg' }],
+    ['heroUrl with an unknown kit', { kit: 'bogus', heroUrl: '/media/h.jpg' }],
+    ['a colour override with no kit at all', { primaryColor: '#123456' }],
+    ['falsy overrides fall through to the kit', { kit: 'tropical', primaryColor: '', heroUrl: '' }],
+    ['an explicitly null kit', { kit: null }],
+  ];
+
+  const resolverDrift = [];
+  for (const [label, input] of CASES) {
+    const b = be.resolveBrandTheme(input);
+    const f = fe.resolveBrandTheme(input);
+    const keys = [...new Set([...Object.keys(b), ...Object.keys(f)])].sort();
+    for (const k of keys) {
+      if (b[k] !== f[k]) resolverDrift.push(`${label} → ${k}: backend ${JSON.stringify(b[k])} vs shared ${JSON.stringify(f[k])}`);
+    }
+  }
+  check(`both resolvers return identical themes for all ${CASES.length} inputs`,
+    resolverDrift.length === 0, resolverDrift.join('; '));
+
+  // Stated on its own, because it is the bug that was found.
+  const hero = be.resolveBrandTheme({ kit: 'rose', heroUrl: '/media/tenant-hero.jpg' });
+  check('a tenant heroUrl is honoured by the backend resolver (it used to be dropped)',
+    hero.heroUrl === '/media/tenant-hero.jpg', hero.heroUrl);
+  check('…and by the shared resolver',
+    fe.resolveBrandTheme({ kit: 'rose', heroUrl: '/media/tenant-hero.jpg' }).heroUrl === '/media/tenant-hero.jpg');
+
+  // Resolving an already-resolved theme must be a fixed point. The storefront
+  // calls resolveBrandTheme on the theme bootstrap already resolved, so if this
+  // ever stopped holding, the second pass would corrupt the first.
+  const notFixed = [];
+  for (const [label, input] of CASES) {
+    for (const [side, mod] of [['backend', be], ['shared', fe]]) {
+      const once = mod.resolveBrandTheme(input);
+      const twice = mod.resolveBrandTheme(once);
+      if (JSON.stringify(once) !== JSON.stringify(twice)) notFixed.push(`${side}: ${label}`);
+    }
+  }
+  check('resolveBrandTheme is idempotent on both sides (safe to resolve twice)',
+    notFixed.length === 0, notFixed.join('; '));
+
+  // Both catalogues must be immutable — a runtime mutation would break parity in
+  // a way no static check could ever see.
+  check('both catalogues are frozen',
+    Object.isFrozen(be.BRAND_KITS) && Object.isFrozen(fe.BRAND_KITS)
+    && be.BRAND_KIT_IDS.every((id) => Object.isFrozen(be.BRAND_KITS[id]) && Object.isFrozen(fe.BRAND_KITS[id])));
+
+  // And the shared copy must still satisfy its own unit test's contract, so
+  // "identical" cannot be achieved by breaking both.
+  check('colours are 6-digit hex and heroes live under /brand/',
+    be.BRAND_KIT_IDS.every((id) => {
+      const k = be.BRAND_KITS[id];
+      return /^#[0-9A-Fa-f]{6}$/.test(k.primaryColor)
+        && /^#[0-9A-Fa-f]{6}$/.test(k.accentColor)
+        && /^\/brand\/hero-/.test(k.hero);
+    }));
 }
 
 // ---------------------------------------------------------------------------

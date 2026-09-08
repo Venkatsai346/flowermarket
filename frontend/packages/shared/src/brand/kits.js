@@ -1,6 +1,20 @@
 /**
  * Florist brand kits shared by the admin branding page and the storefront.
- * Keep in lockstep with `backend/src/constants/brandKits.js`.
+ *
+ * ── MIRROR OF `backend/src/constants/brandKits.js` ──────────────────────────
+ * The backend copy is the authority. This one exists because the branding
+ * picker and the storefront shell need the catalogue at build time and cannot
+ * import across the package boundary.
+ *
+ * It is not kept in sync by goodwill. `backend/scripts/invariants.test.js` §12
+ * imports BOTH modules and asserts they agree on every kit id, every field of
+ * every kit, and the resolved theme for a matrix of inputs — so a change on one
+ * side fails the backend build. If you edit one, edit the other in the same
+ * commit.
+ *
+ * This copy previously drifted: it grew `blurb`/`paper` that the backend lacked,
+ * and its resolver honoured `theme.heroUrl` while the backend's discarded it.
+ * Both resolvers now share one precedence rule.
  */
 export const BRAND_KITS = Object.freeze({
   rose: Object.freeze({
@@ -34,13 +48,19 @@ export const BRAND_KITS = Object.freeze({
 
 export const BRAND_KIT_IDS = Object.freeze(Object.keys(BRAND_KITS));
 
+/**
+ * Fill kit + colours so a storefront never boots with a half-theme.
+ *
+ * Byte-for-byte the same precedence as the backend resolver, and a fixed point:
+ * resolving an already-resolved theme returns it unchanged.
+ */
 export function resolveBrandTheme(theme = {}) {
-  const kit = BRAND_KITS[theme.kit] || BRAND_KITS.rose;
+  const kit = BRAND_KITS[theme?.kit] || BRAND_KITS.rose;
   return {
     kit: kit.id,
-    primaryColor: theme.primaryColor || kit.primaryColor,
-    accentColor: theme.accentColor || kit.accentColor,
-    heroUrl: theme.heroUrl || kit.hero,
+    primaryColor: theme?.primaryColor || kit.primaryColor,
+    accentColor: theme?.accentColor || kit.accentColor,
+    heroUrl: theme?.heroUrl || kit.hero,
     paperUrl: kit.paper,
   };
 }
