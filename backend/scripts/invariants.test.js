@@ -49,6 +49,13 @@
  *     still undefined, so teardown threw a second TypeError that became the LAST
  *     line in the log — masking the real cause twice in one day. All of it now
  *     goes through scripts/lib/hermeticMongo.js.
+ *
+ * 11. ONE MONEY-SPLITTING ALGORITHM — `utils/money.js` documents allocatePaise
+ *     as the replacement for "last line absorbs the rounding", and every paise
+ *     split honoured that except pricingPolicy.allocateDiscount(), which still
+ *     hand-rolled it. That version could assign a ₹0 freebie a NEGATIVE share
+ *     (−0.009999999999999787, unrounded, persisted to OrderItem) and its error
+ *     grew with cart size: 1.5 paisa at 4 lines, 9.5 at 20.
  */
 
 import fs from 'node:fs';
@@ -475,6 +482,54 @@ section('10. every DB-backed suite bootstraps mongod through the shared helper')
   check(`all ${suites.length} suites bootstrap through createHermeticMongo`,
     usingHelper.length === suites.length,
     `${usingHelper.length}/${suites.length}`);
+}
+
+// ---------------------------------------------------------------------------
+section('11. every money split uses allocatePaise, not "last line absorbs rounding"');
+{
+  const MONEY = path.join(BACKEND, 'src/utils/money.js');
+  const moneySrc = fs.readFileSync(MONEY, 'utf8');
+  check('allocatePaise is the declared single algorithm',
+    /export function allocatePaise\(/.test(moneySrc)
+    && /Replaces the previous "last line absorbs the rounding"/.test(moneySrc));
+
+  // Every site that splits money across lines. These are the six the deep dive
+  // enumerated, plus pricingPolicy once it was converted.
+  const expectedSites = [
+    ['src/services/ledger.service.js', 1],
+    ['src/services/payout.service.js', 2],
+    ['src/services/taxDocument.service.js', 2],
+    ['src/services/pricingPolicy.service.js', 1],
+  ];
+  for (const [file, minCalls] of expectedSites) {
+    const src = fs.readFileSync(path.join(BACKEND, file), 'utf8');
+    const calls = (src.match(/allocatePaise\(/g) || []).length;
+    check(`${file} splits via allocatePaise (${calls} call${calls === 1 ? '' : 's'})`,
+      calls >= minCalls, `expected >= ${minCalls}, found ${calls}`);
+  }
+
+  // allocateDiscount specifically must route through it, not reimplement.
+  const pricingSrc = fs.readFileSync(path.join(BACKEND, 'src/services/pricingPolicy.service.js'), 'utf8');
+  const allocBody = (pricingSrc.match(/allocateDiscount\(lineItems, discountTotal\) \{([\s\S]*?)\n  \}/) || [])[1] || '';
+  check('allocateDiscount calls allocatePaise', /allocatePaise\(/.test(allocBody));
+  check('allocateDiscount imports it rather than shadowing it',
+    /import \{[^}]*\ballocatePaise\b[^}]*\} from '\.\.\/utils\/money\.js'/.test(pricingSrc));
+  check('allocateDiscount converts through integer paise',
+    /toPaise\(/.test(allocBody) && /fromPaise\(/.test(allocBody));
+
+  // The anti-pattern, scanned across CODE ONLY — several files legitimately
+  // discuss it in a comment explaining why it was removed.
+  const residue = /\b\w*[Tt]otal\w*\s*-\s*(?:allocated|accumulated|accrued|running|sumSoFar)\b/;
+  const offenders = [];
+  for (const f of jsFiles(path.join(BACKEND, 'src'))) {
+    const code = fs.readFileSync(f, 'utf8')
+      .split('\n')
+      .filter((l) => !/^\s*(?:\*|\/\/|\/\*)/.test(l))
+      .join('\n');
+    if (residue.test(code)) offenders.push(rel(f));
+  }
+  check('no file re-derives a remainder as "total minus what was already allocated"',
+    offenders.length === 0, offenders.join(', '));
 }
 
 // ---------------------------------------------------------------------------

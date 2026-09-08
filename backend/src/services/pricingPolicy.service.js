@@ -4,7 +4,7 @@ import DiscountPolicy from '../models/discountPolicy.model.js';
 import CouponUsage from '../models/couponUsage.model.js';
 import OrderChargeBreakdown from '../models/orderChargeBreakdown.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
-import { roundMoney, moneySum, toPaise, fromPaise } from '../utils/money.js';
+import { roundMoney, moneySum, toPaise, fromPaise, allocatePaise } from '../utils/money.js';
 import { computeLineTax } from '../utils/gst.js';
 import config from '../config/index.js';
 
@@ -143,18 +143,44 @@ class PricingPolicyService {
     return roundMoney(fee);
   }
 
-  /** Proportionally split discountTotal across lines by pre-discount price weight. */
+  /**
+   * Proportionally split discountTotal across lines by pre-discount price weight.
+   *
+   * Routed through `allocatePaise` — the same largest-remainder integer split the
+   * ledger, payouts, GST documents and refunds all use. This used to hand-roll
+   * "the last line absorbs the rounding", which is the exact algorithm
+   * `utils/money.js` says it REPLACES, and which has two concrete faults:
+   *
+   *   • BIAS. Every order's rounding residue landed on the final line, so one
+   *     line systematically carried a paisa more (or less) discount than its
+   *     share. Largest-remainder gives it to whoever is mathematically closest
+   *     to being owed it, ties broken by index.
+   *   • NEGATIVE SHARES. The last line was assigned `discountTotal - allocated`
+   *     with no floor. If the earlier `roundMoney()` calls over-allocated — easy
+   *     when the last line is a ₹0 freebie or an add-on — that line received a
+   *     NEGATIVE discount, inflating its taxable base. `allocatePaise` clamps
+   *     zero weights to zero and keeps every part the same sign as the total.
+   *
+   * Totals still reconcile exactly, as before: the split is exact by
+   * construction, so Σ discountAllocated === discountTotal to the paisa, and the
+   * per-line values persisted on OrderItem (which the tax, invoice, refund and
+   * payout layers reconstruct from rather than re-deriving) stay consistent with
+   * a paise re-derivation of the same line.
+   */
   allocateDiscount(lineItems, discountTotal) {
-    if (discountTotal <= 0) return;
+    if (!(Number(discountTotal) > 0)) return;
     const subtotal = moneySum(...lineItems.map((l) => l.lineTotal));
     if (subtotal <= 0) return;
-    let allocated = 0;
+
+    const sharesPaise = allocatePaise(
+      toPaise(discountTotal),
+      lineItems.map((l) => toPaise(l.lineTotal)),
+    );
+
+    // same length as lineItems by contract; the ?? 0 keeps a future change to
+    // allocatePaise from silently leaving a line un-discounted
     lineItems.forEach((line, idx) => {
-      const share = (idx === lineItems.length - 1)
-        ? discountTotal - allocated // last line absorbs rounding
-        : roundMoney(discountTotal * (line.lineTotal / subtotal));
-      line.discountAllocated = share;
-      allocated += share;
+      line.discountAllocated = fromPaise(sharesPaise[idx] ?? 0);
     });
   }
 
