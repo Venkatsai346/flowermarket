@@ -115,7 +115,15 @@ const OrderSchema = new Schema(
     traceId: { type: String, default: null, index: true },
     paymentSummary: {
       paymentId: { type: Types.ObjectId, ref: 'Payment', default: null },
-      status: { type: String, enum: ['pending', 'success', 'failed', 'refunded', 'partially_refunded'], default: 'pending' },
+      // Mirrors PAYMENT_STATUS. `awaiting_collection` is COD: the order is
+      // CONFIRMED and moving, but the cash has not been taken yet. It is NOT
+      // `pending`, because `pending` means "a gateway may still capture this"
+      // and the reconciliation sweep cancels stale pendings.
+      status: {
+        type: String,
+        enum: ['pending', 'awaiting_collection', 'success', 'failed', 'refunded', 'partially_refunded'],
+        default: 'pending',
+      },
       paidAt: { type: Date, default: null },
       refundedAmount: { type: Number, default: 0, min: 0 },
     },

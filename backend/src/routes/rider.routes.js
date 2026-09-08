@@ -5,6 +5,7 @@ import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import {
   riderActionSchema,
+  codCollectSchema,
   riderAvailabilitySchema,
   deliveryListQuerySchema,
   emptyMutationSchema,
@@ -27,6 +28,10 @@ router.post('/deliveries/:id/reject', validate(riderActionSchema, 'body'), Rider
 router.post('/deliveries/:id/arrive-hub', validate(emptyMutationSchema), RiderController.arriveHub);
 router.post('/deliveries/:id/depart', validate(riderActionSchema, 'body'), RiderController.depart);
 router.post('/deliveries/:id/arrive', validate(emptyMutationSchema), RiderController.arrive);
+// Cash on delivery: the door is where a cash order becomes a paid order.
+// Kept as its own action (rather than only a flag on /complete) so a rider can
+// collect and capture POD separately, and so ops can collect after the fact.
+router.post('/deliveries/:id/collect-cash', validate(codCollectSchema, 'body'), RiderController.collectCash);
 router.post('/deliveries/:id/complete', validate(riderActionSchema, 'body'), RiderController.complete);
 router.post('/deliveries/:id/fail', validate(riderActionSchema, 'body'), RiderController.fail);
 

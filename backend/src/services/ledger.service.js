@@ -53,6 +53,16 @@ export const ledgerAccounts = {
   walletLiability: () => LEDGER_ACCOUNT.CUSTOMER_WALLET_LIABILITY,
   walletGoodwillExpense: () => LEDGER_ACCOUNT.WALLET_GOODWILL_EXPENSE,
   roundingDifference: () => LEDGER_ACCOUNT.ROUNDING_DIFFERENCE,
+  /**
+   * Cash-on-delivery loop — two assets, because the money has two lives before
+   * it reaches the bank. `cod_receivable` is raised by `sale_captured` on a COD
+   * order (in place of gateway_clearing, which would claim a PSP holds money it
+   * has never seen); `cod_collected` drains it into `cash_on_hand`, the physical
+   * notes in a rider's bag. A deposit then moves cash_on_hand into `bank`, which
+   * the existing bank-statement reconciliation already proves.
+   */
+  codReceivable: () => LEDGER_ACCOUNT.COD_RECEIVABLE,
+  cashOnHand: () => LEDGER_ACCOUNT.CASH_ON_HAND,
   vendorPayable: (vendorId) => `${LEDGER_ACCOUNT_PREFIX.VENDOR_PAYABLE}:${vendorId}`,
   tenantPayable: (tenantId) => `${LEDGER_ACCOUNT_PREFIX.TENANT_PAYABLE}:${tenantId}`,
   gstOutputPayable: (ownerId) => `${LEDGER_ACCOUNT_PREFIX.GST_OUTPUT_PAYABLE}:${ownerId}`,
@@ -69,6 +79,8 @@ const TYPE_BY_PREFIX = {
   [LEDGER_ACCOUNT.CUSTOMER_WALLET_LIABILITY]: LEDGER_ACCOUNT_TYPE.LIABILITY,
   [LEDGER_ACCOUNT.WALLET_GOODWILL_EXPENSE]: LEDGER_ACCOUNT_TYPE.EXPENSE,
   [LEDGER_ACCOUNT.ROUNDING_DIFFERENCE]: LEDGER_ACCOUNT_TYPE.EXPENSE,
+  [LEDGER_ACCOUNT.COD_RECEIVABLE]: LEDGER_ACCOUNT_TYPE.ASSET,
+  [LEDGER_ACCOUNT.CASH_ON_HAND]: LEDGER_ACCOUNT_TYPE.ASSET,
   [LEDGER_ACCOUNT_PREFIX.VENDOR_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,
   [LEDGER_ACCOUNT_PREFIX.TENANT_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,
   [LEDGER_ACCOUNT_PREFIX.GST_OUTPUT_PAYABLE]: LEDGER_ACCOUNT_TYPE.LIABILITY,

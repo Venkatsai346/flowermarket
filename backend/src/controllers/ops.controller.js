@@ -46,6 +46,10 @@ class OpsController {
     const order = await orderService.deliver({
       tenantId: req.tenantId, orderId: req.params.id,
       podType: req.body.podType, podValue: req.body.podValue || null,
+      // Cash orders: forwarded to the COD gate in orderService.deliver, which
+      // refuses to mark a cash order delivered until the money is recorded.
+      codCollected: req.body.codCollected === true,
+      amountCollected: req.body.amountCollected ?? null,
       actorId: req.auth.userId, req,
     });
     res.status(200).json(success(order, { message: 'Delivered — POD captured' }));

@@ -33,6 +33,8 @@ import {
   AUDIT_ACTOR_TYPE,
   DELIVERY_ASSIGNMENT_STATUS,
   DOMAIN_EVENT_TYPE,
+  PAYMENT_STATUS,
+  USER_ROLES,
 } from '../constants/enums.js';
 
 const MAX_DELIVERY_RETRIES = 2;
@@ -367,7 +369,7 @@ class OrderService {
    */
   async riderFlow({ tenantId, orderId, action, riderId, body = {}, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
-    const { packageVerified, podType, podValue, reason } = body;
+    const { packageVerified, podType, podValue, reason, codCollected, amountCollected, note } = body;
 
     switch (action) {
       case 'accept': {
@@ -402,7 +404,49 @@ class OrderService {
         });
         return this.detail({ tenantId, orderId });
       }
+      case 'collect-cash': {
+        // The door is where a cash order becomes a paid order. Recorded as its
+        // own action so a rider can take the money and capture POD in two taps
+        // (or so ops can collect on a rider's behalf after the fact).
+        const collected = await paymentService.collectCashOnDelivery({
+          orderId, tenantId, actorId: riderId, actorRole: USER_ROLES.RIDER,
+          amountCollected, note, req,
+        });
+        await this.syncPaymentSummary(order);
+        await order.save();
+        return { ...await this.detail({ tenantId, orderId }), codCollection: collected };
+      }
       case 'complete': {
+        // ── CASH GATE ─────────────────────────────────────────────────────
+        // A COD order cannot be marked DELIVERED until the money is in the
+        // rider's hand. Once the assignment is DELIVERED the rider is released
+        // back to AVAILABLE and there is no UI left to collect through — the
+        // platform would be left holding an uncollectable receivable and a
+        // customer who got their flowers for nothing.
+        //
+        // `codCollected: true` collects inline (the one-tap door flow); an
+        // explicit /collect-cash beforehand is equally accepted, and then this
+        // check simply passes because the payment is no longer awaiting.
+        if (order.paymentSummary?.status === PAYMENT_STATUS.AWAITING_COLLECTION) {
+          if (codCollected !== true) {
+            throw conflict(
+              'This is a cash-on-delivery order — record the cash collection before marking it delivered',
+              'COD_COLLECTION_REQUIRED',
+              {
+                orderId: String(order._id),
+                amountDue: order.totalAmount,
+                amountDuePaise: toPaise(order.totalAmount),
+                hint: 'POST /rider/deliveries/:id/collect-cash, or send cod_collected:true with this request',
+              },
+            );
+          }
+          await paymentService.collectCashOnDelivery({
+            orderId, tenantId, actorId: riderId, actorRole: USER_ROLES.RIDER,
+            amountCollected, note, req,
+          });
+          await this.syncPaymentSummary(order);
+          await order.save();
+        }
         await fulfillmentService.completeDelivery({ orderId, tenantId, podType, podValue, actorId: riderId });
         const result = await this.transition(order, ORDER_STATUS.DELIVERED, {
           actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: riderId, note: `delivered (POD: ${podType})`, req,
@@ -499,10 +543,56 @@ class OrderService {
     return out;
   }
 
+  /**
+   * Copy the authoritative money state off the Payment row onto the order's
+   * denormalised `paymentSummary`.
+   *
+   * The summary exists so an order page does not need a second query; that only
+   * works if it can never DISAGREE with the payment. Every place that used to
+   * write a literal status here is routed through this instead, so a cash order
+   * shows `awaiting_collection` until a rider actually collects, and `success`
+   * the moment they do.
+   */
+  async syncPaymentSummary(order) {
+    const paymentId = order.paymentSummary?.paymentId;
+    if (!paymentId) return null;
+    const payment = await Payment.findById(paymentId)
+      .select('status paidAt refundedAmount provider method amount collectedAt').lean();
+    if (!payment) return null;
+    order.paymentSummary.status = payment.status;
+    if (payment.paidAt) order.paymentSummary.paidAt = payment.paidAt;
+    if (typeof payment.refundedAmount === 'number') {
+      order.paymentSummary.refundedAmount = payment.refundedAmount;
+    }
+    return payment;
+  }
+
   /** Deliver with POD (OTP/photo/signature) — ops path. */
-  async deliver({ tenantId, orderId, podType, podValue = null, actorId = null, req = null }) {
+  async deliver({ tenantId, orderId, podType, podValue = null, actorId = null, codCollected = false, amountCollected = null, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.DELIVERED, { context: 'deliver' });
+    // Same cash gate as the rider path — ops must not be a way around it. Once
+    // an order is DELIVERED there is no collection UI left, so an uncollected
+    // cash order would become an uncollectable receivable.
+    if (order.paymentSummary?.status === PAYMENT_STATUS.AWAITING_COLLECTION) {
+      if (codCollected !== true) {
+        throw conflict(
+          'This is a cash-on-delivery order — record the cash collection before marking it delivered',
+          'COD_COLLECTION_REQUIRED',
+          {
+            orderId: String(order._id),
+            amountDue: order.totalAmount,
+            amountDuePaise: toPaise(order.totalAmount),
+            hint: 'POST /fulfillment/payments/:id/collect-cash, or send cod_collected:true',
+          },
+        );
+      }
+      await paymentService.collectCashOnDelivery({
+        orderId, tenantId, actorId, actorRole: USER_ROLES.ADMIN, amountCollected, req,
+      });
+      await this.syncPaymentSummary(order);
+      await order.save();
+    }
     // ops shortcut: ensure assignment is ARRIVED before POD capture
     const assignment = await fulfillmentService.getAssignment({ orderId, tenantId }).catch(() => null);
     if (assignment) {
@@ -512,7 +602,12 @@ class OrderService {
       await fulfillmentService.forceArrived({ orderId, tenantId });
     }
     await fulfillmentService.completeDelivery({ orderId, tenantId, podType, podValue, actorId });
-    order.paymentSummary.status = 'success';
+    // Delivery is NOT payment. This used to stamp `success` unconditionally,
+    // which for a cash order asserted the money had been collected when all
+    // that had actually happened was that someone dropped off flowers. The
+    // summary is now synced from the PAYMENT row — the money-movement truth —
+    // and only ever moves to `success` when the payment really is.
+    await this.syncPaymentSummary(order);
     await order.save();
     const result = await this.transition(order, ORDER_STATUS.DELIVERED, {
       actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: `delivered (POD: ${podType})`, req,
@@ -574,6 +669,28 @@ class OrderService {
     // 2. release the slot hold
     if (order.slotReservationId) {
       await slotService.release({ reservationId: order.slotReservationId, tenantId, reason: 'order_cancelled' }).catch(() => {});
+    }
+
+    // 3a. a CASH order cancelled before collection: no money ever arrived, so
+    //     there is nothing to refund — but the sale journal did raise a
+    //     `cod_receivable`, and leaving it there would strand an asset nobody
+    //     can ever collect. Waive it (the journal reverses the sale with the
+    //     receivable as counter) and mark the payment failed.
+    if (order.paymentSummary?.status === PAYMENT_STATUS.AWAITING_COLLECTION && order.paymentSummary?.paymentId) {
+      await Payment.updateOne(
+        { _id: order.paymentSummary.paymentId, status: PAYMENT_STATUS.AWAITING_COLLECTION },
+        {
+          $set: {
+            status: PAYMENT_STATUS.FAILED,
+            failedAt: new Date(),
+            failureReason: `Order cancelled before cash collection (${reason})`,
+          },
+        },
+      ).catch(() => {});
+      await ledgerPostingService.safePost('cod_receivable_waived', () =>
+        ledgerPostingService.postCodReceivableWaived({ order, reason, postedBy: actorId })
+      );
+      order.paymentSummary.status = PAYMENT_STATUS.FAILED;
     }
 
     // 3. refund if paid (component-based per blueprint §5: item + tax + fee)

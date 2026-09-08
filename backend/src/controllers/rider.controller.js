@@ -87,9 +87,57 @@ class RiderController {
     const order = await orderService.riderFlow({
       tenantId: req.tenantId, orderId: assignment.orderId,
       action: 'complete', riderId: req.auth.userId,
-      body: { podType: req.body.pod_type, podValue: req.body.pod_reference || null }, req,
+      body: {
+        podType: req.body.pod_type,
+        podValue: req.body.pod_reference || null,
+        // Cash orders: the rider's explicit "I took the money" (see the COD
+        // gate in orderService.riderFlow). Omitted for prepaid orders.
+        codCollected: req.body.cod_collected === true,
+        amountCollected: req.body.amount_collected ?? null,
+      }, req,
     });
     res.status(200).json(success({ id: assignment.id, status: order.status }, { message: 'Delivered — POD captured' }));
+  });
+
+  /**
+   * POST /rider/deliveries/:id/collect-cash {amount_collected?, note?}
+   *
+   * Records cash taken at the door: the Payment moves AWAITING_COLLECTION ->
+   * SUCCESS and the ledger swaps `cod_receivable` for `cash_on_hand`.
+   *
+   * `amount_collected` is optional; when sent it must equal the amount owed.
+   * The service REFUSES a shortfall rather than absorbing it — a gap between
+   * owed and counted is a shortage to investigate, not a rounding difference.
+   */
+  collectCash = asyncHandler(async (req, res) => {
+    const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
+    const result = await orderService.riderFlow({
+      tenantId: req.tenantId, orderId: assignment.orderId,
+      action: 'collect-cash', riderId: req.auth.userId,
+      body: {
+        amountCollected: req.body.amount_collected ?? null,
+        note: req.body.note || null,
+      },
+      req,
+    });
+    const collected = result.codCollection || {};
+    res.status(200).json(success(
+      {
+        id: assignment.id,
+        orderId: assignment.orderId,
+        collected: Boolean(collected.collected),
+        alreadyCollected: Boolean(collected.alreadyCollected),
+        amountCollected: collected.payment?.amountCollected ?? null,
+        collectedAt: collected.payment?.collectedAt ?? null,
+        paymentStatus: collected.payment?.status ?? null,
+        orderStatus: result.order?.status || result.status,
+      },
+      {
+        message: collected.alreadyCollected
+          ? 'Cash was already collected for this order'
+          : 'Cash collected — hand it in at the hub for banking',
+      },
+    ));
   });
 
   /** POST /rider/deliveries/:id/fail {fail_reason} — IN_TRANSIT|ARRIVED -> FAILED */

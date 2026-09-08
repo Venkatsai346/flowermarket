@@ -11,6 +11,8 @@ import {
   forecastBodySchema,
   generateSlotsSchema,
   mockForcePendingSchema,
+  codCollectSchema,
+  codDepositSchema,
   orderListQuerySchema,
   refundInitiateSchema,
 } from '../utils/validators/order.validators.js';
@@ -65,6 +67,14 @@ router.post('/reconcile/payments', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_
 router.get('/payments', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.listPayments);
 // NOTE: must be declared BEFORE /payments/:id or 'webhook-events' matches :id
 router.get('/payments/webhook-events', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.listWebhookEvents);
+// ---- cash on delivery ops (admin) ----
+// NOTE: declared BEFORE /payments/:id or 'cod' would be parsed as an :id.
+// `outstanding` is the exposure report ("how much of our money is on bikes?");
+// collect/deposit are the two facts that move it — a rider handing cash in at
+// end of shift, and finance banking it later.
+router.get('/payments/cod/outstanding', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.codOutstanding);
+router.post('/payments/:id/collect-cash', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN, USER_ROLES.RIDER), validate(codCollectSchema, 'body'), PaymentController.collectCodCash);
+router.post('/payments/:id/deposit-cash', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(codDepositSchema, 'body'), PaymentController.depositCodCash);
 // dev-only: mock gateway sync/async toggle for exercising the pending flow
 router.post('/payments/mock/force-pending', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(mockForcePendingSchema), PaymentController.mockForcePending);
 router.get('/payments/:id', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), PaymentController.getPayment);

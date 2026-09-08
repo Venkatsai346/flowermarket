@@ -6,6 +6,7 @@ import config from '../config/index.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 import { badRequest, unauthorized } from '../utils/ApiError.js';
+import { AUDIT_ACTOR_TYPE } from '../constants/enums.js';
 
 /**
  * PaymentController — webhooks (raw body, signature-verified) + ops reads.
@@ -125,6 +126,88 @@ class PaymentController {
    * gateway keys. Hard-gated on config.isDev (404-equivalent 400 in prod)
    * and the ADMIN/SUPER_ADMIN route guard.
    */
+  /**
+   * GET /fulfillment/payments/cod/outstanding
+   *
+   * The cash-exposure report: what is owed, how long it has been owed, and what
+   * has been collected but not yet banked. This is the answer to "how much of
+   * our money is currently riding on bikes?" — a question with no other source,
+   * because uncollected cash appears nowhere else in the system as risk.
+   *
+   * Read-only BY DESIGN: unlike a stale gateway payment, an uncollected COD
+   * order is a live delivery. The right response is to chase the rider, never to
+   * auto-cancel a customer's flowers.
+   */
+  codOutstanding = asyncHandler(async (req, res) => {
+    const report = await paymentService.codOutstanding({ tenantId: req.query.scope === 'tenant' ? req.tenantId : null });
+    res.status(200).json(success(report, {
+      message: report.outstandingCount === 0
+        ? 'No outstanding cash'
+        : `${report.outstandingCount} cash order(s) awaiting collection`,
+    }));
+  });
+
+  /**
+   * POST /fulfillment/payments/:id/collect-cash {amount_collected?, note?}
+   *
+   * Ops recording cash on a rider's behalf (rider offline, phone dead, or a
+   * supervisor counting the till at end of shift). Identical money effect to
+   * the rider endpoint: DR cash_on_hand / CR cod_receivable, idempotent.
+   */
+  collectCodCash = asyncHandler(async (req, res) => {
+    const result = await paymentService.collectCashOnDelivery({
+      paymentId: req.params.id,
+      tenantId: req.tenantId,
+      actorId: req.auth.userId,
+      actorRole: req.auth.role || null,
+      actorType: AUDIT_ACTOR_TYPE.ADMIN,
+      amountCollected: req.body.amount_collected ?? null,
+      note: req.body.note || null,
+      req,
+    });
+    res.status(200).json(success(
+      {
+        paymentId: String(result.payment._id),
+        orderId: String(result.payment.orderId),
+        collected: Boolean(result.collected),
+        alreadyCollected: Boolean(result.alreadyCollected),
+        status: result.payment.status,
+        amountCollected: result.payment.amountCollected ?? null,
+        collectedAt: result.payment.collectedAt ?? null,
+      },
+      { message: result.alreadyCollected ? 'Cash was already collected' : 'Cash collection recorded' },
+    ));
+  });
+
+  /**
+   * POST /fulfillment/payments/:id/deposit-cash {deposit_ref?}
+   *
+   * Banks collected notes: DR bank / CR cash_on_hand. This is the step that
+   * ENDS the platform's physical exposure — until it runs, the money is cash in
+   * somebody's bag. Separate from collection because the two are genuinely
+   * different facts, done by different people at different times (rider hands
+   * in at end of shift; finance banks it later).
+   */
+  depositCodCash = asyncHandler(async (req, res) => {
+    const result = await paymentService.depositCodCash({
+      paymentId: req.params.id,
+      tenantId: req.tenantId,
+      depositRef: req.body.deposit_ref || null,
+      actorId: req.auth.userId,
+      req,
+    });
+    res.status(200).json(success(
+      {
+        paymentId: String(result.payment._id),
+        deposited: Boolean(result.deposited),
+        alreadyDeposited: Boolean(result.alreadyDeposited),
+        depositedAt: result.payment.depositedAt ?? null,
+        depositRef: result.payment.depositRef ?? null,
+      },
+      { message: result.alreadyDeposited ? 'Cash was already deposited' : 'Cash deposited to bank' },
+    ));
+  });
+
   mockForcePending = asyncHandler(async (req, res) => {
     if (!config.isDev) throw badRequest('Development-only endpoint', 'DEV_ONLY');
     const enabled = Boolean(req.body?.enabled);

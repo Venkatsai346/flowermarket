@@ -9,7 +9,18 @@ import Notification from '../models/notification.model.js';
 import PaymentWebhookEvent from '../models/paymentWebhookEvent.model.js';
 import PayoutBatch from '../models/payoutBatch.model.js';
 import LedgerJournal from '../models/ledgerJournal.model.js';
-import { NOTIFICATION_STATUS, LEDGER_JOURNAL_KIND, PAYOUT_STATE } from '../constants/enums.js';
+import Payment from '../models/payment.model.js';
+import Order from '../models/order.model.js';
+import { toPaise, sumPaise } from '../utils/money.js';
+import {
+  NOTIFICATION_STATUS,
+  LEDGER_JOURNAL_KIND,
+  PAYOUT_STATE,
+  LEDGER_ACCOUNT,
+  ORDER_STATUS,
+  PAYMENT_PROVIDER,
+  PAYMENT_STATUS,
+} from '../constants/enums.js';
 
 /**
  * IntegrityService — the "is the system consistent?" report (Phase 10).
@@ -25,6 +36,8 @@ import { NOTIFICATION_STATUS, LEDGER_JOURNAL_KIND, PAYOUT_STATE } from '../const
  *   payouts     every disbursed batch must have its ledger journal
  *   events      the audit store's own shape (total / by kind / recency)
  *   notifications  outbox lag (pending + oldest), dead letters
+ *   cod         cash receivable + cash on hand vs the payments behind them,
+ *               and receivables stranded on cancelled orders
  *
  * `report()` is READ-ONLY. `replay()` (the only write path) is the ledger
  * self-heal: re-post missing journals / restore missing audit rows from the
@@ -40,7 +53,7 @@ class IntegrityService {
   async report({ tenantId = null } = {}) {
     const scope = tenantId ? { tenantId } : {};
     const [
-      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory, gst, bank,
+      trial, balances, drift, search, slots, webhooks, payouts, events, notifications, chain, wallet, vendors, statutory, gst, bank, cod,
     ] = await Promise.all([
       ledgerService.trialBalance(),
       ledgerService.verifyBalances(),
@@ -57,6 +70,7 @@ class IntegrityService {
       this._statutoryCheck(),
       this._gstCheck(),
       this._bankCheck(),
+      this._codCheck(scope),
     ]);
 
     const ledger = {
@@ -100,6 +114,9 @@ class IntegrityService {
       statutory,
       gst,
       bank,
+      // Cash on delivery: receivable and cash-on-hand must each agree with the
+      // payments they summarise, and no receivable may survive a cancellation.
+      cod,
       // Phase 11: the chain is the tamper-evidence layer. Breaks (edited,
       // deleted or re-ordered rows) are a DRIFT — the strongest signal in
       // the report. Unanchored rows are normal while repairChain catches up.
@@ -174,6 +191,115 @@ class IntegrityService {
     try {
       const r = await payoutService.reconcileBank({});
       return { ...r, ok: r.ok };
+    } catch (e) {
+      return { error: e?.message || String(e), ok: false };
+    }
+  }
+
+  /**
+   * Cash on delivery: the two cash accounts must agree with the Payments they
+   * summarise, and no receivable may be stranded on a cancelled order.
+   *
+   * Cash is the one payment method where the books and the physical world can
+   * drift apart without any gateway to contradict us — there is no PSP
+   * statement saying "you never received this". So the reconciliation is
+   * internal and exact:
+   *
+   *   cod_receivable  == Σ amount on COD payments still AWAITING_COLLECTION
+   *   cash_on_hand    == Σ amountCollected on COD payments collected but not
+   *                      yet banked
+   *
+   * A gap in the first means cash the books claim is owed that no order owes
+   * (usually a cancellation that skipped the waiver). A gap in the second means
+   * notes counted at a door that never reached the ledger, or ledger cash that
+   * no rider is carrying — either way, money that cannot be found.
+   *
+   * `strandedReceivables` is reported separately from the balance gap because it
+   * is the actionable one: an operator can chase a specific order id.
+   */
+  async _codCheck(scope) {
+    try {
+      const match = scope.tenantId ? { tenantId: scope.tenantId } : {};
+      const [receivableAcct, cashAcct, awaiting, collectedUnbanked, stranded] = await Promise.all([
+        ledgerService.balance(LEDGER_ACCOUNT.COD_RECEIVABLE),
+        ledgerService.balance(LEDGER_ACCOUNT.CASH_ON_HAND),
+        Payment.aggregate([
+          { $match: { ...match, provider: PAYMENT_PROVIDER.COD, status: PAYMENT_STATUS.AWAITING_COLLECTION } },
+          { $group: { _id: null, total: { $sum: '$amount' }, n: { $sum: 1 } } },
+        ]),
+        Payment.aggregate([
+          {
+            $match: {
+              ...match,
+              provider: PAYMENT_PROVIDER.COD,
+              status: PAYMENT_STATUS.SUCCESS,
+              collectedAt: { $ne: null },
+              depositedAt: null,
+            },
+          },
+          {
+            $group: {
+              _id: null,
+              total: { $sum: { $ifNull: ['$amountCollected', '$amount'] } },
+              n: { $sum: 1 },
+            },
+          },
+        ]),
+        // receivables still open on orders that are already CANCELLED — the
+        // cancellation should have waived them
+        Payment.find({
+          ...match,
+          provider: PAYMENT_PROVIDER.COD,
+          status: PAYMENT_STATUS.AWAITING_COLLECTION,
+        }).select('orderId amount createdAt').lean(),
+      ]);
+
+      const expectedReceivablePaise = toPaise(awaiting[0]?.total || 0);
+      const expectedCashPaise = toPaise(collectedUnbanked[0]?.total || 0);
+
+      // Resolve the stranded set: only orders that really are CANCELLED count.
+      let strandedSamples = [];
+      let strandedPaise = 0;
+      if (stranded.length) {
+        const orderIds = stranded.map((p) => p.orderId).filter(Boolean);
+        const cancelled = await Order.find({
+          _id: { $in: orderIds }, status: ORDER_STATUS.CANCELLED,
+        }).select('_id').lean();
+        const cancelledIds = new Set(cancelled.map((o) => String(o._id)));
+        const bad = stranded.filter((p) => cancelledIds.has(String(p.orderId)));
+        strandedPaise = sumPaise(...bad.map((p) => toPaise(p.amount || 0)));
+        strandedSamples = bad.slice(0, 10).map((p) => ({
+          paymentId: String(p._id),
+          orderId: String(p.orderId),
+          amountPaise: toPaise(p.amount || 0),
+          ageHours: Math.round(((Date.now() - new Date(p.createdAt).getTime()) / 3600000) * 100) / 100,
+        }));
+      }
+
+      const receivableDiff = receivableAcct.balancePaise - expectedReceivablePaise;
+      const cashDiff = cashAcct.balancePaise - expectedCashPaise;
+      // A whole rupee of slack across the entire cash book, matching the
+      // tolerance the other ledger reconciliations use.
+      const tolerance = 100;
+
+      return {
+        checked: true,
+        outstandingCount: awaiting[0]?.n || 0,
+        receivablePaise: expectedReceivablePaise,
+        receivableAccountPaise: receivableAcct.balancePaise,
+        receivableDifferencePaise: receivableDiff,
+        collectedNotBankedCount: collectedUnbanked[0]?.n || 0,
+        cashOnHandPaise: expectedCashPaise,
+        cashOnHandAccountPaise: cashAcct.balancePaise,
+        cashOnHandDifferencePaise: cashDiff,
+        strandedReceivables: strandedSamples.length,
+        strandedPaise,
+        samples: strandedSamples,
+        tolerancePaise: tolerance,
+        ok: Math.abs(receivableDiff) <= tolerance
+          && Math.abs(cashDiff) <= tolerance
+          && strandedSamples.length === 0,
+      };
     } catch (e) {
       return { error: e?.message || String(e), ok: false };
     }

@@ -6,6 +6,7 @@ import { forbidden } from '../utils/ApiError.js';
 import config from '../config/index.js';
 import { resolveBrandTheme } from '../constants/brandKits.js';
 import { TAX_OWNER_TYPE } from '../constants/enums.js';
+import { fromPaise } from '../utils/money.js';
 
 class DomainController {
   // ---------------- store owner ----------------
@@ -92,6 +93,25 @@ class DomainController {
       },
       theme,
       features: tenant.features || {},
+      /**
+       * Which payment methods this storefront may actually offer.
+       *
+       * Published here, on first paint, rather than discovered by a failed
+       * checkout: cash can be switched off per environment (monsoon, a fraud
+       * spike, a city where riders are being robbed) and the UI must respond by
+       * HIDING the option. `maxAmount` lets the storefront hide it per-cart too
+       * — a ₹9,000 bouquet is above the cap and should never show a radio
+       * button that the backend will then reject with a 422.
+       */
+      payments: {
+        cod: {
+          enabled: Boolean(config.cod?.enabled),
+          maxAmount: fromPaise(Number(config.cod?.maxAmountPaise) || 0),
+          maxAmountPaise: Number(config.cod?.maxAmountPaise) || 0,
+          fee: fromPaise(Number(config.cod?.feePaise) || 0),
+          feePaise: Number(config.cod?.feePaise) || 0,
+        },
+      },
       routing: {
         resolvedFrom: req.tenantSource,
         host: req.tenantHost,

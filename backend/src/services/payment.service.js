@@ -1,14 +1,19 @@
 import Payment from '../models/payment.model.js';
+import Order from '../models/order.model.js';
 import PaymentTransaction from '../models/paymentTransaction.model.js';
 import WalletTransaction from '../models/walletTransaction.model.js';
 import PaymentWebhookEvent, { PAYMENT_WEBHOOK_EVENT_STATUS } from '../models/paymentWebhookEvent.model.js';
 import { webhookEvents } from '../observability/registry.js';
 import paymentProvider from './paymentProvider.service.js';
 import walletService from './wallet.service.js';
+import ledgerPostingService from './ledgerPosting.service.js';
+import auditService from './audit.service.js';
 import domainEventService from './domainEvent.service.js';
+import config from '../config/index.js';
 import { Types } from 'mongoose';
 import { notFound, badRequest, conflict } from '../utils/ApiError.js';
-import { roundMoney } from '../utils/money.js';
+import { roundMoney, toPaise, fromPaise, formatPaise } from '../utils/money.js';
+import { codCollections } from '../observability/registry.js';
 import { generateOpaqueToken } from '../utils/hash.js';
 import {
   PAYMENT_STATUS,
@@ -19,6 +24,9 @@ import {
   WALLET_TXN_REASON,
   ORDER_CANCELLATION_REASON,
   DOMAIN_EVENT_TYPE,
+  AUDIT_ACTION,
+  AUDIT_ACTOR_TYPE,
+  USER_ROLES,
 } from '../constants/enums.js';
 
 /**
@@ -37,7 +45,106 @@ import {
  *    existing Payment instead of debiting twice: if the wallet transaction
  *    already exists we finalise success; if not we safely attempt the debit on
  *    the existing Payment (never creating a second Payment for the same key).
+ *
+ * CASH ON DELIVERY (the third internal method, and the only one where the
+ * platform extends credit to a stranger before seeing their face):
+ *  - `method === 'cod'` NEVER calls a gateway. The Payment is created in
+ *    AWAITING_COLLECTION and `charge()` reports `success: true` immediately, so
+ *    the order saga commits stock and the slot exactly as it does for a
+ *    captured card — the goods move, the money follows at the door.
+ *  - AWAITING_COLLECTION is deliberately NOT `pending`: the reconciliation
+ *    sweep resolves stale pendings against the PSP and cancels the order after
+ *    15 minutes. A cash order has no PSP to ask, so sharing that state meant
+ *    every COD order was created, confirmed and then cancelled by the worker.
+ *  - Collection (`collectCashOnDelivery`) is an atomic compare-and-set on the
+ *    status, so two riders tapping at once post exactly one ledger entry.
+ *  - The cap is enforced BEFORE any row is written, so an over-cap attempt is a
+ *    clean 422 and never a half-built order.
  */
+// ---------------------------------------------------------------------------
+// CASH ON DELIVERY — pure guards, exported for scripts/cod-ledger.test.js
+// ---------------------------------------------------------------------------
+
+/**
+ * Is a cash order of this size allowed right now?
+ *
+ * PURE (config in, verdict out) so the rule is testable without a database, and
+ * checked in `charge()` BEFORE any row is written: an over-cap attempt must be
+ * a clean 422, never a half-created order that a later step has to unwind.
+ *
+ * Cash is an unsecured credit line extended to a stranger, then collected by an
+ * employee carrying a bag. The cap exists because that exposure is real: above
+ * it, the customer must prepay. `0` disables the cap.
+ *
+ * @param {number} amountRupees  order total, in RUPEES (the Payment row's unit)
+ * @param {{enabled?:boolean, maxAmountPaise?:number}} [cod]  config.cod override
+ * @returns {{ allowed: true, amountPaise: number } | { allowed: false, code: string, message: string, details: object }}
+ */
+export function checkCodAllowed(amountRupees, cod = config.cod) {
+  const amountPaise = toPaise(amountRupees);
+  if (!cod?.enabled) {
+    return {
+      allowed: false,
+      code: 'COD_UNAVAILABLE',
+      message: 'Cash on delivery is not available for this order — please pay online',
+      details: { amountPaise },
+    };
+  }
+  const maxPaise = Number(cod?.maxAmountPaise) || 0;
+  if (maxPaise > 0 && amountPaise > maxPaise) {
+    return {
+      allowed: false,
+      code: 'COD_LIMIT_EXCEEDED',
+      message: `Cash on delivery is available up to ${formatPaise(maxPaise)} — this order is ${formatPaise(amountPaise)}. Please pay online.`,
+      details: { amountPaise, maxAmountPaise: maxPaise },
+    };
+  }
+  return { allowed: true, amountPaise };
+}
+
+/** Throwing wrapper used at the charge() boundary. */
+function assertCodAllowed(amountRupees, cod = config.cod) {
+  const verdict = checkCodAllowed(amountRupees, cod);
+  if (!verdict.allowed) throw badRequest(verdict.message, verdict.code, verdict.details);
+  return verdict;
+}
+
+/**
+ * The charge result the order saga sees for a cash order.
+ *
+ * `success: true` with NO `pending` flag is the load-bearing part: it makes the
+ * saga commit inventory and the slot immediately, exactly as a captured card
+ * would. `pending: true` would leave the order in PAYMENT_PENDING for the
+ * reconciliation sweep to cancel — which is precisely the production failure
+ * COD had before it was implemented (a gateway order created, never captured,
+ * order cancelled ~15 minutes later).
+ */
+function codChargeResult(payment, extra = {}) {
+  return {
+    success: true,
+    cod: true,
+    collectOnDelivery: true,
+    provider: PAYMENT_PROVIDER.COD,
+    amountDue: payment.amount,
+    amountDuePaise: toPaise(payment.amount),
+    paymentId: payment._id ? String(payment._id) : null,
+    ...extra,
+  };
+}
+
+/** Aging bands for outstanding cash, oldest first. */
+export const COD_AGING_BANDS_HOURS = Object.freeze([12, 24, 48, 72]);
+
+/**
+ * PURE: bucket an outstanding COD payment into an aging band.
+ * Cash that has been owed for three days is a different conversation from cash
+ * owed since this morning, and the bands are what make that visible.
+ */
+export function codAgingBand(hoursOutstanding, bands = COD_AGING_BANDS_HOURS) {
+  for (const b of bands) if (hoursOutstanding <= b) return `lte_${b}h`;
+  return `gt_${bands[bands.length - 1]}h`;
+}
+
 class PaymentService {
   /**
    * Charge an order. Creates Payment + CHARGE transaction, calls the provider,
@@ -47,12 +154,27 @@ class PaymentService {
   async charge({ tenantId, userId, orderId, amount, method = 'upi', idempotencyKey, provider = 'mock', traceId = null }) {
     const value = roundMoney(amount);
     const isWallet = method === PAYMENT_METHOD.WALLET;
+    // A wallet balance is money already in the building, so it wins if a client
+    // somehow sends both. COD is the only method with no gateway behind it.
+    const isCod = !isWallet && method === PAYMENT_METHOD.COD;
+    if (isCod) {
+      // Enforced here — before ANY row is written — so an over-cap or disabled
+      // attempt is a clean 422 and never a half-created order.
+      assertCodAllowed(value);
+    }
 
     // ---- idempotency: same key already charged? ----
     const existing = await Payment.findOne({ idempotencyKey });
     if (existing) {
       if (existing.status === PAYMENT_STATUS.SUCCESS) {
         return { payment: existing, transaction: null, chargeResult: { success: true, idempotent: true } };
+      }
+      // A replayed COD checkout: the receivable already exists, so report the
+      // same success the first call did and let the saga re-run its (already
+      // idempotent) finalization. Returning `success: false` here would
+      // compensate — cancelling a perfectly good cash order on a retry.
+      if (existing.status === PAYMENT_STATUS.AWAITING_COLLECTION) {
+        return { payment: existing, transaction: null, chargeResult: codChargeResult(existing, { idempotent: true }) };
       }
       // A wallet payment may be half-finished (created, debit crash). Heal it
       // rather than blindly returning failure and risking a second debit.
@@ -66,8 +188,10 @@ class PaymentService {
     try {
       payment = await Payment.create({
         tenantId, userId, orderId, amount: value, method,
-        provider: isWallet ? PAYMENT_PROVIDER.WALLET : provider,
-        idempotencyKey, status: PAYMENT_STATUS.PENDING, traceId,
+        provider: isCod ? PAYMENT_PROVIDER.COD : isWallet ? PAYMENT_PROVIDER.WALLET : provider,
+        // COD starts life awaiting the rider, not awaiting a gateway.
+        status: isCod ? PAYMENT_STATUS.AWAITING_COLLECTION : PAYMENT_STATUS.PENDING,
+        idempotencyKey, traceId,
       });
     } catch (err) {
       // Unique idempotencyKey race: two identical requests arrived together.
@@ -78,6 +202,9 @@ class PaymentService {
         if (!winner) throw err;
         if (winner.status === PAYMENT_STATUS.SUCCESS) {
           return { payment: winner, transaction: null, chargeResult: { success: true, idempotent: true } };
+        }
+        if (winner.status === PAYMENT_STATUS.AWAITING_COLLECTION) {
+          return { payment: winner, transaction: null, chargeResult: codChargeResult(winner, { idempotent: true }) };
         }
         if (isWallet || winner.provider === PAYMENT_PROVIDER.WALLET || winner.method === PAYMENT_METHOD.WALLET) {
           return this._walletChargeExisting(winner, { tenantId, userId, value });
@@ -96,6 +223,16 @@ class PaymentService {
     // ---- internal wallet payment: no provider call, no async state. ----
     if (isWallet) {
       return this._walletCharge({ tenantId, userId, orderId, value, payment, transaction: txn });
+    }
+
+    // ---- cash on delivery: no provider call either, and NO async state. ----
+    // The receivable is the whole of the charge. `success: true` (not
+    // `pending`) is what makes the saga commit stock and the slot now: with
+    // cash, "the payment succeeded" means "we have an enforceable claim", and
+    // refusing to confirm until the rider returns would leave the order in
+    // PAYMENT_PENDING for the sweep to cancel.
+    if (isCod) {
+      return { payment, transaction: txn, chargeResult: codChargeResult(payment) };
     }
 
     const chargeResult = await paymentProvider.charge({
@@ -694,6 +831,277 @@ class PaymentService {
       Payment.countDocuments(q),
     ]);
     return { items: docs, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+  }
+
+  // =========================================================================
+  // CASH ON DELIVERY — collection, remittance and exposure
+  // =========================================================================
+
+  /**
+   * Resolve the COD Payment for a collection attempt. Accepts either id so the
+   * rider app (which knows the delivery, hence the order) and the ops console
+   * (which knows the payment) can both call this.
+   */
+  async _findCodPayment({ paymentId = null, orderId = null, tenantId = null }) {
+    const filter = paymentId ? { _id: paymentId } : { orderId };
+    if (tenantId) filter.tenantId = tenantId;
+    const payment = await Payment.findOne(filter);
+    if (!payment) throw notFound('Payment not found', 'PAYMENT_NOT_FOUND');
+    if (payment.provider !== PAYMENT_PROVIDER.COD && payment.method !== PAYMENT_METHOD.COD) {
+      throw conflict('This order was not paid by cash on delivery', 'NOT_A_COD_ORDER', {
+        paymentId: String(payment._id), provider: payment.provider,
+      });
+    }
+    return payment;
+  }
+
+  /**
+   * Record cash taken at the door. The money fact of a COD order.
+   *
+   *   Payment  AWAITING_COLLECTION → SUCCESS (atomic compare-and-set)
+   *   Ledger   DR cash_on_hand / CR cod_receivable
+   *   Order    paymentSummary.status → success, paidAt stamped
+   *
+   * CONCURRENCY: the status update is a compare-and-set on
+   * `{_id, status: AWAITING_COLLECTION}`, so two riders tapping at once produce
+   * exactly one winner; the loser re-reads the row and reports
+   * `alreadyCollected`. The journal is separately idempotent on the payment id,
+   * so even a crash-and-retry between the two cannot double-count.
+   *
+   * AMOUNT: what the customer owes is already on the Payment row and is NOT
+   * taken from the caller. A rider may restate what they actually received, and
+   * if it differs the collection is REFUSED — a shortfall is a theft or shortage
+   * signal that must be resolved by a human, never silently absorbed into a
+   * balanced-looking journal.
+   *
+   * @returns {{ payment, collected: boolean, alreadyCollected: boolean }}
+   */
+  async collectCashOnDelivery({
+    paymentId = null, orderId = null, tenantId = null,
+    actorId = null, actorRole = null, actorType = AUDIT_ACTOR_TYPE.TENANT,
+    amountCollected = null, note = null, req = null,
+  }) {
+    const payment = await this._findCodPayment({ paymentId, orderId, tenantId });
+
+    // Idempotent: a second tap on collected cash reports success, posts nothing.
+    if (payment.status === PAYMENT_STATUS.SUCCESS) {
+      codCollections.inc({ result: 'already_collected' });
+      return { payment, collected: false, alreadyCollected: true };
+    }
+    if (payment.status !== PAYMENT_STATUS.AWAITING_COLLECTION) {
+      codCollections.inc({ result: 'error' });
+      throw conflict(`Cash collection is not possible while the payment is ${payment.status}`, 'COD_NOT_COLLECTABLE', {
+        paymentId: String(payment._id), status: payment.status,
+      });
+    }
+
+    // ---- the amount must match what is owed, exactly ----
+    const duePaise = toPaise(payment.amount);
+    const receivedPaise = amountCollected === null || amountCollected === undefined
+      ? duePaise
+      : toPaise(amountCollected);
+    if (receivedPaise !== duePaise) {
+      codCollections.inc({ result: 'mismatch' });
+      throw badRequest(
+        `Collected ${formatPaise(receivedPaise)} but the order is owed ${formatPaise(duePaise)} — record the shortage against the delivery instead`,
+        'COD_AMOUNT_MISMATCH',
+        { paymentId: String(payment._id), duePaise, receivedPaise, differencePaise: receivedPaise - duePaise },
+      );
+    }
+
+    const now = new Date();
+    // ---- atomic claim: only the caller who flips AWAITING_COLLECTION wins ----
+    let updated;
+    try {
+      updated = await Payment.findOneAndUpdate(
+        { _id: payment._id, status: PAYMENT_STATUS.AWAITING_COLLECTION },
+        {
+          $set: {
+            status: PAYMENT_STATUS.SUCCESS,
+            paidAt: now,
+            collectedAt: now,
+            collectedBy: actorId || null,
+            collectedByRole: actorRole || null,
+            amountCollected: payment.amount,
+            collectionNote: note || null,
+          },
+        },
+        { new: true },
+      );
+    } catch (err) {
+      codCollections.inc({ result: 'error' });
+      throw err;
+    }
+    if (!updated) {
+      // Another actor won the race between the read and the write.
+      const winner = await Payment.findById(payment._id);
+      codCollections.inc({ result: 'already_collected' });
+      return { payment: winner, collected: false, alreadyCollected: true };
+    }
+
+    // ---- the money FACT in the audit backbone FIRST, then the journal ----
+    // Same ordering as sale_captured: a crash between the two leaves the event
+    // present and the journal missing, which findDrift() detects and
+    // replay() re-posts exactly. Never the other way round, which would hide
+    // cash the books already counted.
+    await domainEventService.append({
+      tenantId: updated.tenantId,
+      traceId: updated.traceId,
+      kind: DOMAIN_EVENT_TYPE.COD_COLLECTED,
+      aggregateType: 'payment',
+      aggregateId: updated._id,
+      idempotencyKey: ledgerPostingService.codCollectedKey(updated._id),
+      occurredAt: now,
+      refType: 'payment',
+      refId: updated._id,
+      payload: {
+        orderId: String(updated.orderId),
+        amountPaise: duePaise,
+        collectedBy: actorId ? String(actorId) : null,
+        collectedByRole: actorRole || null,
+      },
+    });
+
+    await ledgerPostingService.safePost('cod_collected', () =>
+      ledgerPostingService.postCodCollected({ payment: updated, collectedBy: actorId, occurredAt: now })
+    );
+
+    // ---- close out the CHARGE transaction that has been pending since checkout ----
+    await PaymentTransaction.updateOne(
+      { paymentId: updated._id, type: PAYMENT_TRANSACTION_TYPE.CHARGE },
+      {
+        $set: {
+          status: PAYMENT_TRANSACTION_STATUS.SUCCESS,
+          completedAt: now,
+          gatewayRef: `cod:${actorId ? String(actorId) : 'unattributed'}`,
+        },
+      },
+    ).catch(() => { /* the Payment row and the journal are the truth */ });
+
+    // ---- reflect on the order so the customer's own order page is right ----
+    await Order.updateOne(
+      { _id: updated.orderId, 'paymentSummary.status': PAYMENT_STATUS.AWAITING_COLLECTION },
+      { $set: { 'paymentSummary.status': PAYMENT_STATUS.SUCCESS, 'paymentSummary.paidAt': now } },
+    ).catch(() => { /* order detail re-reads the Payment */ });
+
+    await auditService.record({
+      action: AUDIT_ACTION.COD_COLLECT,
+      entityType: 'payment', entityId: updated._id,
+      tenantId: updated.tenantId, actorId, actorType,
+      after: {
+        orderId: String(updated.orderId),
+        amountPaise: duePaise,
+        collectedAt: now,
+        collectedByRole: actorRole || null,
+        note: note || null,
+      },
+      req,
+    }).catch(() => { /* audit aids, it does not gate */ });
+
+    codCollections.inc({ result: 'ok' });
+    return { payment: updated, collected: true, alreadyCollected: false };
+  }
+
+  /**
+   * Bank collected cash: DR bank / CR cash_on_hand.
+   *
+   * This is the step that ends the platform's physical exposure — until it
+   * runs, the money is notes in someone's bag. Kept separate from collection on
+   * purpose: a rider hands cash to a supervisor at end of shift, and the
+   * supervisor banks it later, so the two moments (and two people) are
+   * genuinely different facts.
+   *
+   * Idempotent: re-depositing an already-deposited payment reports success and
+   * posts nothing.
+   */
+  async depositCodCash({ paymentId = null, orderId = null, tenantId = null, depositRef = null, actorId = null, actorType = AUDIT_ACTOR_TYPE.ADMIN, req = null }) {
+    const payment = await this._findCodPayment({ paymentId, orderId, tenantId });
+    if (!payment.collectedAt) {
+      throw conflict('Cash has not been collected yet — nothing to deposit', 'COD_NOT_COLLECTED', {
+        paymentId: String(payment._id),
+      });
+    }
+    if (payment.depositedAt) return { payment, deposited: false, alreadyDeposited: true };
+
+    const now = new Date();
+    const updated = await Payment.findOneAndUpdate(
+      { _id: payment._id, depositedAt: null },
+      { $set: { depositedAt: now, depositRef: depositRef || null } },
+      { new: true },
+    );
+    if (!updated) {
+      const winner = await Payment.findById(payment._id);
+      return { payment: winner, deposited: false, alreadyDeposited: true };
+    }
+
+    await ledgerPostingService.safePost('cod_deposit', () =>
+      ledgerPostingService.postCodDeposit({ payment: updated })
+    );
+    await auditService.record({
+      action: AUDIT_ACTION.COD_COLLECT,
+      entityType: 'payment', entityId: updated._id,
+      tenantId: updated.tenantId, actorId, actorType,
+      after: { step: 'deposit', amountPaise: toPaise(updated.amount), depositRef: updated.depositRef, depositedAt: now },
+      req,
+    }).catch(() => { /* audit aids, it does not gate */ });
+
+    return { payment: updated, deposited: true, alreadyDeposited: false };
+  }
+
+  /**
+   * Outstanding-cash exposure report for ops: what is owed, how old it is, and
+   * what has been collected but not yet banked.
+   *
+   * Deliberately a READ, not a sweep that cancels anything. Unlike a stale
+   * gateway payment, an uncollected COD order is a live delivery — the right
+   * response is to chase the rider, not to cancel the customer's flowers.
+   */
+  async codOutstanding({ tenantId = null, now = Date.now() } = {}) {
+    const match = { status: PAYMENT_STATUS.AWAITING_COLLECTION };
+    if (tenantId) match.tenantId = tenantId;
+    const [rows, deposited] = await Promise.all([
+      Payment.find(match).select('orderId tenantId amount createdAt collectedAt').sort({ createdAt: 1 }).lean(),
+      Payment.countDocuments({
+        ...(tenantId ? { tenantId } : {}),
+        provider: PAYMENT_PROVIDER.COD,
+        status: PAYMENT_STATUS.SUCCESS,
+        depositedAt: null,
+      }),
+    ]);
+
+    const bands = {};
+    for (const b of [...COD_AGING_BANDS_HOURS.map((h) => `lte_${h}h`), `gt_${COD_AGING_BANDS_HOURS.at(-1)}h`]) {
+      bands[b] = { count: 0, paise: 0 };
+    }
+    let receivablePaise = 0;
+    let oldestAt = null;
+    for (const r of rows) {
+      const paise = toPaise(r.amount || 0);
+      receivablePaise += paise;
+      const hours = (new Date(now).getTime() - new Date(r.createdAt).getTime()) / 3600000;
+      const band = codAgingBand(hours);
+      bands[band].count += 1;
+      bands[band].paise += paise;
+      if (!oldestAt || new Date(r.createdAt) < oldestAt) oldestAt = new Date(r.createdAt);
+    }
+
+    return {
+      outstandingCount: rows.length,
+      receivablePaise,
+      receivable: fromPaise(receivablePaise), // rupee display value; paise stays the unit of record
+      oldestAt,
+      oldestAgeHours: oldestAt ? Math.round(((new Date(now).getTime() - oldestAt.getTime()) / 3600000) * 100) / 100 : 0,
+      collectedNotDeposited: deposited,
+      aging: bands,
+      items: rows.slice(0, 200).map((r) => ({
+        paymentId: String(r._id),
+        orderId: String(r.orderId),
+        amountPaise: toPaise(r.amount || 0),
+        createdAt: r.createdAt,
+        ageHours: Math.round(((new Date(now).getTime() - new Date(r.createdAt).getTime()) / 3600000) * 100) / 100,
+        band: codAgingBand((new Date(now).getTime() - new Date(r.createdAt).getTime()) / 3600000),
+      })),
+    };
   }
 
   newIdempotencyKey(prefix = 'pay') {

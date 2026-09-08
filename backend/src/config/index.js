@@ -84,6 +84,31 @@ const config = {
     pendingStaleMinutes: Number(process.env.PAYMENT_PENDING_STALE_MINUTES) || 15,
   },
 
+  // ---- Cash on delivery ----
+  cod: {
+    /**
+     * Is cash offered at all? A marketplace switches cash off for a monsoon, a
+     * fraud spike, or a city where riders are being robbed — an env flip, not a
+     * deploy. The storefront bootstrap publishes this so the radio button
+     * disappears instead of the checkout failing later.
+     */
+    enabled: process.env.COD_ENABLED !== 'false',
+    /**
+     * Risk cap in PAISE (default ₹5,000). Cash is an unsecured credit line to a
+     * stranger; above the cap the order must be prepaid. Enforced in
+     * payment.service.charge BEFORE anything is created, so an over-cap attempt
+     * is a clean 422 and never a half-built order. 0 disables the cap.
+     */
+    maxAmountPaise: Number(process.env.COD_MAX_AMOUNT_PAISE) || 500000,
+    /**
+     * Flat handling fee in PAISE (default ₹0). Carrying cash costs the platform
+     * real money — a rider with notes in a bag, a remittance run, theft risk —
+     * and most marketplaces pass some of it back. Defaults to 0 so enabling COD
+     * never silently changes a price.
+     */
+    feePaise: Number(process.env.COD_FEE_PAISE) || 0,
+  },
+
   razorpay: {
     keyId: process.env.RAZORPAY_KEY_ID || '',
     keySecret: process.env.RAZORPAY_KEY_SECRET || '',

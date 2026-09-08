@@ -24,7 +24,7 @@ import SystemHeartbeat from '../models/systemHeartbeat.model.js';
 import Payment from '../models/payment.model.js';
 import RefundTransaction from '../models/refundTransaction.model.js';
 import catalogEventService from '../services/catalogEvent.service.js';
-import { PAYMENT_STATUS, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
+import { PAYMENT_STATUS, PAYMENT_PROVIDER, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
 import { createRegistry } from './metrics.js';
 
 export const registry = createRegistry('fm');
@@ -69,6 +69,35 @@ const paymentPendingAge = registry.gauge(
   'Age in seconds of the oldest PENDING payment; 0 when none.',
 );
 const refundPending = registry.gauge('refund_pending_count', 'Gateway refunds awaiting reconciliation (async providers).');
+
+// ---- Cash on delivery (unsecured money, physically in the field) ----
+// Cash is the one payment method where the platform extends credit to a
+// stranger and then sends an employee to collect it, so "how much is
+// outstanding, and how old is it?" is a risk question, not a curiosity. These
+// four gauges are the whole exposure dashboard: receivable (owed, not yet
+// taken), age (how long it has been owed), and cash on hand (taken but not yet
+// banked — the theft/loss window).
+const codOutstanding = registry.gauge(
+  'cod_outstanding_count',
+  'COD payments AWAITING_COLLECTION — orders confirmed and moving with no money taken yet.',
+);
+const codOutstandingPaise = registry.gauge(
+  'cod_outstanding_paise',
+  'Total paise owed across outstanding COD payments (the unsecured exposure).',
+);
+const codOutstandingAge = registry.gauge(
+  'cod_outstanding_oldest_age_seconds',
+  'Age in seconds of the oldest outstanding COD payment; 0 when none.',
+);
+const codCashOnHand = registry.gauge(
+  'cod_cash_on_hand_count',
+  'COD payments collected but not yet banked — physical notes in the field.',
+);
+export const codCollections = registry.counter(
+  'cod_collections_total',
+  'Cash-on-delivery collection attempts by outcome (ok/already_collected/mismatch/error).',
+  ['result'],
+);
 export const webhookEvents = registry.counter(
   'webhook_events_total',
   'Gateway webhook events by provider and processing result (processed/duplicate/mismatch/ignored).',
@@ -167,6 +196,30 @@ export async function collectDynamic() {
       oldestPayment ? Math.max(0, (Date.now() - new Date(oldestPayment.createdAt).getTime()) / 1000) : 0,
     );
     refundPending.set(pendingRefunds);
+
+    // cash on delivery (exposure: owed, aging, and taken-but-unbanked)
+    const [codOwed, codOldest, codOwedPaise, codCollectedUnbanked] = await Promise.all([
+      Payment.countDocuments({ status: PAYMENT_STATUS.AWAITING_COLLECTION }),
+      Payment.findOne({ status: PAYMENT_STATUS.AWAITING_COLLECTION })
+        .sort({ createdAt: 1 }).select('createdAt').lean(),
+      Payment.aggregate([
+        { $match: { status: PAYMENT_STATUS.AWAITING_COLLECTION } },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]),
+      Payment.countDocuments({
+        status: PAYMENT_STATUS.SUCCESS,
+        provider: PAYMENT_PROVIDER.COD,
+        depositedAt: null,
+      }),
+    ]);
+    codOutstanding.set(codOwed);
+    codOutstandingAge.set(
+      codOldest ? Math.max(0, (Date.now() - new Date(codOldest.createdAt).getTime()) / 1000) : 0,
+    );
+    // `amount` is rupees on the Payment row; the metric is paise so it stays an
+    // integer and matches every other money gauge in the ledger.
+    codOutstandingPaise.set(Math.round((codOwedPaise[0]?.total || 0) * 100));
+    codCashOnHand.set(codCollectedUnbanked);
   } catch (err) {
     // partial metrics are better than none — the scrape still succeeds
     // eslint-disable-next-line no-console

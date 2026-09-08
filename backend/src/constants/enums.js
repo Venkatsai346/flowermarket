@@ -249,6 +249,16 @@ export const ORDER_CANCELLATION_REASON = Object.freeze({
 // ---- Payment ----
 export const PAYMENT_STATUS = Object.freeze({
   PENDING: 'pending',
+  /**
+   * Cash on delivery: the order is CONFIRMED and the goods are moving, but no
+   * money has changed hands yet. This is NOT `pending` — `pending` means "a
+   * gateway may still capture this", and the reconciliation sweep resolves
+   * those against the PSP and cancels the order after 15 minutes. A COD order
+   * has no PSP to ask, so it must be a distinct state or the sweep would cancel
+   * every cash order in production (which is exactly what it did before COD was
+   * implemented). Settled by `collectCashOnDelivery()` at the door.
+   */
+  AWAITING_COLLECTION: 'awaiting_collection',
   SUCCESS: 'success',
   FAILED: 'failed',
   REFUNDED: 'refunded',
@@ -267,6 +277,7 @@ export const PAYMENT_PROVIDER = Object.freeze({
   MOCK: 'mock', // dev/test gateway
   RAZORPAY: 'razorpay', // production (adapter-ready)
   WALLET: 'wallet', // internal — money moves from the customer's wallet liability, no external gateway
+  COD: 'cod', // internal — the rider collects cash at the door; no gateway is ever called
 });
 
 export const PAYMENT_TRANSACTION_TYPE = Object.freeze({
@@ -637,6 +648,10 @@ export const AUDIT_ACTION = Object.freeze({
   KYC_REVIEW: 'kyc_review',
   BANK_VERIFY: 'bank_verify',
 
+  // ---- cash on delivery ----
+  COD_COLLECT: 'cod_collect',
+  COD_COLLECTION_FAIL: 'cod_collection_fail',
+
   // ---- Phase 11: fiscal period close ----
   PERIOD_CLOSE: 'period_close',
   PERIOD_REOPEN: 'period_reopen',
@@ -707,6 +722,7 @@ export const DOMAIN_EVENT_TYPE = Object.freeze({
   PAYOUT_REVERSED: 'payout_reversed',
   PAYMENT_CONFIRMED: 'payment_confirmed',
   PAYMENT_FAILED: 'payment_failed',
+  COD_COLLECTED: 'cod_collected', // cash collected at the door — a money FACT
   ORDER_CANCELLED: 'order_cancelled',
   // Phase 11 — period close lifecycle (no journal; the close is itself the fact)
   PERIOD_CLOSED: 'period_closed',
@@ -733,6 +749,7 @@ export const DOMAIN_EVENT_JOURNAL_KINDS = Object.freeze([
   DOMAIN_EVENT_TYPE.PSP_SETTLED,
   DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT,
   DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED,
+  DOMAIN_EVENT_TYPE.COD_COLLECTED,
   DOMAIN_EVENT_TYPE.WALLET_TOPUP,
   DOMAIN_EVENT_TYPE.WALLET_BACKFILL,
   DOMAIN_EVENT_TYPE.VENDOR_BACKFILL,
@@ -858,6 +875,15 @@ export const LEDGER_JOURNAL_KIND = Object.freeze({
   REFUND_ISSUED: 'refund_issued',       // refund to wallet or original method
   PAYOUT_INITIATED: 'payout_initiated', // money sent to a vendor
   PAYOUT_REVERSED: 'payout_reversed',   // bank returned it
+  COD_COLLECTED: 'cod_collected',       // rider collected the cash at the door
+  /**
+   * A cash order cancelled BEFORE the money was collected: the customer's debt
+   * is extinguished and nothing moves. Distinct from `refund_issued` because no
+   * money ever came in to give back — booking it as a refund would imply a cash
+   * payout that never happened, and leaving it unbooked would strand a
+   * `cod_receivable` balance nobody can ever collect.
+   */
+  COD_RECEIVABLE_WAIVED: 'cod_receivable_waived',
   TDS_DEDUCTED: 'tds_deducted',
   COMMISSION_INVOICED: 'commission_invoiced',
   ADJUSTMENT: 'adjustment',             // manual, reason-coded, audited
@@ -892,6 +918,26 @@ export const LEDGER_ACCOUNT = Object.freeze({
   CUSTOMER_WALLET_LIABILITY: 'customer_wallet_liability',
   WALLET_GOODWILL_EXPENSE: 'wallet_goodwill_expense',  // expense: platform money given away
   ROUNDING_DIFFERENCE: 'rounding_difference',           // expense: never expected to be non-zero
+  /**
+   * Cash-on-delivery loop. Two accounts, because the cash has two distinct
+   * lives before it reaches the bank:
+   *
+   *   cod_receivable  asset — the customer owes us and the rider has not yet
+   *                   collected. Raised by `sale_captured` on a COD order
+   *                   (instead of gateway_clearing, which would claim a PSP
+   *                   holds money it has never seen).
+   *   cash_on_hand    asset — physical notes in a rider's bag or a store till,
+   *                   collected but not yet deposited. Raised by
+   *                   `cod_collected`, which drains cod_receivable.
+   *
+   * Keeping them apart is what makes "how much cash is riding on bikes right
+   * now, and since when?" a query rather than an argument — and it is the only
+   * way to reconcile a rider's remittance against what they were supposed to
+   * collect. Draining cash_on_hand into `bank` is a deposit, which the existing
+   * bank-statement reconciliation already handles.
+   */
+  COD_RECEIVABLE: 'cod_receivable',
+  CASH_ON_HAND: 'cash_on_hand',
 });
 
 /** Prefixes for owner-scoped accounts. */

@@ -473,6 +473,23 @@ class DomainEventService {
         await ledgerPostingService.postWalletTopup({ walletTransaction: txn, goodwill: txn.reason === WALLET_TXN_REASON.GOODWILL });
         return;
       }
+      case DOMAIN_EVENT_TYPE.COD_COLLECTED: {
+        // The Payment row is the aggregate of record: it carries both the amount
+        // owed and the amount actually collected, so the journal is fully
+        // re-derivable and replaying it is exact (and idempotent on payment id).
+        const { default: Payment } = await import('../models/payment.model.js');
+        const { PAYMENT_STATUS } = await import('../constants/enums.js');
+        const payment = await Payment.findById(id).lean();
+        if (!payment) throw Object.assign(new Error('payment missing'), { code: 'AGGREGATE_MISSING' });
+        // Refuse to invent cash: only a payment that was really collected can
+        // be replayed. An uncollected receivable posting cash_on_hand would be
+        // the ledger claiming money nobody has counted.
+        if (payment.status !== PAYMENT_STATUS.SUCCESS || !payment.collectedAt) {
+          throw Object.assign(new Error('cash not collected'), { code: 'COD_NOT_COLLECTED' });
+        }
+        await ledgerPostingService.postCodCollected({ payment });
+        return;
+      }
       case DOMAIN_EVENT_TYPE.WALLET_BACKFILL:
         // the reconciled difference is historical data — it cannot be
         // re-derived after the fact, so replay REFUSES it loudly instead of

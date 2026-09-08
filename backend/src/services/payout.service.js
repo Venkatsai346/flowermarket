@@ -21,6 +21,7 @@ import { AppError, badRequest, conflict, notFound } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import { toPaise, fromPaise, sumPaise, applyBps } from '../utils/money.js';
 import { assertTransition, PAYOUT_IN_FLIGHT } from '../utils/payoutStateMachine.js';
+import { payoutEligibilityAt } from '../utils/returnWindow.js';
 import {
   BANK_VERIFICATION_STATUS, KYC_STATUS, PAYOUT_LINE_STATE, PAYOUT_STATE, PAYOUT_HOLD_REASON,
   STATUTORY_RATE_KIND, LEDGER_JOURNAL_KIND, ORDER_STATUS, AUDIT_ACTION, AUDIT_ACTOR_TYPE,
@@ -34,10 +35,12 @@ import {
  * A line becomes payable only when BOTH are open:
  *   1. RETURN RISK — `deliveredAt + returnWindowDays` has passed. Paying before
  *      that means buying back your own goods.
- *   2. CASH IN HAND — the PSP has actually settled the money to us (a
- *      `psp_settled` ledger entry covering the order). Paying before that is
- *      lending the vendor our own working capital. Gated by
- *      `policy.requirePspSettlement`, off until settlement ingestion (M5).
+ *   2. CASH IN HAND — the order's money has actually reached us. For a gateway
+ *      order that is a `psp_settled` entry (the PSP moved it to our bank); for
+ *      a CASH order it is `cod_collected` (a rider counted notes at the door —
+ *      there is no PSP to wait for). Paying before that is lending the vendor
+ *      our own working capital. Gated by `policy.requirePspSettlement`, off
+ *      until settlement ingestion (M5).
  *
  * ── The arithmetic, and why it is a pure function ───────────────────────────
  * `computeLineFinancials()` takes numbers and returns numbers. No database, no
@@ -234,8 +237,23 @@ class PayoutService {
       });
 
       const perishable = perishableByMaster.get(String(item.productMasterId));
-      const windowDays = perishable ? policy.perishableReturnWindowDays : policy.returnWindowDays;
-      const deliveredAt = order.status === ORDER_STATUS.DELIVERED ? (order.deliveredAt || order.updatedAt || null) : null;
+      // Gate 1 (return risk) is computed by the SAME pure clock the customer's
+      // return window uses — utils/returnWindow.js. Two subsystems deriving the
+      // delivery moment separately is how a vendor line becomes payable while
+      // the customer can still return the goods. The payout side deliberately
+      // takes the CONSERVATIVE stamp (never paidAt) — see deliveryStampFor.
+      const eligibility = order.status === ORDER_STATUS.DELIVERED
+        ? payoutEligibilityAt(order, {
+          windowDays: policy.returnWindowDays,
+          perishable: Boolean(perishable),
+          perishableWindowDays: policy.perishableReturnWindowDays,
+        })
+        : {
+          deliveredAt: null,
+          eligibleAt: null,
+          windowDays: perishable ? policy.perishableReturnWindowDays : policy.returnWindowDays,
+        };
+      const deliveredAt = eligibility.deliveredAt;
 
       // eslint-disable-next-line no-await-in-loop
       const line = await PayoutLineItem.create({
@@ -246,8 +264,16 @@ class PayoutService {
         orderNumber: order.orderNumber,
         ...financials,
         state: PAYOUT_LINE_STATE.ACCRUED,
+        // frozen on the row so the eligibility sweep (which is what actually
+        // stamps eligibleAt for almost every line — accrual happens at
+        // CONFIRMED, long before delivery) applies the RIGHT window. Without
+        // this the sweep could not tell a perishable line from a pot.
+        perishable: Boolean(perishable),
+        returnWindowDays: eligibility.windowDays ?? (perishable
+          ? policy.perishableReturnWindowDays
+          : policy.returnWindowDays),
         deliveredAt,
-        eligibleAt: deliveredAt ? new Date(new Date(deliveredAt).getTime() + windowDays * 86400000) : null,
+        eligibleAt: eligibility.eligibleAt,
       });
       created += 1;
       lines.push(line);
@@ -279,21 +305,45 @@ class PayoutService {
     for (const line of pending) {
       if (!line.eligibleAt) {
         // eslint-disable-next-line no-await-in-loop
-        const order = await Order.findById(line.orderId).select('status deliveredAt updatedAt').lean();
+        const order = await Order.findById(line.orderId)
+          .select('status deliveredAt paymentSummary updatedAt').lean();
         if (!order || order.status !== ORDER_STATUS.DELIVERED) { waiting += 1; continue; }
-        const deliveredAt = order.deliveredAt || order.updatedAt || now;
-        line.deliveredAt = deliveredAt;
-        line.eligibleAt = new Date(new Date(deliveredAt).getTime() + policy.returnWindowDays * 86400000);
+        // Same pure clock as accrual, so a line filled in here is byte-identical
+        // to one stamped at accrual time. `now` is the last-resort stamp for a
+        // delivered order with no delivery moment recorded at all.
+        const stamp = payoutEligibilityAt(order, {
+          // prefer the window FROZEN on the line at accrual (the policy may
+          // have changed since); fall back to today's policy for legacy rows
+          windowDays: line.returnWindowDays ?? policy.returnWindowDays,
+          perishable: Boolean(line.perishable),
+          perishableWindowDays: policy.perishableReturnWindowDays,
+          now,
+        });
+        line.deliveredAt = stamp.deliveredAt || now;
+        line.eligibleAt = stamp.eligibleAt
+          || new Date(new Date(now).getTime() + policy.returnWindowDays * 86400000);
         // eslint-disable-next-line no-await-in-loop
         await line.save();
         if (line.eligibleAt > now) { waiting += 1; continue; }
       }
 
-      // Gate 2: has the money actually reached our bank?
+      // Gate 2: has the money actually reached us?
+      //
+      // Two kinds of proof, one question — "is this order's cash in hand?" A
+      // gateway order proves it with `psp_settled` (the PSP moved money to our
+      // bank). A CASH order has no PSP and never will: its proof is
+      // `cod_collected`, the rider counting notes at the door. Both journals
+      // are keyed `refType: 'order'` on purpose so this is one indexed query
+      // rather than a payment lookup per line. Without the COD arm, every cash
+      // order would sit blocked forever once settlement gating is switched on.
       if (policy.requirePspSettlement) {
         // eslint-disable-next-line no-await-in-loop
         const settled = await LedgerJournal.exists({
-          kind: LEDGER_JOURNAL_KIND.PSP_SETTLED, refType: 'order', refId: line.orderId,
+          refType: 'order',
+          refId: line.orderId,
+          kind: {
+            $in: [LEDGER_JOURNAL_KIND.PSP_SETTLED, LEDGER_JOURNAL_KIND.COD_COLLECTED],
+          },
         });
         if (!settled) { blocked += 1; continue; }
       }

@@ -45,6 +45,13 @@ export const orderListQuerySchema = Joi.object({
 export const deliverSchema = Joi.object({
   podType: Joi.string().valid('otp', 'photo', 'signature').required(),
   podValue: Joi.string().max(512).allow(null, '').optional(),
+  /**
+   * Cash orders: ops confirming the money was taken. Required (never defaulted
+   * to true) for the same reason as the rider flag — an unticked box silently
+   * read as "collected" is how a marketplace books cash it never received.
+   */
+  codCollected: Joi.boolean().optional(),
+  amountCollected: Joi.number().min(0).optional(),
 });
 
 /** Mutating ops with no required body — strip unknowns, never 400 on `{}` or a missing body. */
@@ -117,6 +124,33 @@ export const riderActionSchema = Joi.object({
   pod_reference: Joi.string().max(512).allow(null, '').optional(),
   reason: Joi.string().max(300).allow(null, '').optional(),
   fail_reason: Joi.string().max(300).allow(null, '').optional(),
+  /**
+   * Cash orders only: the rider's explicit confirmation that they took the
+   * money. REQUIRED (not defaulted to true) because silently treating an
+   * unticked box as "collected" is how a marketplace books cash it never
+   * received — the receivable disappears and the shortage is invisible.
+   */
+  cod_collected: Joi.boolean().optional(),
+  /** What the rider actually counted. Must equal the amount owed, exactly. */
+  amount_collected: Joi.number().min(0).optional(),
+});
+
+/**
+ * POST /rider/deliveries/:id/collect-cash — record cash taken at the door.
+ *
+ * `amount_collected` is optional and, when present, must MATCH what the order
+ * owes: the service refuses a shortfall rather than absorbing it, because a
+ * difference between owed and counted is a theft or shortage signal that a
+ * human has to resolve, not a number to round away.
+ */
+export const codCollectSchema = Joi.object({
+  amount_collected: Joi.number().min(0).optional(),
+  note: Joi.string().max(300).allow(null, '').optional(),
+});
+
+/** Ops/finance: bank cash that a rider already handed in. */
+export const codDepositSchema = Joi.object({
+  deposit_ref: Joi.string().max(80).allow(null, '').optional(),
 });
 
 export const riderAvailabilitySchema = Joi.object({

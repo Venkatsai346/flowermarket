@@ -56,6 +56,63 @@ import {
 /** Max acceptable float-artefact drift before we treat it as a real bug. */
 const ROUNDING_TOLERANCE_PAISE = 100; // ₹1 across a whole order
 
+// ---------------------------------------------------------------------------
+// PURE source-account resolution — exported so scripts/cod-ledger.test.js can
+// prove which account a sale debits WITHOUT a database. This is the decision
+// that keeps the books honest: an account is only meaningful if the same kind
+// of money always lands in it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Which asset account holds the customer's money for a captured sale?
+ *
+ *   wallet → customer_wallet_liability  we already owed them; the balance drops
+ *   COD    → cod_receivable             NOBODY holds it yet — a rider must go
+ *                                       and get it. Booking this to
+ *                                       gateway_clearing would claim a PSP is
+ *                                       holding cash it has never seen.
+ *   else   → gateway_clearing           the PSP holds it pending settlement
+ *
+ * Wallet wins over COD if both flags are somehow set: a wallet balance is real
+ * money already in the building, and treating it as uncollected cash would
+ * understate assets.
+ */
+export function saleSourceAccount({ isWalletPayment = false, isCodPayment = false } = {}) {
+  if (isWalletPayment) {
+    return { accountCode: ledgerAccounts.walletLiability(), label: 'wallet', kind: 'wallet' };
+  }
+  if (isCodPayment) {
+    return { accountCode: ledgerAccounts.codReceivable(), label: 'cash on delivery', kind: 'cod' };
+  }
+  return { accountCode: ledgerAccounts.gatewayClearing(), label: 'gateway', kind: 'gateway' };
+}
+
+/**
+ * Did this order's money come from cash?
+ *
+ * Resolved from the PAYMENT row (the money-movement truth), falling back to the
+ * order's method hint only for legacy rows predating the provider stamp.
+ * PURE: plain objects in, boolean out.
+ */
+export function isCodPayment(payment, order = null) {
+  if (payment) {
+    // A COD payment is stamped provider=cod at creation, so that settles it.
+    if (payment.provider === PAYMENT_PROVIDER.COD) return true;
+    // Any OTHER named provider is authoritative and means "a real rail moved
+    // this money" — wallet, razorpay or the mock gateway. The order's method
+    // hint must NOT be allowed to override it: an order that says `cod` but has
+    // a razorpay payment against it was prepaid, and treating it as cash would
+    // book a receivable for money already in the building (and let the payout
+    // settlement gate pass on a `cod_collected` that never happened).
+    if (payment.provider) return false;
+    // No provider recorded (legacy rows): fall back to the method.
+    if (payment.method === PAYMENT_METHOD.COD) return true;
+    if (payment.method) return false;
+  }
+  // No payment at all — the order's hint is all there is.
+  return order?.paymentMethod === PAYMENT_METHOD.COD;
+}
+
 class LedgerPostingService {
   /** Vendor commission rate (bps). 0 for store-owned lines — see header note. */
   async resolveCommissionBps({ vendorId, vendorCache }) {
@@ -75,7 +132,7 @@ class LedgerPostingService {
    * pass a pre-populated `vendorCache` (Map of vendorId -> commissionRateBps)
    * and no query is issued. `scripts/money.test.js` uses exactly that.
    */
-  async buildSaleLines({ order, items, vendorCache = new Map(), isWalletPayment = false }) {
+  async buildSaleLines({ order, items, vendorCache = new Map(), isWalletPayment = false, isCodPayment = false }) {
     const tenantId = order.tenantId;
     const lines = [];
     // Inclusive MRP: total === items − discount + fee (tax is inside the shelf).
@@ -178,16 +235,22 @@ class LedgerPostingService {
       });
     }
 
-    // Where did the customer's money come from? A gateway charge lands in
-    // `gateway_clearing` (we hold it before distributing); a wallet payment
-    // reduces the `customer_wallet_liability` we already owed them. Using the
-    // wrong account would make a wallet refund impossible to reconcile.
+    // Where did the customer's money come from? Three honest answers, and
+    // picking the wrong one makes the account meaningless:
+    //   gateway → `gateway_clearing`, money the PSP holds for us
+    //   wallet  → `customer_wallet_liability`, money we already owed them
+    //   COD     → `cod_receivable`, money NOBODY holds yet: the customer owes
+    //             it and a rider has not collected. Booking a COD sale to
+    //             gateway_clearing would assert a PSP is holding cash it has
+    //             never seen — and that phantom balance is precisely what
+    //             makes the settlement reconciliation disagree.
+    const source = saleSourceAccount({ isWalletPayment, isCodPayment });
     lines.unshift({
-      accountCode: isWalletPayment ? ledgerAccounts.walletLiability() : ledgerAccounts.gatewayClearing(),
+      accountCode: source.accountCode,
       debitPaise: totalPaise,
       refType: 'order',
       refId: order._id,
-      memo: `order ${order.orderNumber} (${isWalletPayment ? 'wallet' : order.paymentMethod || 'gateway'})`,
+      memo: `order ${order.orderNumber} (${source.label})`,
     });
 
     return { lines, totalPaise };
@@ -215,8 +278,11 @@ class LedgerPostingService {
       payment
         && (payment.provider === PAYMENT_PROVIDER.WALLET || payment.method === PAYMENT_METHOD.WALLET)
     );
+    // COD is a third source account, not a flavour of gateway. Wallet wins if
+    // both somehow appear (a wallet is real money we hold; COD is a promise).
+    const isCodPayment = !isWalletPayment && isCodPayment(payment, order);
 
-    const { lines } = await this.buildSaleLines({ order, items: orderItems, isWalletPayment });
+    const { lines } = await this.buildSaleLines({ order, items: orderItems, isWalletPayment, isCodPayment });
 
     return ledgerService.post({
       kind: LEDGER_JOURNAL_KIND.SALE_CAPTURED,
@@ -239,11 +305,33 @@ class LedgerPostingService {
    * the sale actually credited. A refund can therefore never touch a vendor who
    * wasn't on the order, and can never exceed what was captured.
    */
-  async postRefund({ refundTransaction }) {
+  async postRefund({ refundTransaction, isCodPayment = null }) {
     const rt = refundTransaction;
-    const counter = rt.destination === REFUND_DESTINATION.WALLET
-      ? ledgerAccounts.walletLiability()   // we still owe the money — as wallet balance
-      : ledgerAccounts.gatewayClearing();  // money goes back out through the gateway
+    // Where the money goes BACK OUT of must match where it came IN from:
+    //   wallet destination → we still owe it, as wallet balance
+    //   COD order          → notes out of the till (cash_on_hand), or, if the
+    //                        cash was never collected, the receivable simply
+    //                        unwinds — either way never gateway_clearing, which
+    //                        would ask a PSP to refund money it never received.
+    //   otherwise          → back out through the gateway
+    let counter;
+    if (rt.destination === REFUND_DESTINATION.WALLET) {
+      counter = ledgerAccounts.walletLiability();
+    } else {
+      const cod = isCodPayment === null
+        ? await this.orderWasPaidByCod(rt.orderId)
+        : Boolean(isCodPayment);
+      if (cod) {
+        // Notes handed back at the door come out of the till; a refund on cash
+        // that was NEVER collected has to unwind the receivable instead — there
+        // is no cash_on_hand to draw from, and gateway_clearing would ask a PSP
+        // to refund money it never received.
+        const collected = await this.orderCodWasCollected(rt.orderId);
+        counter = collected ? ledgerAccounts.cashOnHand() : ledgerAccounts.codReceivable();
+      } else {
+        counter = ledgerAccounts.gatewayClearing();
+      }
+    }
 
     return ledgerService.reverseProportional({
       originalKey: this.saleKey(rt.orderId),
@@ -262,6 +350,185 @@ class LedgerPostingService {
   /** Canonical idempotency key for an order's sale journal. */
   saleKey(orderId) {
     return `${LEDGER_JOURNAL_KIND.SALE_CAPTURED}:order:${orderId}`;
+  }
+
+  /** Canonical idempotency key for a COD collection / deposit journal. */
+  codCollectedKey(paymentId) {
+    return `${LEDGER_JOURNAL_KIND.COD_COLLECTED}:payment:${paymentId}`;
+  }
+  codDepositKey(paymentId) {
+    return `cod_deposit:payment:${paymentId}`;
+  }
+
+  /**
+   * Did this order's money actually come from cash? Resolved from the PAYMENT
+   * row (the money-movement truth), falling back to the order's method hint for
+   * legacy rows that predate the provider stamp.
+   * PURE: takes plain objects, so it is unit-testable without a database.
+   */
+  static isCodPayment(payment, order = null) {
+    return isCodPayment(payment, order);
+  }
+
+  /** Was a COD order's cash actually collected? (drives the refund counter) */
+  async orderCodWasCollected(orderId) {
+    if (!orderId) return false;
+    const payment = await Payment.findOne({ orderId }).select('provider method collectedAt').lean();
+    return Boolean(payment?.collectedAt) && ledgerPosting.isCodPayment(payment);
+  }
+
+  /** DB-backed convenience wrapper used by the refund path. */
+  async orderWasPaidByCod(orderId) {
+    if (!orderId) return false;
+    const payment = await Payment.findOne({ orderId }).lean();
+    if (payment) return ledgerPosting.isCodPayment(payment);
+    const order = await Order.findById(orderId).select('paymentMethod paymentSummary').lean();
+    return Boolean(order && ledgerPosting.isCodPayment(null, order));
+  }
+
+  /**
+   * COD collection: the rider took the cash at the door.
+   *
+   *   DR cash_on_hand      (notes now physically ours)
+   *   CR cod_receivable    (the customer no longer owes us)
+   *
+   * This is a pure ASSET SWAP — it cannot change the total on the balance
+   * sheet, which is why a COD order stays provably balanced at every step: the
+   * sale raised the receivable, the collection converts it to cash, and the
+   * deposit converts cash to bank. Idempotent on the payment id, so a rider
+   * tapping twice (or two riders tapping at once) posts exactly once.
+   *
+   * The amount is taken from the Payment, never from the caller: what the
+   * customer owes is a fact already on the row, and letting a client restate it
+   * would turn a shortage into a balanced-looking journal.
+   */
+  async postCodCollected({ payment, order = null, collectedBy = null, occurredAt = null }) {
+    const amountPaise = toPaise(payment.amountCollected ?? payment.amount ?? 0);
+    if (amountPaise <= 0) {
+      throw new AppError('Cannot post a COD collection for a non-positive amount', {
+        status: 422, code: 'LEDGER_COD_EMPTY', details: { paymentId: String(payment._id) },
+      });
+    }
+    return ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.COD_COLLECTED,
+      idempotencyKey: this.codCollectedKey(payment._id),
+      lines: [
+        {
+          accountCode: ledgerAccounts.cashOnHand(),
+          debitPaise: amountPaise,
+          creditPaise: 0,
+          refType: 'payment',
+          refId: payment._id,
+          memo: `cash collected at delivery${collectedBy ? ` by ${collectedBy}` : ''}`,
+        },
+        {
+          accountCode: ledgerAccounts.codReceivable(),
+          debitPaise: 0,
+          creditPaise: amountPaise,
+          refType: 'payment',
+          refId: payment._id,
+          memo: `COD receivable settled${order?.orderNumber ? ` — order ${order.orderNumber}` : ''}`,
+        },
+      ],
+      // The header refs the ORDER, not the payment, so the payout settlement
+      // gate can ask one uniform question — "has this order's money reached
+      // us?" — for gateway (`psp_settled`) and cash (`cod_collected`) alike,
+      // through the same index. The payment id stays in meta and on each line.
+      refType: 'order',
+      refId: payment.orderId,
+      tenantId: payment.tenantId,
+      occurredAt: occurredAt || payment.collectedAt || new Date(),
+      traceId: payment.traceId || order?.traceId || null,
+      meta: {
+        paymentId: String(payment._id),
+        orderId: String(payment.orderId),
+        orderNumber: order?.orderNumber || null,
+        collectedBy: collectedBy ? String(collectedBy) : null,
+      },
+    });
+  }
+
+  /**
+   * A cash order cancelled before collection: extinguish the receivable.
+   *
+   *   DR (whatever the sale credited — vendor payables, commission, GST)
+   *   CR cod_receivable    the customer no longer owes us
+   *
+   * Reverses the sale journal proportionally, exactly like a refund, but with
+   * `cod_receivable` as the counter and NO refund transaction: no money ever
+   * arrived, so there is nothing to send back. Without this, cancelling a
+   * confirmed COD order would leave a receivable on the balance sheet that can
+   * never be collected — an asset that is really a loss, quietly overstating
+   * the books forever.
+   *
+   * Idempotent on the order id (a cancellation may be retried).
+   */
+  async postCodReceivableWaived({ order, reason = 'order_cancelled', postedBy = null }) {
+    const amountPaise = toPaise(order.totalAmount ?? 0);
+    if (amountPaise <= 0) return { created: false, skipped: 'nothing_to_waive' };
+    return ledgerService.reverseProportional({
+      originalKey: this.saleKey(order._id),
+      amountPaise,
+      counterAccount: ledgerAccounts.codReceivable(),
+      kind: LEDGER_JOURNAL_KIND.COD_RECEIVABLE_WAIVED,
+      idempotencyKey: `${LEDGER_JOURNAL_KIND.COD_RECEIVABLE_WAIVED}:order:${order._id}`,
+      refType: 'order',
+      refId: order._id,
+      occurredAt: new Date(),
+      memo: `COD receivable waived — ${reason}`,
+      postedBy,
+      traceId: order.traceId || null,
+    });
+  }
+
+  /**
+   * COD remittance: the collected notes were banked.
+   *
+   *   DR bank / CR cash_on_hand
+   *
+   * Completing this is what closes the cash loop — after it, the exposure is in
+   * a bank account where the existing statement reconciliation can prove it.
+   * Idempotent on the payment id.
+   */
+  async postCodDeposit({ payment }) {
+    const amountPaise = toPaise(payment.amountCollected ?? payment.amount ?? 0);
+    if (amountPaise <= 0) {
+      throw new AppError('Cannot post a COD deposit for a non-positive amount', {
+        status: 422, code: 'LEDGER_COD_EMPTY', details: { paymentId: String(payment._id) },
+      });
+    }
+    return ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.COD_COLLECTED,
+      idempotencyKey: this.codDepositKey(payment._id),
+      lines: [
+        {
+          accountCode: ledgerAccounts.bank(),
+          debitPaise: amountPaise,
+          creditPaise: 0,
+          refType: 'payment',
+          refId: payment._id,
+          memo: `COD cash deposited${payment.depositRef ? ` — ${payment.depositRef}` : ''}`,
+        },
+        {
+          accountCode: ledgerAccounts.cashOnHand(),
+          debitPaise: 0,
+          creditPaise: amountPaise,
+          refType: 'payment',
+          refId: payment._id,
+          memo: 'cash on hand banked',
+        },
+      ],
+      refType: 'order',
+      refId: payment.orderId,
+      tenantId: payment.tenantId,
+      occurredAt: payment.depositedAt || new Date(),
+      traceId: payment.traceId || null,
+      meta: {
+        paymentId: String(payment._id),
+        orderId: String(payment.orderId),
+        depositRef: payment.depositRef || null,
+      },
+    });
   }
 
   /**
@@ -412,4 +679,6 @@ class LedgerPostingService {
   }
 }
 
-export default new LedgerPostingService();
+const ledgerPosting = new LedgerPostingService();
+export { ledgerPosting };
+export default ledgerPosting;

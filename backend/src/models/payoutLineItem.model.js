@@ -46,6 +46,16 @@ const PayoutLineItemSchema = new Schema(
       default: PAYOUT_LINE_STATE.ACCRUED,
       index: true,
     },
+    /**
+     * The return window THIS line was accrued under, frozen like the arithmetic
+     * above. Perishables get `perishableReturnWindowDays` (1) rather than the
+     * standard 7 — and because accrual almost always happens at CONFIRMED (long
+     * before delivery), the eligibility SWEEP is what actually stamps
+     * `eligibleAt`. Without the window frozen on the row, the sweep had no way
+     * to know the line was perishable and silently applied 7 days to everything.
+     */
+    perishable: { type: Boolean, default: false },
+    returnWindowDays: { type: Number, default: null, min: 0 },
     deliveredAt: { type: Date, default: null },
     eligibleAt: { type: Date, default: null, index: true },
     holdReason: { type: String, enum: Object.values(PAYOUT_HOLD_REASON), default: null },

@@ -7,6 +7,7 @@ import refundCalculator from './refundCalculator.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { roundMoney, moneySum } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
+import { returnWindow, RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS } from '../utils/returnWindow.js';
 import {
   RETURN_CLAIM_TYPE,
   RETURN_REQUEST_STATUS,
@@ -15,10 +16,10 @@ import {
   ORDER_STATUS,
 } from '../constants/enums.js';
 
-/** Standard return window (days after delivery). */
-export const RETURN_WINDOW_DAYS = 7;
-/** Instant-claim window (hours after delivery) for perishables. */
-export const INSTANT_CLAIM_WINDOW_HOURS = 24;
+// Re-exported so the existing import sites (and the smoke suites) keep working:
+// the window constants now live in utils/returnWindow.js, ONE home shared with
+// the payout eligibility clock.
+export { RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS };
 /** Fraud guard: max auto-approved instant claims per customer per month. */
 export const INSTANT_CLAIM_MONTHLY_LIMIT = 3;
 
@@ -36,14 +37,18 @@ class ReturnsService {
       return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'Order is not delivered yet' };
     }
 
-    const deliveredAt = order.paymentSummary?.paidAt || order.updatedAt;
-    const hoursSince = (Date.now() - new Date(deliveredAt).getTime()) / 3600000;
-    const daysSince = hoursSince / 24;
-
-    const windowHours = claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? INSTANT_CLAIM_WINDOW_HOURS : RETURN_WINDOW_DAYS * 24;
-    const windowExpired = hoursSince > windowHours;
-    if (windowExpired) {
-      return { isEligible: false, windowExpired: true, nonReturnableItems: false, claimLimitReached: false, reason: `Return window expired (${claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? `${INSTANT_CLAIM_WINDOW_HOURS}h` : `${RETURN_WINDOW_DAYS}d`})` };
+    // The clock starts at ACTUAL DELIVERY, not at payment — and the stamp
+    // resolution lives in utils/returnWindow.js, the SAME helper the payout
+    // eligibility gate uses. Two subsystems reading the delivery moment from
+    // different fields is how the platform ends up paying a vendor while the
+    // customer still has a live return window.
+    const window = returnWindow(order, { claimType });
+    if (window.windowExpired) {
+      return {
+        isEligible: false, windowExpired: true, nonReturnableItems: false,
+        claimLimitReached: false, window,
+        reason: `Return window expired (${claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? `${INSTANT_CLAIM_WINDOW_HOURS}h` : `${RETURN_WINDOW_DAYS}d`})`,
+      };
     }
 
     // ---- item-level checks ----
@@ -58,7 +63,7 @@ class ReturnsService {
       return false;
     });
     if (nonReturnable) {
-      return { isEligible: false, windowExpired: false, nonReturnableItems: true, claimLimitReached: false, reason: 'Items are not returnable or qty exceeds delivered qty' };
+      return { isEligible: false, windowExpired: false, nonReturnableItems: true, claimLimitReached: false, window, reason: 'Items are not returnable or qty exceeds delivered qty' };
     }
 
     // ---- fraud guard: instant-claim monthly limit ----
@@ -74,11 +79,11 @@ class ReturnsService {
       });
       claimLimitReached = claimsThisMonth >= INSTANT_CLAIM_MONTHLY_LIMIT;
       if (claimLimitReached) {
-        return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: true, reason: 'Instant-claim limit reached for this month — contact support' };
+        return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: true, window, reason: 'Instant-claim limit reached for this month — contact support' };
       }
     }
 
-    return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, order, orderItems };
+    return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, window, order, orderItems };
   }
 
   /**
