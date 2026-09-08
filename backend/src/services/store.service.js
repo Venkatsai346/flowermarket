@@ -12,6 +12,12 @@ import Tenant from '../models/tenant.model.js';
 import TenantAuthConfig from '../models/tenantAuthConfig.model.js';
 import User from '../models/user.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
+import Hub from '../models/hub.model.js';
+import ServiceablePincode from '../models/serviceablePincode.model.js';
+import DeliverySlot from '../models/deliverySlot.model.js';
+import DeliveryFeePolicy from '../models/deliveryFeePolicy.model.js';
+import TaxPolicy from '../models/taxPolicy.model.js';
+import TaxRegistration from '../models/taxRegistration.model.js';
 import ProductMaster from '../models/productMaster.model.js';
 import Vendor from '../models/vendor.model.js';
 import planService from './plan.service.js';
@@ -23,7 +29,10 @@ import { roundMoney } from '../utils/money.js';
 import config from '../config/index.js';
 import { USER_ROLES, PRODUCT_MASTER_STATUS, TENANT_LISTING_STATUS, TENANT_STATUS, AUDIT_ACTION } from '../constants/enums.js';
 import tenantDomainService from './tenantDomain.service.js';
+import slotService from './slot.service.js';
 import { BRAND_KITS } from '../constants/brandKits.js';
+import { evaluateOnboarding } from '../utils/onboardingReadiness.js';
+import { TAX_OWNER_TYPE } from '../constants/enums.js';
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -84,14 +93,247 @@ class StoreService {
       trialDays: planDoc.trialDays,
     });
 
+    // ---- operational skeleton (F5) ----
+    // A Tenant, an auth config, an owner and a subscription are not a shop: with
+    // no hub, no serviceable pincode, no open slot and no fee policy, checkout
+    // refuses every customer. Seed the parts that can be defaulted; the parts
+    // that cannot (which pincodes the merchant serves) become the first blocking
+    // item on the checklist returned below.
+    const seeded = await this.seedStarterSkeleton({
+      tenant, actorId: ownerUser._id, req,
+    }).catch((err) => ({ hub: null, feePolicy: null, slots: 0, errors: [err.message] }));
+
     await auditService.record({
       action: 'create', entityType: 'tenant', entityId: tenant._id,
       tenantId: tenant._id, actorId: ownerUser._id, actorType: 'tenant',
-      after: { slug: tenant.slug, name: tenant.name, plan: planDoc.code }, req,
+      after: { slug: tenant.slug, name: tenant.name, plan: planDoc.code, seeded }, req,
     }).catch(() => {});
 
     const tokens = await AuthService.issueTokens(ownerUser);
-    return { tenant, owner: ownerUser, tokens };
+    // `onboarding` ships with the registration response so the console can render
+    // the checklist on the very first screen instead of letting the merchant
+    // discover the gap by watching a customer fail to check out.
+    return { tenant, owner: ownerUser, tokens, seeded, onboarding: await this.getOnboardingStatus({ tenantId: tenant.id }).catch(() => null) };
+  }
+
+  // ---------------- onboarding (F5) ----------------
+  /**
+   * Seed the operational skeleton a new store needs before it can take an order.
+   *
+   * Called at the end of registerStore(). Three things are created, and the
+   * choice of what NOT to create matters as much as the rest:
+   *
+   *   • a Hub — every serviceable pincode must resolve to an active hub, and
+   *     every delivery slot belongs to one, so nothing works without it. Its
+   *     address is left blank because only the merchant knows it.
+   *   • open DeliverySlots for the next few days — slots are generated lazily
+   *     elsewhere, but a brand-new store has no cron history and a customer
+   *     arriving in the first minute should still see windows to pick from.
+   *   • a DeliveryFeePolicy with an EXPLICIT base fee of zero. Before this, a
+   *     store with no policy was charged a hardcoded ₹49 by the pricing engine —
+   *     a number no merchant chose. Free until they set a real fee is the honest
+   *     default, and having the row at all means the admin console has something
+   *     to edit instead of a blank page.
+   *
+   * NOT seeded: serviceable pincodes. A merchant's delivery area is a business
+   * fact nobody can guess, and a wrong guess is worse than no guess — it puts a
+   * store in front of customers it cannot serve, or claims a city it does not
+   * operate in. Pincodes are the first blocking item on the checklist instead.
+   *
+   * Every step is independently resilient and NONE of them can fail the
+   * registration: the tenant, owner and subscription already exist by this
+   * point, so aborting would orphan them. A store that seeds badly is still a
+   * store the checklist can describe accurately.
+   *
+   * @returns {Promise<{hub:string|null, feePolicy:string|null, slots:number, errors:string[]}>}
+   */
+  async seedStarterSkeleton({ tenant, actorId = null, req = null }) {
+    const onb = config.onboarding;
+    const result = { hub: null, feePolicy: null, slots: 0, errors: [] };
+    const tenantId = tenant.id || tenant._id;
+
+    // ---- hub ----
+    let hub = null;
+    if (onb.seedHub) {
+      try {
+        hub = await Hub.findOne({ tenantId, isActive: true }).sort({ createdAt: 1 });
+        if (!hub) {
+          hub = await Hub.create({
+            tenantId,
+            name: onb.hubName,
+            code: onb.hubCode,
+            serviceablePincodes: [], // the merchant decides their area
+            defaultSlotCapacity: onb.hubSlotCapacity,
+            isActive: true,
+          });
+          await auditService.record({
+            action: 'create', entityType: 'hub', entityId: hub._id,
+            tenantId, actorId, actorType: 'admin',
+            after: { code: hub.code, name: hub.name, seededBy: 'onboarding' }, req,
+          }).catch(() => {});
+        }
+        result.hub = String(hub._id);
+      } catch (err) {
+        result.errors.push(`hub: ${err.message}`);
+      }
+    }
+
+    // ---- delivery fee policy ----
+    if (onb.seedFeePolicy) {
+      try {
+        let policy = await DeliveryFeePolicy.findOne({ tenantId, isActive: true }).lean();
+        if (!policy) {
+          policy = await DeliveryFeePolicy.create({
+            tenantId,
+            name: 'default',
+            baseFee: onb.defaultBaseFee,
+            freeDeliveryThreshold: onb.defaultFreeThreshold,
+            expressSurgeMultiplier: onb.defaultExpressSurge,
+            distanceFeePerKm: 0,
+            isActive: true,
+            version: 1,
+          });
+          await auditService.record({
+            action: 'create', entityType: 'delivery_fee_policy', entityId: policy._id,
+            tenantId, actorId, actorType: 'admin',
+            after: { baseFee: policy.baseFee, seededBy: 'onboarding' }, req,
+          }).catch(() => {});
+        }
+        result.feePolicy = String(policy._id);
+      } catch (err) {
+        result.errors.push(`deliveryFeePolicy: ${err.message}`);
+      }
+    }
+
+    // ---- delivery slots for the next few days ----
+    if (hub) {
+      try {
+        const iso = (d) => d.toISOString().slice(0, 10);
+        const from = new Date();
+        const to = new Date(Date.now() + Math.max(0, onb.slotDaysAhead - 1) * 86400000);
+        const gen = await slotService.generateForDates({
+          tenantId,
+          hubId: hub._id,
+          fromDate: iso(from),
+          toDate: iso(to),
+          capacity: onb.hubSlotCapacity,
+        });
+        result.slots = gen?.created || 0;
+      } catch (err) {
+        result.errors.push(`slots: ${err.message}`);
+      }
+    }
+
+    if (result.errors.length) {
+      // Loud but not fatal — see the method comment.
+      console.warn(`[store] onboarding skeleton incomplete for tenant ${tenantId}: ${result.errors.join('; ')}`);
+    }
+    return result;
+  }
+
+  /**
+   * Gather the counts onboarding readiness is decided from.
+   *
+   * This is the ONLY half that touches the database; the decision itself lives in
+   * `utils/onboardingReadiness.js` so it can be tested exhaustively without a
+   * mongod. Readiness is deliberately never STORED on the tenant: a persisted
+   * flag goes stale the moment a hub is deactivated, a slot window passes, or a
+   * product is unpublished, and a stale "ready" is exactly the bug this fixes.
+   */
+  async collectOnboardingFacts({ tenantId }) {
+    const [
+      activeHubs,
+      serviceablePincodes,
+      pincodesWithoutHub,
+      upcomingSlots,
+      feePolicy,
+      activeProducts,
+      gstinRow,
+    ] = await Promise.all([
+      Hub.countDocuments({ tenantId, isActive: true }),
+      ServiceablePincode.countDocuments({ tenantId, isServiceable: true, hubId: { $ne: null } }),
+      ServiceablePincode.countDocuments({ tenantId, isServiceable: true, hubId: null }),
+      // 'YYYY-MM-DD' strings compare lexicographically, which is why the model
+      // stores dates that way; today onward, and only slots a customer can book.
+      DeliverySlot.countDocuments({
+        tenantId,
+        date: { $gte: new Date().toISOString().slice(0, 10) },
+        status: 'open',
+      }),
+      DeliveryFeePolicy.findOne({ tenantId, isActive: true }).select('_id').lean(),
+      TenantProduct.countDocuments({ tenantId, status: TENANT_LISTING_STATUS.ACTIVE }),
+      TaxRegistration.findOne({
+        ownerType: TAX_OWNER_TYPE.TENANT,
+        ownerId: tenantId,
+        status: 'active',
+      }).select('gstin').lean().catch(() => null),
+    ]);
+
+    // ---- tax-policy coverage over the categories actually in use ----
+    // Two cheap queries rather than an aggregation: this endpoint is read on page
+    // load, not per request, and the explicit form is easier to reason about.
+    let categoriesInUse = 0;
+    let categoriesMissingTaxPolicy = 0;
+    if (activeProducts > 0) {
+      const masterIds = await TenantProduct.distinct('productMasterId', {
+        tenantId,
+        status: TENANT_LISTING_STATUS.ACTIVE,
+      });
+      if (masterIds.length) {
+        const cats = await ProductMaster.distinct('categoryId', {
+          _id: { $in: masterIds },
+          categoryId: { $ne: null },
+        });
+        const catIds = cats.filter(Boolean).map(String);
+        categoriesInUse = catIds.length;
+        if (catIds.length) {
+          const covered = await TaxPolicy.distinct('categoryId', {
+            categoryId: { $in: cats.filter(Boolean) },
+            isActive: true,
+          });
+          const coveredSet = new Set(covered.map(String));
+          categoriesMissingTaxPolicy = catIds.filter((c) => !coveredSet.has(c)).length;
+        }
+      }
+    }
+
+    const tenant = await Tenant.findById(tenantId).select('store gstin').lean();
+
+    return {
+      activeHubs,
+      serviceablePincodes,
+      pincodesWithoutHub,
+      upcomingSlots,
+      hasActiveFeePolicy: Boolean(feePolicy),
+      activeProducts,
+      categoriesInUse,
+      categoriesMissingTaxPolicy,
+      tagline: tenant?.store?.tagline || null,
+      gstin: gstinRow?.gstin || tenant?.gstin || null,
+    };
+  }
+
+  /**
+   * The onboarding checklist for a store: what exists, what is missing, and
+   * whether it may be published.
+   */
+  async getOnboardingStatus({ tenantId }) {
+    const tenant = await Tenant.findById(tenantId).select('store name slug').lean();
+    if (!tenant) throw notFound('Store not found', 'STORE_NOT_FOUND');
+
+    const facts = await this.collectOnboardingFacts({ tenantId });
+    const evaluation = evaluateOnboarding(facts, {
+      requireReadyToPublish: config.onboarding.requireReadyToPublish,
+      slotDaysAhead: config.onboarding.slotDaysAhead,
+    });
+
+    return {
+      store: { id: String(tenant._id), name: tenant.name, slug: tenant.slug },
+      isPublished: Boolean(tenant.store?.isPublished),
+      onboardingStatus: tenant.store?.onboardingStatus || 'registered',
+      ...evaluation,
+      facts,
+    };
   }
 
   // ---------------- discovery / storefront (public) ----------------
@@ -185,8 +427,30 @@ class StoreService {
       socialLinks: payload.socialLinks ? { ...(tenant.store?.socialLinks || {}), ...payload.socialLinks } : tenant.store?.socialLinks || {},
     };
     if (payload.isPublished !== undefined) {
-      tenant.store.isPublished = Boolean(payload.isPublished);
-      if (tenant.store.isPublished) tenant.store.onboardingStatus = 'active';
+      const wantsPublish = Boolean(payload.isPublished);
+      const alreadyPublished = Boolean(tenant.store?.isPublished);
+
+      // Refuse to put a store in front of customers that cannot serve them.
+      // Only checked on the transition into published — unpublishing must always
+      // work (that is the emergency stop), and re-saving an already-published
+      // store must not fail because a slot window expired overnight.
+      if (wantsPublish && !alreadyPublished && config.onboarding.requireReadyToPublish) {
+        const facts = await this.collectOnboardingFacts({ tenantId });
+        const evaluation = evaluateOnboarding(facts, {
+          requireReadyToPublish: true,
+          slotDaysAhead: config.onboarding.slotDaysAhead,
+        });
+        if (!evaluation.canPublish) {
+          throw badRequest(
+            `This store cannot take orders yet. Finish these first: ${evaluation.reasons.join('; ')}.`,
+            'STORE_NOT_READY',
+            { blocking: evaluation.blocking, reasons: evaluation.reasons, items: evaluation.items },
+          );
+        }
+      }
+
+      tenant.store.isPublished = wantsPublish;
+      if (wantsPublish) tenant.store.onboardingStatus = 'active';
     }
     await tenant.save();
 

@@ -6,10 +6,19 @@ import OrderChargeBreakdown from '../models/orderChargeBreakdown.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
 import { roundMoney, moneySum, toPaise, fromPaise, allocatePaise } from '../utils/money.js';
 import { computeLineTax } from '../utils/gst.js';
+import { pricingFallback } from '../observability/registry.js';
 import config from '../config/index.js';
 
 /** HSN default when a category has no TaxPolicy row (legal fallback). */
 const DEFAULT_GST_SLAB_PCT = 0;
+
+/**
+ * Tenants already warned about pricing on a platform default. Bounded by tenant
+ * count and process lifetime, so it cannot grow without limit; its only job is
+ * to keep a busy store from writing the same line to the log on every order.
+ */
+const warnedNoFeePolicy = new Set();
+const warnedNoTaxPolicy = new Set();
 
 /**
  * PricingPolicyService — the per-tenant delivery-fee / tax / discount engine
@@ -47,6 +56,7 @@ class PricingPolicyService {
       cartSubtotal: itemSubtotal,
       slotType,
       zoneDistanceKm,
+      tenantId,
     });
 
     // ---- 2. lines + category tax policies (batched) ----
@@ -61,6 +71,25 @@ class PricingPolicyService {
       const price = item.priceSnapshot?.sellingPrice ?? 0;
       const lineTotal = roundMoney(price * item.qty);
       const taxPolicy = item.categoryId ? policyByCat.get(String(item.categoryId)) : null;
+
+      // No TaxPolicy for this category → nil-rated (0%), which is a LEGAL
+      // declaration rather than a safe default: most flowers and gifts are
+      // taxable. Count and warn so a store silently issuing zero-GST invoices is
+      // visible instead of surfacing later as a tax notice. Onboarding lists it
+      // as a (non-blocking) warning for the same reason.
+      if (!taxPolicy && item.categoryId) {
+        pricingFallback.inc({ kind: 'tax_policy' });
+        const key = `${tenantId}:${item.categoryId}`;
+        if (!warnedNoTaxPolicy.has(key)) {
+          warnedNoTaxPolicy.add(key);
+          console.warn(
+            `[pricing] tenant ${tenantId} has no active TaxPolicy for category `
+            + `${item.categoryId} — treating it as nil-rated (0% GST). Add the slab `
+            + 'and HSN code, or these invoices declare no tax.'
+          );
+        }
+      }
+
       return {
         tenantProductId: item.tenantProductId,
         productMasterId: item.productMasterId,
@@ -129,9 +158,33 @@ class PricingPolicyService {
     };
   }
 
-  /** Delivery fee formula (blueprint §2 flowchart). */
-  computeDeliveryFee({ policy, cartSubtotal, slotType, zoneDistanceKm }) {
-    if (!policy) return 49; // legacy fallback (no tenant policy configured)
+  /**
+   * Delivery fee formula (blueprint §2 flowchart).
+   *
+   * When the tenant has NO active policy this used to `return 49` — a literal in
+   * the very file whose header announces that it "Replaces the hardcoded
+   * deliveryFee = 49". So the first fee a self-registered merchant's customers
+   * paid was a magic number nobody chose, visible on no admin page and mentioned
+   * in no document. It is now configured, defaults to ZERO (never surprise-charge
+   * a real customer with a number the merchant did not set), counted in
+   * `fm_pricing_fallback_total{kind="delivery_fee"}`, and warned about once per
+   * tenant per process. Onboarding readiness also flags it as blocking, so a
+   * store cannot publish while relying on it.
+   */
+  computeDeliveryFee({ policy, cartSubtotal, slotType, zoneDistanceKm, tenantId = null }) {
+    if (!policy) {
+      pricingFallback.inc({ kind: 'delivery_fee' });
+      const key = tenantId ? String(tenantId) : 'unknown';
+      if (!warnedNoFeePolicy.has(key)) {
+        warnedNoFeePolicy.add(key);
+        console.warn(
+          `[pricing] tenant ${key} has no active DeliveryFeePolicy — charging the `
+          + `platform fallback of ₹${config.onboarding.fallbackDeliveryFee}. `
+          + 'Set a policy in the admin console; onboarding treats this as blocking.'
+        );
+      }
+      return roundMoney(config.onboarding.fallbackDeliveryFee);
+    }
     if (policy.freeDeliveryThreshold != null && cartSubtotal >= policy.freeDeliveryThreshold) {
       return 0;
     }

@@ -220,6 +220,42 @@ const config = {
     nightlyDays: Number(process.env.MARKETPLACE_NIGHTLY_DAYS) || 30,
   },
 
+  // ---- Self-service store onboarding ----
+  // registerStore() used to create a Tenant, an auth config, an owner User and a
+  // trial subscription — and nothing else. Checkout needs a hub, a serviceable
+  // pincode linked to it, an open slot and a fee policy, so a new store could not
+  // sell anything and nobody told the operator why. See utils/onboardingReadiness.js.
+  //
+  // Pincodes are deliberately NOT seeded: a merchant's delivery area is a business
+  // fact nobody can guess, and a wrong guess puts a store in front of customers it
+  // cannot serve. Only the safely-defaultable skeleton is created here.
+  onboarding: {
+    seedHub: process.env.ONBOARDING_SEED_HUB !== 'false',
+    seedFeePolicy: process.env.ONBOARDING_SEED_FEE_POLICY !== 'false',
+    hubName: process.env.ONBOARDING_HUB_NAME || 'Main hub',
+    hubCode: process.env.ONBOARDING_HUB_CODE || 'HUB-01',
+    hubSlotCapacity: Number(process.env.ONBOARDING_HUB_CAPACITY) || 25,
+    // A seeded fee policy starts at ZERO, not at a number nobody chose. Free
+    // delivery until the merchant sets a real fee is the honest default: the
+    // alternative silently charges their customers on day one.
+    defaultBaseFee: Number(process.env.ONBOARDING_DEFAULT_BASE_FEE) || 0,
+    // 0/null = no free-delivery threshold (there is nothing to cross at ₹0 base).
+    defaultFreeThreshold: Number(process.env.ONBOARDING_DEFAULT_FREE_THRESHOLD) || null,
+    defaultExpressSurge: Number(process.env.ONBOARDING_DEFAULT_EXPRESS_SURGE) || 1,
+    // Slots are generated this far ahead at registration, and readiness checks
+    // that open slots exist across the same horizon.
+    slotDaysAhead: Number(process.env.ONBOARDING_SLOT_DAYS_AHEAD) || 3,
+    // Refuse to flip isPublished while the store cannot take an order. Turn off
+    // only as an incident escape hatch — `ready` still reports the truth either way.
+    requireReadyToPublish: process.env.ONBOARDING_REQUIRE_READY_TO_PUBLISH !== 'false',
+    // Last resort when a tenant has NO active DeliveryFeePolicy at all. This was
+    // a hardcoded `return 49` in the very file whose header said "Replaces the
+    // hardcoded deliveryFee = 49" — a number no merchant chose, charged to real
+    // customers, surfaced on no admin page. It is configured now, defaults to
+    // zero, and every use is counted (fm_pricing_fallback_total{kind=...}).
+    fallbackDeliveryFee: Number(process.env.ONBOARDING_FALLBACK_DELIVERY_FEE) || 0,
+  },
+
   // ---- Media uploads (images & videos) ----
   storage: {
     provider: process.env.STORAGE_PROVIDER || 'local', // local | s3

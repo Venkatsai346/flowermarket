@@ -76,6 +76,16 @@ class MarketplaceController {
     res.status(200).json(success(data, { message: 'Store fetched' }));
   });
 
+  /**
+   * Onboarding checklist: what exists, what is missing, and whether the store may
+   * be published. Readiness is computed live rather than stored, so it cannot go
+   * stale when a hub is deactivated or a slot window passes.
+   */
+  myOnboarding = asyncHandler(async (req, res) => {
+    const data = await storeService.getOnboardingStatus({ tenantId: req.tenantId });
+    res.status(200).json(success(data, { message: 'Onboarding status fetched' }));
+  });
+
   updateMyStore = asyncHandler(async (req, res) => {
     const tenant = await storeService.updateStore({ tenantId: req.tenantId, payload: req.body, actorId: req.auth.userId, req });
     res.status(200).json(success(tenant, { message: 'Store updated' }));

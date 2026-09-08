@@ -84,6 +84,7 @@ router.patch('/vendor/products/:id', validate(vendorProductUpdateSchema), Market
 // ---------------- store owner (tenant admin) ----------------
 router.use('/store', tokenTenant, authenticate, authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN));
 router.get('/store', MarketplaceController.myStore);
+router.get('/store/onboarding', MarketplaceController.myOnboarding);
 router.patch('/store', validate(storeUpdateSchema), MarketplaceController.updateMyStore);
 router.get('/store/subscription', MarketplaceController.mySubscription);
 router.patch('/store/plan', validate(planChangeSchema), MarketplaceController.changeMyPlan);

@@ -65,6 +65,12 @@
  *     the backend. Both modules are imported and compared here — structurally
  *     and behaviourally — because §3 already exists for exactly this class of
  *     cross-layer contract drift.
+ *
+ * 13. A NEW STORE CAN SELL — registerStore() created a Tenant, an owner and a
+ *     subscription, but no hub, pincode, slot or fee policy, so checkout refused
+ *     every customer while isPublished could still be switched on. The seeding,
+ *     the publish gate, the removal of the hardcoded ₹49, and the deliberate
+ *     decision NOT to guess pincodes are all asserted here.
  */
 
 import fs from 'node:fs';
@@ -649,6 +655,100 @@ section('12. the two brand-kit copies agree, structurally and behaviourally');
         && /^#[0-9A-Fa-f]{6}$/.test(k.accentColor)
         && /^\/brand\/hero-/.test(k.hero);
     }));
+}
+
+// ---------------------------------------------------------------------------
+section('13. a newly registered store is told what it cannot yet do');
+{
+  const READINESS = path.join(BACKEND, 'src/utils/onboardingReadiness.js');
+  const STORE = path.join(BACKEND, 'src/services/store.service.js');
+  const PRICING = path.join(BACKEND, 'src/services/pricingPolicy.service.js');
+  check('utils/onboardingReadiness.js exists', fs.existsSync(READINESS));
+
+  const readiness = await import(pathToFileURL(READINESS).href);
+  check('it exports the pure decision + a stable item vocabulary',
+    typeof readiness.evaluateOnboarding === 'function'
+    && readiness.ONBOARDING_ITEM && readiness.ITEM_STATE);
+
+  // The decision is pure, so it is testable without mongod; the service only
+  // gathers facts. If the service ever grew its own copy of the logic the two
+  // would drift, exactly like the brand kits did.
+  const storeSrc = fs.readFileSync(STORE, 'utf8');
+  check('store.service delegates to evaluateOnboarding instead of re-deciding',
+    /from '\.\.\/utils\/onboardingReadiness\.js'/.test(storeSrc)
+    && (storeSrc.match(/evaluateOnboarding\(/g) || []).length >= 2);
+  check('facts are gathered in one place',
+    /async collectOnboardingFacts\(/.test(storeSrc)
+    && /async getOnboardingStatus\(/.test(storeSrc));
+
+  // ---- registration seeds the skeleton ----
+  const registerBody = (storeSrc.match(/async registerStore\([\s\S]*?\n  \}/) || [])[0] || '';
+  check('registerStore seeds the operational skeleton',
+    /seedStarterSkeleton\(/.test(registerBody));
+  const seedBody = (storeSrc.match(/async seedStarterSkeleton\([\s\S]*?\n  \}/) || [])[0] || '';
+  check('the skeleton includes a hub', /Hub\.create\(/.test(seedBody));
+  check('the skeleton includes a delivery fee policy', /DeliveryFeePolicy\.create\(/.test(seedBody));
+  check('the skeleton opens delivery slots', /slotService\.generateForDates\(/.test(seedBody));
+
+  // The deliberate omission. Seeding pincodes would mean guessing a merchant's
+  // delivery area, which puts a store in front of customers it cannot serve. A
+  // future "helpful" commit that adds one is a regression, not a fix.
+  check('the skeleton does NOT invent serviceable pincodes (nobody can guess a delivery area)',
+    !/ServiceablePincode\.(create|insertMany|updateOne|bulkWrite)\(/.test(seedBody));
+
+  // A seeding failure must not orphan the tenant that already exists.
+  check('seeding cannot fail the registration',
+    /\.catch\(/.test(registerBody.slice(registerBody.indexOf('seedStarterSkeleton')))
+    && /result\.errors\.push/.test(seedBody));
+
+  // ---- publishing is gated ----
+  const updateBody = (storeSrc.match(/async updateStore\([\s\S]*?\n  \}/) || [])[0] || '';
+  check('publishing is gated on readiness', /canPublish/.test(updateBody));
+  check('the refusal says WHY, with a machine-readable code',
+    /STORE_NOT_READY/.test(updateBody) && /reasons/.test(updateBody));
+  check('the gate is configurable as an incident escape hatch',
+    /requireReadyToPublish/.test(updateBody));
+  // Unpublishing is the emergency stop and must never be blocked.
+  check('unpublishing is not gated', /wantsPublish && !alreadyPublished/.test(updateBody));
+
+  // ---- the magic ₹49 is gone ----
+  const pricingSrc = fs.readFileSync(PRICING, 'utf8');
+  check('no hardcoded delivery fee survives in the pricing engine',
+    !/if \(!policy\)\s*return\s*49/.test(pricingSrc) && !/return 49;/.test(pricingSrc));
+  check('the no-policy fallback is configured, not literal',
+    /config\.onboarding\.fallbackDeliveryFee/.test(pricingSrc));
+  check('using the fallback is observable',
+    /pricingFallback\.inc\(\{ kind: 'delivery_fee' \}\)/.test(pricingSrc));
+  check('the silent nil-rated tax fallback is observable too',
+    /pricingFallback\.inc\(\{ kind: 'tax_policy' \}\)/.test(pricingSrc));
+
+  // ---- the whole chain is reachable from the console ----
+  const route = fs.readFileSync(path.join(BACKEND, 'src/routes/marketplace.routes.js'), 'utf8');
+  check('GET /marketplace/store/onboarding is served',
+    /get\('\/store\/onboarding',\s*MarketplaceController\.myOnboarding\)/.test(route));
+  const controller = fs.readFileSync(path.join(BACKEND, 'src/controllers/marketplace.controller.js'), 'utf8');
+  check('the controller calls getOnboardingStatus',
+    /myOnboarding[\s\S]{0,200}?getOnboardingStatus\(/.test(controller));
+
+  const endpointsPath = path.join(REPO, 'frontend/packages/shared/src/api/endpoints.js');
+  const endpoints = fs.readFileSync(endpointsPath, 'utf8');
+  check('the shared API client exposes it',
+    /myOnboarding:\s*\(\)\s*=>\s*c\.get\('\/marketplace\/store\/onboarding'\)/.test(endpoints));
+
+  const uiPath = path.join(REPO, 'frontend/apps/web/src/features/dashboard/OnboardingChecklist.jsx');
+  check('the admin console renders a checklist', fs.existsSync(uiPath));
+  if (fs.existsSync(uiPath)) {
+    const ui = fs.readFileSync(uiPath, 'utf8');
+    check('the checklist calls the endpoint', /api\.marketplace\.myOnboarding\(\)/.test(ui));
+    check('every item id the API can return has somewhere to go',
+      Object.values(readiness.ONBOARDING_ITEM).every((id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)),
+      Object.values(readiness.ONBOARDING_ITEM).filter((id) => !new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)).join(', '));
+    check('the publish control is disabled while blocked',
+      /disabled=\{!canPublish\}/.test(ui));
+    const dash = fs.readFileSync(
+      path.join(REPO, 'frontend/apps/web/src/features/dashboard/StoreDashboard.jsx'), 'utf8');
+    check('the dashboard mounts it', /<OnboardingChecklist/.test(dash));
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import TrendChart from '../../components/charts/TrendChart.jsx';
+import OnboardingChecklist from './OnboardingChecklist.jsx';
 
 const RANGE_DAYS = 30;
 
@@ -82,6 +83,11 @@ export default function StoreDashboard() {
           <Link to="/billing"><Button size="sm">Choose a plan</Button></Link>
         </div>
       )}
+
+      {/* Onboarding: what still blocks this store from taking an order. Renders
+          nothing once the store is published and ready, so it never becomes a
+          permanent green box the merchant learns to ignore. */}
+      <OnboardingChecklist onChanged={() => store.refetch()} />
 
       {/* KPI row */}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

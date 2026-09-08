@@ -24,6 +24,9 @@ export function createEndpoints(client) {
 
       // store owner
       myStore: () => c.get('/marketplace/store'),
+      // What is still missing before this store can take an order, and whether it
+      // may be published. Computed live server-side, so it never goes stale.
+      myOnboarding: () => c.get('/marketplace/store/onboarding'),
       updateStore: (body) => c.patch('/marketplace/store', body),
       mySubscription: () => c.get('/marketplace/store/subscription'),
       changePlan: (planCode) => c.patch('/marketplace/store/plan', { planCode }),

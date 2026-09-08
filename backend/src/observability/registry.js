@@ -109,6 +109,17 @@ export const paymentReconcile = registry.counter(
   ['result'],
 );
 
+// ---- Pricing ----
+// A store trading on a platform default rather than its own policy is invisible
+// in every other signal: the order succeeds, the money reconciles, and the
+// merchant never learns they are charging a number they did not choose. This is
+// the counter that makes it visible. kind = delivery_fee | tax_policy.
+export const pricingFallback = registry.counter(
+  'pricing_fallback_total',
+  'Orders priced from a platform default because the tenant has no active policy.',
+  ['kind'],
+);
+
 // ---- Scheduled jobs ----
 const jobNext = registry.gauge(
   'scheduled_job_next_run_in_seconds',
