@@ -354,7 +354,25 @@ class FulfillmentService {
   async listForRider({ tenantId, riderId, status = null }) {
     const q = { tenantId, riderId };
     if (status) q.status = status;
-    return DeliveryAssignment.find(q).sort({ assignedAt: -1 }).lean();
+    const rows = await DeliveryAssignment.find(q).sort({ assignedAt: -1 }).lean();
+    const ids = rows.map((r) => r.orderId).filter(Boolean);
+    if (!ids.length) return rows;
+    const { default: Order } = await import('../models/order.model.js');
+    const { packingCard } = await import('../utils/gift.js');
+    const orders = await Order.find({ _id: { $in: ids }, tenantId })
+      .select('orderNumber giftSnapshot addressSnapshot')
+      .lean();
+    const byId = new Map(orders.map((o) => [String(o._id), o]));
+    return rows.map((r) => {
+      const o = byId.get(String(r.orderId));
+      return {
+        ...r,
+        orderNumber: o?.orderNumber || null,
+        giftSnapshot: o?.giftSnapshot || null,
+        packingCard: packingCard(o?.giftSnapshot),
+        addressSnapshot: o?.addressSnapshot || null,
+      };
+    });
   }
 
   async setRiderAvailability(riderId, availability) {

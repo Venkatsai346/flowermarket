@@ -413,6 +413,8 @@ export function createEndpoints(client) {
       revalidate: () => c.post('/cart/revalidate'),
       applyCoupon: (code) => c.post('/cart/coupon', { code }),
       removeCoupon: () => c.del('/cart/coupon'),
+      setGift: (body) => c.patch('/cart/gift', body),
+      reorder: (orderId) => c.post('/cart/reorder', { orderId }),
 
       // delivery slots
       slots: (q = {}) => c.get('/cart/slots', { query: q }),

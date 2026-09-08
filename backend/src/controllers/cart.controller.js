@@ -118,12 +118,32 @@ class CartController {
       idempotencyKey: req.body.idempotencyKey || null,
       confirmPriceChanges: req.body.confirmPriceChanges === true,
       source: req.body.source || 'app',
+      gift: req.body.gift,
       req,
     });
     res.status(201).json(created(order, { message: 'Order placed — payment captured, picking queued' }));
   });
 
   // ---- coupons (Phase 3.5) ----
+  setGift = asyncHandler(async (req, res) => {
+    const owner = await this.identity(req, res, { persistGuest: true });
+    const result = await cartService.setGift({ ...owner, gift: req.body });
+    res.status(200).json(success(result, { message: 'Gift details saved' }));
+  });
+
+  reorder = asyncHandler(async (req, res) => {
+    const { tenantId, userId } = this.requireUser(req);
+    const result = await cartService.reorderFromOrder({
+      tenantId, userId, orderId: req.body.orderId,
+    });
+    const skipped = result.skipped?.length || 0;
+    res.status(200).json(success(result, {
+      message: skipped
+        ? `${skipped} item${skipped === 1 ? '' : 's'} no longer available — the rest is in your basket`
+        : 'Order copied to your basket',
+    }));
+  });
+
   applyCoupon = asyncHandler(async (req, res) => {
     const owner = await this.identity(req, res, { persistGuest: true });
     const result = await cartService.applyCoupon({

@@ -7,6 +7,9 @@ import pricingPolicyService from './pricingPolicy.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import { roundMoney, moneySum, toPaise } from '../utils/money.js';
+import {
+  emptyGift, isGiftMeaningful, normalizeGift, GiftValidationError,
+} from '../utils/gift.js';
 import config from '../config/index.js';
 import {
   CART_STATUS,
@@ -80,6 +83,7 @@ class CartService {
       subtotal: 0,
       items: [],
       guest: Boolean(guest),
+      gift: emptyGift(),
       ...(guestKey ? { guestKey } : {}),
       ...(dual ? { subtotalPaise: 0 } : {}),
     };
@@ -129,6 +133,7 @@ class CartService {
       id: _id,
       items: withPaise,
       guest: Boolean(guest || rest.guestKey),
+      gift: rest.gift ? normalizeGift(rest.gift) : emptyGift(),
       ...(guestKey && !rest.userId ? { guestKey } : {}),
       ...(dual ? { subtotalPaise: toPaise(rest.subtotal || 0) } : {}),
     };
@@ -337,6 +342,9 @@ class CartService {
       userCart.couponCode = guest.couponCode;
       userCart.couponId = guest.couponId;
     }
+    if (!isGiftMeaningful(userCart.gift) && isGiftMeaningful(guest.gift)) {
+      userCart.gift = normalizeGift(guest.gift);
+    }
     guest.status = CART_STATUS.ABANDONED;
     await guest.save();
     await this.refreshTotals(userCart);
@@ -403,6 +411,57 @@ class CartService {
     await cart.save();
     const base = await this.getCart({ tenantId, userId, guestKey });
     return { ...base, coupon: { id: coupon._id, code: coupon.code, discountType: coupon.discountType, value: coupon.value, discountAmount } };
+  }
+
+  /**
+   * Persist the florist gift draft on the cart. Guest-ok. Strict phone so a
+   * typo 400s here instead of silently dropping the recipient number.
+   */
+  async setGift({ tenantId, userId, guestKey, gift }) {
+    const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
+    try {
+      cart.gift = normalizeGift(gift, { strictPhone: true });
+    } catch (err) {
+      if (err instanceof GiftValidationError) {
+        throw badRequest(err.message, err.code);
+      }
+      throw err;
+    }
+    await cart.save();
+    return this.getCart({ tenantId, userId, guestKey });
+  }
+
+  /**
+   * Copy a previous order's lines (and gift card) into the active cart.
+   * Inactive listings are skipped, not a 409 — "order again" should still
+   * land the rest of the bouquet.
+   */
+  async reorderFromOrder({ tenantId, userId, orderId }) {
+    const { default: Order } = await import('../models/order.model.js');
+    const { default: OrderItem } = await import('../models/orderItem.model.js');
+    const order = await Order.findOne({ _id: orderId, tenantId, userId });
+    if (!order) throw notFound('Order not found', 'ORDER_NOT_FOUND');
+    const lines = await OrderItem.find({ orderId: order._id }).lean();
+    const skipped = [];
+    for (const it of lines) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await this.addItem({
+          tenantId, userId, tenantProductId: it.tenantProductId, qty: it.qty,
+        });
+      } catch (err) {
+        skipped.push({
+          listingId: it.tenantProductId,
+          title: it.skuSnapshot?.title || 'Item',
+          reason: err.code || 'UNAVAILABLE',
+        });
+      }
+    }
+    if (isGiftMeaningful(order.giftSnapshot)) {
+      await this.setGift({ tenantId, userId, gift: order.giftSnapshot });
+    }
+    const cart = await this.getCart({ tenantId, userId });
+    return { ...cart, skipped };
   }
 
   /** Remove the coupon from the cart. */

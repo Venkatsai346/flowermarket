@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   AlertTriangle, ArrowRight, CheckCircle2, Clock3, MapPin, PackageCheck, RefreshCw, Truck,
 } from 'lucide-react';
+import GiftPackingCard from './GiftPackingCard.jsx';
 import { fmtDateTime, fmtTime, inr, num, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
@@ -229,6 +230,8 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
               </span>
             </div>
           )}
+
+          <GiftPackingCard gift={o.giftSnapshot} packingCard={detail.packingCard} />
 
           <div>
             <p className="label">Timeline</p>

@@ -21,6 +21,7 @@ import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
 import { roundMoney, moneySum, toPaise, attachPaise, QUOTE_MONEY_KEYS, ORDER_MONEY_KEYS } from '../utils/money.js';
+import { normalizeGift, packingCard } from '../utils/gift.js';
 import { notFound, badRequest, conflict, unauthorized } from '../utils/ApiError.js';
 import User from '../models/user.model.js';
 import config from '../config/index.js';
@@ -55,7 +56,7 @@ class OrderService {
   /**
    * The main checkout saga entry point.
    */
-  async checkout({ tenantId, userId, slotReservationId, addressId, paymentMethod = 'upi', idempotencyKey = null, confirmPriceChanges = false, source = 'app', req = null }) {
+  async checkout({ tenantId, userId, slotReservationId, addressId, paymentMethod = 'upi', idempotencyKey = null, confirmPriceChanges = false, source = 'app', gift = undefined, req = null }) {
     // ---- 1. cart revalidation (stale-cart problem) ----
     const revalidated = await cartService.revalidate({ tenantId, userId });
     if (revalidated.itemCount === 0) throw badRequest('Cart is empty', 'CART_EMPTY');
@@ -77,6 +78,14 @@ class OrderService {
     await slotService.assertServiceable({ tenantId, pincode: address.pincode });
 
     // ---- 4. create order + items ----
+    // Last-second gift overlay from the checkout body. Cart draft is the
+    // source of truth when `gift` is omitted. Phone typos must not fail the
+    // saga — PATCH /cart/gift is the strict gate.
+    if (gift !== undefined) {
+      const cartForGift = await cartService.getOrCreateActive({ tenantId, userId });
+      cartForGift.gift = normalizeGift(gift, { strictPhone: false });
+      await cartForGift.save();
+    }
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     const order = await this.createOrderDoc({
       tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
@@ -319,6 +328,7 @@ class OrderService {
       order: attachPaise(plain, ORDER_MONEY_KEYS, { enabled }),
       items: itemPaise,
       timeline: serializeList(timeline),
+      packingCard: packingCard(plain.giftSnapshot),
     };
   }
 
@@ -834,6 +844,7 @@ class OrderService {
         pincode: address.pincode,
         coordinates: address.coordinates || null,
       },
+      giftSnapshot: normalizeGift(cart.gift, { strictPhone: false }),
       paymentMethod,
     });
 

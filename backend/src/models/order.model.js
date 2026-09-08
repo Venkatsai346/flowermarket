@@ -3,8 +3,9 @@
  *
  * DESIGN NOTES:
  *  - Items are NOT embedded -> OrderItem collection (bounded docs).
- *  - `addressSnapshot` + `slotSnapshot` are denormalized AT ORDER TIME so history
- *    stays correct even if the user edits their address or slots are re-planned.
+ *  - `addressSnapshot` + `slotSnapshot` + `giftSnapshot` are denormalized AT
+ *    ORDER TIME so history stays correct even if the user edits their address,
+ *    slots are re-planned, or the next cart reuses a different card message.
  *  - `version` = optimistic locking during saga steps (two concurrent admin
  *    actions must not silently overwrite).
  *  - Status machine (ORDER_STATUS) transitions are validated by a central state
@@ -48,6 +49,20 @@ const SlotSnapshotSchema = new Schema(
     displayLabel: { type: String, default: null },
     hubId: { type: Types.ObjectId, ref: 'Hub', default: null },
     windowType: { type: String, default: 'normal' }, // normal | express | ... (fee surge input)
+  },
+  { _id: false }
+);
+
+const GiftSnapshotSchema = new Schema(
+  {
+    isGift: { type: Boolean, default: false },
+    occasion: { type: String, default: null, maxlength: 32 },
+    message: { type: String, default: null, maxlength: 280 },
+    senderName: { type: String, default: null, maxlength: 80 },
+    recipientName: { type: String, default: null, maxlength: 80 },
+    recipientPhone: { type: String, default: null, maxlength: 16 },
+    hidePrices: { type: Boolean, default: false },
+    deliveryInstructions: { type: String, default: null, maxlength: 240 },
   },
   { _id: false }
 );
@@ -104,6 +119,7 @@ const OrderSchema = new Schema(
     slotReservationId: { type: Types.ObjectId, ref: 'SlotReservation', default: null, index: true },
     slotSnapshot: { type: SlotSnapshotSchema, default: null },
     addressSnapshot: { type: AddressSnapshotSchema, default: null },
+    giftSnapshot: { type: GiftSnapshotSchema, default: null },
 
     paymentMethod: {
       type: String,

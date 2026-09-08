@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams, Link, useSearchParams } from 'react-router-dom';
+import { useParams, Link, useSearchParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, RotateCcw, Truck,
+  ArrowLeft, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, RotateCcw, ShoppingBag, Truck,
 } from 'lucide-react';
+import GiftNote from '../components/GiftNote.jsx';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -15,9 +16,12 @@ import { openRazorpayCheckout } from '../lib/razorpay.js';
 
 export default function OrderDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useShop((s) => s.toast);
   const store = useShop((s) => s.store);
+  const setCart = useShop((s) => s.setCart);
+  const [reordering, setReordering] = useState(false);
   const widgetOpened = useRef(false);
   const [invoiceBusy, setInvoiceBusy] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
@@ -347,6 +351,8 @@ export default function OrderDetail() {
         )}
       </div>
 
+      <GiftNote gift={order.giftSnapshot} />
+
       <div className="card mt-4 divide-y divide-slate-100">
         {items.map((it) => (
           <div key={it.id} className="flex items-center gap-3 p-4">
@@ -420,6 +426,38 @@ export default function OrderDetail() {
             }}
           >
             Download GST invoice
+          </Button>
+        </div>
+      )}
+
+      {order?.status && order.status !== 'payment_pending' && order.status !== 'created' && (
+        <div className="mt-3">
+          <Button
+            variant="soft"
+            size="sm"
+            icon={ShoppingBag}
+            loading={reordering}
+            onClick={async () => {
+              setReordering(true);
+              try {
+                const r = await api.shop.reorder(order.id);
+                setCart(r.data);
+                const skipped = r.data?.skipped?.length || 0;
+                toast(
+                  skipped
+                    ? `${skipped} item${skipped === 1 ? '' : 's'} no longer available — the rest is in your basket`
+                    : 'Items added to your basket',
+                  skipped ? undefined : 'success',
+                );
+                navigate('/checkout');
+              } catch (e) {
+                toast(errMsg(e), 'error');
+              } finally {
+                setReordering(false);
+              }
+            }}
+          >
+            Order again
           </Button>
         </div>
       )}

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { PackageSearch, RefreshCw, Search, SearchX } from 'lucide-react';
+import { Gift, PackageSearch, RefreshCw, Search, SearchX } from 'lucide-react';
 import { fmtDateTime, inr, num, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
@@ -56,7 +56,12 @@ export default function PickingQueue({ refreshKey = 0, onOpen }) {
         empty={<EmptyState icon={SearchX} title="No picking work" message="Confirmed orders appear here as soon as payment succeeds." />}
         columns={[
           { key: 'orderNumber', header: 'Order', render: (r) => <span className="font-mono text-xs font-medium text-slate-700">{r.orderNumber}</span> },
-          { key: 'customer', header: 'Customer', render: (r) => r.customerName || r.addressSnapshot?.name || '—' },
+          { key: 'customer', header: 'Customer', render: (r) => (
+            <span className="inline-flex items-center gap-1.5">
+              {r.giftSnapshot?.isGift && <Gift className="h-3.5 w-3.5 text-rose-500" aria-label="Gift" />}
+              {r.customerName || r.addressSnapshot?.name || r.giftSnapshot?.recipientName || '—'}
+            </span>
+          ) },
           { key: 'slot', header: 'Slot', render: (r) => r.slotSnapshot ? `${r.slotSnapshot.date} ${r.slotSnapshot.startTime}` : '—' },
           { key: 'items', header: 'Items', align: 'right', render: (r) => num(r.itemsCount) },
           { key: 'total', header: 'Total', align: 'right', render: (r) => <span className="font-semibold">{inr(r.totalAmount)}</span> },

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  AlertTriangle, CheckCircle2, Clock3, MapPin, PackageCheck, Phone, RotateCcw, Truck,
+  AlertTriangle, CheckCircle2, Clock3, Gift, MapPin, PackageCheck, RotateCcw, Truck,
 } from 'lucide-react';
 import { fmtDateTime, fmtTime, pickMeta, relTime } from '@flower-market/shared';
 import { cn } from '../../lib/utils.js';
@@ -87,6 +87,24 @@ export default function DeliveryCard({ delivery, busy, onAction }) {
         <p>Package <span className="block font-medium text-slate-700">{d.packageVerified ? 'verified ✓' : 'not verified'}</span></p>
         <p>Rejects <span className="block font-medium text-slate-700">{d.rejectCount || 0}</span></p>
       </div>
+
+      {(d.packingCard || d.giftSnapshot?.isGift || d.giftSnapshot?.deliveryInstructions) && (
+        <div className="rounded-lg border border-rose-100 bg-rose-50/70 px-3 py-2 text-xs text-rose-800">
+          <p className="flex items-center gap-1.5 font-semibold">
+            <Gift className="h-3.5 w-3.5" />
+            {d.packingCard?.headline || (d.giftSnapshot?.isGift ? 'Gift' : 'Delivery note')}
+            {d.packingCard?.hidePrices || d.giftSnapshot?.hidePrices ? ' · do not mention the price' : ''}
+          </p>
+          {(d.packingCard?.to || d.giftSnapshot?.recipientName) && (
+            <p className="mt-1">Hand to {d.packingCard?.to || d.giftSnapshot.recipientName}</p>
+          )}
+          {(d.packingCard?.deliveryInstructions || d.giftSnapshot?.deliveryInstructions) && (
+            <p className="mt-1 text-rose-700">
+              {d.packingCard?.deliveryInstructions || d.giftSnapshot.deliveryInstructions}
+            </p>
+          )}
+        </div>
+      )}
 
       {status === 'pending_accept' && d.pendingAcceptExpiresAt && (
         <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">

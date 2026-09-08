@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import { GIFT_OCCASIONS } from '../gift.js';
 
 export const objectId = Joi.string().regex(/^[0-9a-fA-F]{24}$/).message('Invalid id');
 
@@ -17,6 +18,23 @@ export const checkoutQuoteSchema = Joi.object({
   confirmPriceChanges: Joi.boolean().default(false),
 });
 
+export const giftFieldsSchema = Joi.object({
+  isGift: Joi.boolean().default(false),
+  occasion: Joi.string().valid(...GIFT_OCCASIONS).allow(null, '').optional(),
+  message: Joi.string().max(280).allow(null, '').optional(),
+  senderName: Joi.string().max(80).allow(null, '').optional(),
+  recipientName: Joi.string().max(80).allow(null, '').optional(),
+  recipientPhone: Joi.string().max(16).allow(null, '').optional(),
+  hidePrices: Joi.boolean().optional(),
+  deliveryInstructions: Joi.string().max(240).allow(null, '').optional(),
+});
+
+export const cartGiftSchema = giftFieldsSchema;
+
+export const cartReorderSchema = Joi.object({
+  orderId: objectId.required(),
+});
+
 export const checkoutSchema = Joi.object({
   slotReservationId: objectId.required(),
   addressId: objectId.required(),
@@ -24,6 +42,7 @@ export const checkoutSchema = Joi.object({
   idempotencyKey: Joi.string().max(80).allow(null).optional(),
   confirmPriceChanges: Joi.boolean().default(false),
   source: Joi.string().valid('app', 'web', 'admin').default('app'),
+  gift: giftFieldsSchema.optional(),
 });
 
 export const cancelOrderSchema = Joi.object({

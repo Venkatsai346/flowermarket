@@ -3,7 +3,7 @@
 **Audience:** anyone finishing this platform for real customers, real rupees, and a brand people remember.  
 **Surfaces in scope:** backend API · admin console (`apps/web`) · customer storefront (`apps/storefront`).  
 **Out of scope for “100% of this product” but named:** Expo mobile (login-only scaffold), Phase-7 ideas.  
-**As of:** 2026-09-08 · branch `arena/01a07c11-flowermarket` · Wave 1 live e2e **127/127** · Waves 2–5 shipped on this branch.
+**As of:** 2026-09-08 · branch `arena/01a07c11-flowermarket` · Wave 1 live e2e **127/127** · Waves 2–6 shipped on this branch.
 
 This document **does not** re-plan Phases 1–6. Those are shipped. It answers one question:
 
@@ -313,6 +313,11 @@ Brand kits (classic rose / marigold temple / tropical green) on `tenant.theme.ki
 Harden Razorpay Checkout.js (brand colour from `--brand`, UPI/card method filter, **never load checkout.razorpay.com without a keyId** — mock e2e safe) · `/account` profile (name, te/en, marketing) · India PIN locality on `GET /catalog/serviceability` (prefix table + hub city, no postal API) + shared AddressForm autofill · `GET /catalog/sitemap.xml` (host-tenant) + storefront `robots.txt` + Home LocalBusiness JSON-LD · order tracking copy · admin branding sticky save. Ledger / payouts / GST / ranking / saga untouched. Expo not started.
 
 **Exit still needing live keys:** a test card / UPI collect on staging captures, webhook confirms, inventory commits. Unit tests cover no-script-without-keyId.
+
+### Wave 6 — florist gift identity · **SHIPPED**
+Immutable `giftSnapshot` (same contract as address/slot): cart draft `PATCH /cart/gift` (guest-ok) → checkout copies onto the order → picker packing card with print → rider “do not mention the price” + instructions → customer order view. Occasions align with the PDP (`birthday` / `anniversary` / `sorry` / `pooja` / `wedding` / `love` / `congratulations` plus card-only `get_well` / `just_because`). Card text is sanitised (no HTML, 280/240 caps, Indian mobile). `hidePrices` defaults on when `isGift`. `POST /cart/reorder` copies lines + gift into a new basket. Ledger / payouts / GST / ranking / saga untouched. Recipient SMS is not wired.
+
+**Done when:** a birthday bouquet checks out with a card message; the packing drawer prints that card without a rupee figure; the customer sees the same text on `/orders/:id`; “Order again” restores the gift draft.
 
 ---
 

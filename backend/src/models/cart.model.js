@@ -41,6 +41,31 @@ const CartSchema = new Schema(
     couponCode: { type: String, default: null, trim: true, uppercase: true, maxlength: 32 },
     couponId: { type: Types.ObjectId, ref: 'DiscountPolicy', default: null },
 
+    // Florist gift draft — copied onto order.giftSnapshot at checkout.
+    // Delivery instructions may exist without isGift (gate codes, "call first").
+    gift: {
+      type: new Schema({
+        isGift: { type: Boolean, default: false },
+        occasion: { type: String, default: null, maxlength: 32 },
+        message: { type: String, default: null, maxlength: 280 },
+        senderName: { type: String, default: null, maxlength: 80 },
+        recipientName: { type: String, default: null, maxlength: 80 },
+        recipientPhone: { type: String, default: null, maxlength: 16 },
+        hidePrices: { type: Boolean, default: false },
+        deliveryInstructions: { type: String, default: null, maxlength: 240 },
+      }, { _id: false }),
+      default: () => ({
+        isGift: false,
+        occasion: null,
+        message: null,
+        senderName: null,
+        recipientName: null,
+        recipientPhone: null,
+        hidePrices: false,
+        deliveryInstructions: null,
+      }),
+    },
+
     lastActivityAt: { type: Date, default: Date.now },
     checkedOutAt: { type: Date, default: null },
     expiresAt: { type: Date, default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) },

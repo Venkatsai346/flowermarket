@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   BadgeIndianRupee, Banknote, Calendar, Check, CreditCard, MapPin, Plus, ShieldCheck, Tag, Wallet,
 } from 'lucide-react';
+import GiftForm from '../components/GiftForm.jsx';
+import { emptyGift, fromCartGift, toGiftPayload } from '../lib/gift.js';
 import { api, useShopAuth } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -32,6 +34,8 @@ export default function Checkout() {
   const [placing, setPlacing] = useState(false);
   const [coupon, setCoupon] = useState('');
   const [couponBusy, setCouponBusy] = useState(false);
+  const [gift, setGift] = useState(emptyGift);
+  const [giftHydrated, setGiftHydrated] = useState(false);
 
   const { data: addresses, refetch: refetchAddresses } = useApi(() => api.shop.addresses(), []);
   const { data: wallet } = useApi(
@@ -95,6 +99,12 @@ export default function Checkout() {
     setReservation(null);
   }, [pin]);
 
+  useEffect(() => {
+    if (giftHydrated || !cart) return;
+    setGift(fromCartGift(cart.gift));
+    setGiftHydrated(true);
+  }, [cart, giftHydrated]);
+
   /** Slots grouped by day, because "tomorrow 4–6pm" is how people think. */
   const byDay = useMemo(() => {
     const groups = new Map();
@@ -132,6 +142,15 @@ export default function Checkout() {
     }
   };
 
+  const persistGift = async (next = gift) => {
+    try {
+      const r = await api.shop.setGift(toGiftPayload(next));
+      setCart(r.data);
+    } catch {
+      /* overlay on checkout still freezes the card if PATCH is unavailable */
+    }
+  };
+
   const reserve = async (slot) => {
     setSlotId(String(slot.id));
     try {
@@ -147,11 +166,15 @@ export default function Checkout() {
   const place = async () => {
     setPlacing(true);
     try {
+      const giftPayload = toGiftPayload(gift);
+      const giftSet = giftHydrated && (giftPayload.isGift || Boolean(giftPayload.deliveryInstructions));
+      if (giftSet) await persistGift(gift);
       const r = await api.shop.checkout({
         addressId,
         slotReservationId: reservation?.id || reservation?.reservationId,
         paymentMethod: payment,
         confirmPriceChanges: true,
+        ...(giftSet ? { gift: giftPayload } : {}),
       });
       const order = r.data?.order || r.data;
       setCart(null);
@@ -234,11 +257,18 @@ export default function Checkout() {
           )}
         </section>
 
-        {/* 2. slot */}
+        <GiftForm
+          value={gift}
+          onChange={setGift}
+          onPersist={persistGift}
+          addressName={selectedAddress?.name}
+        />
+
+        {/* 3. slot */}
         <section className="card p-5">
           <h2 className="mb-1 flex items-center gap-2 text-base font-bold text-slate-900">
             <span className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold"
-              style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>2</span>
+              style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>3</span>
             Delivery slot
           </h2>
           <p className="mb-4 text-xs text-slate-500">
@@ -290,11 +320,11 @@ export default function Checkout() {
           )}
         </section>
 
-        {/* 3. payment */}
+        {/* 4. payment */}
         <section className="card p-5">
           <h2 className="mb-4 flex items-center gap-2 text-base font-bold text-slate-900">
             <span className="flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold"
-              style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>3</span>
+              style={{ background: 'var(--brand)', color: 'var(--brand-ink)' }}>4</span>
             Payment
           </h2>
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">

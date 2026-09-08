@@ -18,6 +18,7 @@ import DeliveryAssignment from '../models/deliveryAssignment.model.js';
 import FulfillmentTask from '../models/fulfillmentTask.model.js';
 import { serializeList } from '../utils/serialize.js';
 import { notFound } from '../utils/ApiError.js';
+import { packingCard } from '../utils/gift.js';
 
 const VALID_STATUSES = new Set([
   'created', 'payment_pending', 'confirmed', 'picking', 'packed', 'out_for_delivery',
@@ -91,6 +92,7 @@ export class AdminOrdersService {
       order: { ...order, id: order._id },
       items: serializeList(items),
       timeline: serializeList(history),
+      packingCard: packingCard(order.giftSnapshot),
       chargeBreakdown: breakdown ? { ...breakdown, id: breakdown._id } : null,
       payments: serializeList(payments),
       refunds: serializeList(refunds),

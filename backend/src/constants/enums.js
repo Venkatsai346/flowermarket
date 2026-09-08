@@ -501,6 +501,23 @@ export const CART_TTL_SECONDS = 30 * 24 * 60 * 60; // 30-day abandoned-cart TTL
 
 export const CART_ITEM_LIMIT = 50; // bounded items per cart (no unbounded arrays)
 
+/**
+ * Florist gift occasions. Align with storefront PDP chips; extras
+ * (`get_well`, `just_because`) are card-only, not catalogue tags.
+ * Unknown values are dropped at normalize time — never a checkout 400.
+ */
+export const GIFT_OCCASION = Object.freeze({
+  BIRTHDAY: 'birthday',
+  ANNIVERSARY: 'anniversary',
+  SORRY: 'sorry',
+  POOJA: 'pooja',
+  WEDDING: 'wedding',
+  LOVE: 'love',
+  CONGRATULATIONS: 'congratulations',
+  GET_WELL: 'get_well',
+  JUST_BECAUSE: 'just_because',
+});
+
 // ---------------- Misc ----------------
 export const HASH_ALGO = Object.freeze({
   SHA256: 'sha256',

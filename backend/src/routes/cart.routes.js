@@ -12,6 +12,8 @@ import {
   checkoutSchema,
   slotReserveSchema,
   cartCouponSchema,
+  cartGiftSchema,
+  cartReorderSchema,
 } from '../utils/validators/order.validators.js';
 
 const router = Router();
@@ -35,6 +37,10 @@ router.post('/revalidate', requireActiveTenant, CartController.revalidate);
 router.post('/merge', authenticate, CartController.merge);
 router.post('/quote', authenticate, requireActiveTenant, validate(checkoutQuoteSchema), CartController.quote);
 router.post('/checkout', authenticate, requireActiveTenant, rateLimiters.checkoutLimiter, validate(checkoutSchema), CartController.checkout);
+
+// florist gift draft (guest-ok) + reorder from a previous order
+router.patch('/gift', requireActiveTenant, validate(cartGiftSchema), CartController.setGift);
+router.post('/reorder', authenticate, requireActiveTenant, validate(cartReorderSchema), CartController.reorder);
 
 // coupons (Phase 3.5)
 router.post('/coupon', requireActiveTenant, validate(cartCouponSchema), CartController.applyCoupon);
