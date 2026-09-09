@@ -21,6 +21,7 @@ export default function CartSheet() {
   const [busyId, setBusyId] = useState(null);
   const [coupon, setCoupon] = useState('');
   const [couponBusy, setCouponBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(null); // item to confirm removal
 
   // --- FIX: Correctly map the nested API response shape ---
   const items = cart?.items || [];
@@ -29,12 +30,19 @@ export default function CartSheet() {
   // --------------------------------------------------------
 
   const setQty = async (item, qty) => {
+    // 7.1.8: Confirmation before removing an item (qty=0 means remove)
+    if (qty <= 0 && !confirmRemove) {
+      setConfirmRemove(item);
+      return;
+    }
+    setConfirmRemove(null);
     setBusyId(item.id);
     try {
       const r = await withAuthRetry(() => (qty <= 0
         ? api.shop.removeItem(item.id)
         : api.shop.updateItem(item.id, { qty })));
       setCart(r.data);
+      if (qty <= 0) toast('Item removed from basket', 'info');
     } catch (e) {
       toast(isAuthError(e) ? 'Sign in to update your basket' : errMsg(e), isAuthError(e) ? 'info' : 'error');
     } finally {
@@ -171,6 +179,24 @@ export default function CartSheet() {
             </li>
           )}
         </ul>
+      )}
+
+      {/* 7.1.8: Remove confirmation dialog */}
+      {confirmRemove && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-xl">
+            <p className="text-sm font-semibold text-slate-900">Remove item?</p>
+            <p className="mt-1 text-sm text-slate-600">
+              Remove <b>{confirmRemove.titleSnapshot}</b> from your basket?
+            </p>
+            <div className="mt-4 flex gap-2 justify-end">
+              <Button variant="ghost" size="sm" onClick={() => setConfirmRemove(null)}>Keep it</Button>
+              <Button variant="outline" size="sm" className="text-rose-600 border-rose-200 hover:bg-rose-50" onClick={() => setQty(confirmRemove, 0)}>
+                Remove
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
     </Sheet>
   );

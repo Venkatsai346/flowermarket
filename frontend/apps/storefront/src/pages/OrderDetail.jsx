@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, Banknote, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, RotateCcw, Truck,
+  ArrowLeft, Banknote, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, Repeat, RotateCcw, Truck,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
@@ -18,6 +18,7 @@ export default function OrderDetail() {
   const [searchParams, setSearchParams] = useSearchParams();
   const toast = useShop((s) => s.toast);
   const store = useShop((s) => s.store);
+  const setCart = useShop((s) => s.setCart);
   const widgetOpened = useRef(false);
   const [invoiceBusy, setInvoiceBusy] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
@@ -152,6 +153,32 @@ export default function OrderDetail() {
 
   const openReturn = () => setReturnOpen(true);
 
+  // 7.1.10: Reorder — add all items from this order to the cart
+  const [reordering, setReordering] = useState(false);
+  const reorder = async () => {
+    setReordering(true);
+    try {
+      let added = 0;
+      for (const it of items) {
+        try {
+          await api.shop.addToCart({ listingId: it.listingId || it.skuSnapshot?.listingId, qty: it.qty || 1 });
+          added += 1;
+        } catch { /* item may be out of stock — skip */ }
+      }
+      if (added > 0) {
+        const r = await api.shop.cart();
+        setCart(r.data);
+        toast(`${added} item${added === 1 ? '' : 's'} added to basket`, 'success');
+      } else {
+        toast('No items could be added — they may be out of stock', 'error');
+      }
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    } finally {
+      setReordering(false);
+    }
+  };
+
   const toggleCancel = () => {
     if (confirmCancel) { setConfirmCancel(false); clearActionParam(); }
     else setConfirmCancel(true);
@@ -274,12 +301,16 @@ export default function OrderDetail() {
       )}
 
       {/* actions */}
-      {(cancelAllowed || canRequestReturn) && !cancelled && (
-        <div className="mb-5 flex flex-wrap gap-2">
-          {canRequestReturn && (
-            <Button variant="soft" size="sm" icon={RotateCcw} onClick={openReturn}>Request a return</Button>
-          )}
-          {cancelAllowed && (
+      <div className="mb-5 flex flex-wrap gap-2">
+        <Button variant="soft" size="sm" icon={Repeat} loading={reordering} onClick={reorder}>
+          Reorder
+        </Button>
+        {(cancelAllowed || canRequestReturn) && !cancelled && (
+          <>
+            {canRequestReturn && (
+              <Button variant="soft" size="sm" icon={RotateCcw} onClick={openReturn}>Request a return</Button>
+            )}
+            {cancelAllowed && (
             <Button
               variant="ghost"
               size="sm"
@@ -290,8 +321,9 @@ export default function OrderDetail() {
               {confirmCancel ? 'Close' : 'Cancel order'}
             </Button>
           )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {confirmCancel && (
         <div className="card mb-5 space-y-3 border-rose-200 p-4">

@@ -1,0 +1,40 @@
+{
+  "name": "Bloomy — Fresh Flowers Delivered",
+  "short_name": "Bloomy",
+  "description": "Fresh flowers, plants, and gifts delivered to your door. Shop by occasion, browse arrangements, and get same-day delivery.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#be185d",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "lang": "en",
+  "categories": ["shopping", "lifestyle"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "My Orders",
+      "url": "/orders",
+      "description": "View your order history"
+    },
+    {
+      "name": "Search",
+      "url": "/search",
+      "description": "Search for flowers and gifts"
+    }
+  ]
+}

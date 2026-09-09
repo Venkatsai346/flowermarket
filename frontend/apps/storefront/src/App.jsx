@@ -9,6 +9,7 @@ import { kolkataDate, pickNextSlot } from './lib/arrival.js';
 import Header from './components/Header.jsx';
 import Footer from './components/Footer.jsx';
 import SkipLink from './components/SkipLink.jsx';
+import ScrollToTop from './components/ScrollToTop.jsx';
 import CartSheet from './components/CartSheet.jsx';
 import AuthSheet from './components/AuthSheet.jsx';
 import PincodeSheet from './components/PincodeSheet.jsx';
@@ -24,6 +25,8 @@ const Returns = lazy(() => import('./pages/Returns.jsx'));
 const Addresses = lazy(() => import('./pages/Addresses.jsx'));
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
 const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
+const Browse = lazy(() => import('./pages/Browse.jsx'));
+const About = lazy(() => import('./pages/About.jsx'));
 
 /**
  * The storefront shell.
@@ -179,6 +182,7 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
+      <ScrollToTop />
       <SkipLink />
       <Header />
       <main id="main-content" className="flex-1" role="main">
@@ -194,6 +198,8 @@ export default function App() {
             <Route path="/returns" element={<Returns />} />
             <Route path="/wallet" element={<Wallet />} />
             <Route path="/wishlist" element={<Wishlist />} />
+            <Route path="/browse" element={<Browse />} />
+            <Route path="/about" element={<About />} />
             <Route path="/addresses" element={<Addresses />} />
             <Route path="*" element={<Home />} />
           </Routes>
