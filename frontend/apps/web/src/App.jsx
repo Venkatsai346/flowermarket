@@ -30,6 +30,12 @@ import VendorProfilePage from './features/vendor/VendorProfilePage.jsx';
 import PlatformPayoutsPage from './features/payouts/PlatformPayoutsPage.jsx';
 import LedgerPage from './features/platform/LedgerPage.jsx';
 import AuditLogPage from './features/platform/AuditLogPage.jsx';
+import TenantSettingsPage from './features/storefront/TenantSettingsPage.jsx';
+import ExportCenterPage from './features/platform/ExportCenterPage.jsx';
+import FiscalPeriodsPage from './features/platform/FiscalPeriodsPage.jsx';
+import SettlementIngestionPage from './features/payouts/SettlementIngestionPage.jsx';
+import StatutoryDepositsPage from './features/payouts/StatutoryDepositsPage.jsx';
+import DeliveryZonesPage from './features/hubs/DeliveryZonesPage.jsx';
 import VendorPayoutsPage from './features/payouts/VendorPayoutsPage.jsx';
 import VendorPayoutAccountPage from './features/payouts/VendorPayoutAccountPage.jsx';
 import VendorProductsPage from './features/vendor/VendorProductsPage.jsx';
@@ -115,6 +121,9 @@ export default function App() {
           <Route path="vendors" element={storeOnly(<StoreVendorsPage />)} />
           <Route path="billing" element={storeOnly(<StoreBillingPage />)} />
           <Route path="storefront" element={storeOnly(<BrandingPage />)} />
+          <Route path="settings" element={storeOnly(<TenantSettingsPage />)} />
+          <Route path="exports" element={storeOnly(<ExportCenterPage />)} />
+          <Route path="delivery-zones" element={storeOnly(<DeliveryZonesPage />)} />
           <Route path="platform" element={platformOnly(<PlatformOverview />)} />
           <Route path="platform/lifecycle" element={platformOnly(<Suspense fallback={<LoadingBlock />}><PlatformLifecyclePage /></Suspense>)} />
           <Route path="platform/stores" element={platformOnly(<PlatformStoresPage />)} />
@@ -126,6 +135,10 @@ export default function App() {
           <Route path="platform/payouts" element={platformOnly(<PlatformPayoutsPage />)} />
           <Route path="platform/ledger" element={platformOnly(<LedgerPage />)} />
           <Route path="platform/audit" element={platformOnly(<AuditLogPage />)} />
+          <Route path="platform/fiscal-periods" element={platformOnly(<FiscalPeriodsPage />)} />
+          <Route path="platform/settlements" element={platformOnly(<SettlementIngestionPage />)} />
+          <Route path="platform/statutory-deposits" element={platformOnly(<StatutoryDepositsPage />)} />
+          <Route path="platform/exports" element={platformOnly(<ExportCenterPage />)} />
           <Route path="vendor" element={vendorOnly(<VendorProfilePage />)} />
           <Route path="vendor/products" element={vendorOnly(<VendorProductsPage />)} />
           <Route path="vendor/payouts" element={vendorOnly(<VendorPayoutsPage />)} />
