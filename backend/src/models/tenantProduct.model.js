@@ -63,6 +63,13 @@ const TenantProductSchema = new Schema(
       updatedAt: { type: Date, default: null },
     },
 
+    // Denormalized rating from approved reviews (Phase 7.4.1)
+    rating: {
+      average: { type: Number, default: 0, min: 0, max: 5 },
+      count: { type: Number, default: 0, min: 0 },
+      updatedAt: { type: Date, default: null },
+    },
+
     status: {
       type: String,
       enum: Object.values(TENANT_LISTING_STATUS),

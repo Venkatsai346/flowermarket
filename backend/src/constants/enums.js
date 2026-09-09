@@ -666,6 +666,14 @@ export const AUDIT_ACTION = Object.freeze({
   RANKING_CHANGE: 'ranking_change',
   SEARCH_REINDEX: 'search_reindex',
 
+  // ---- Phase 7.4: reviews & DLQ ----
+  REVIEW_CREATED: 'review_created',
+  REVIEW_APPROVED: 'review_approved',
+  REVIEW_REJECTED: 'review_rejected',
+  DLQ_REQUEUE: 'dlq_requeue',
+  DLQ_BULK_REQUEUE: 'dlq_bulk_requeue',
+  DLQ_PURGE: 'dlq_purge',
+
   OTHER: 'other',
 });
 
@@ -1155,4 +1163,27 @@ export const SEARCH_EVENT_TYPE = Object.freeze({
   CLICK: 'click',
   ADD_TO_CART: 'add_to_cart',
   ORDER: 'order',
+});
+
+/** Product review moderation status. */
+export const REVIEW_STATUS = Object.freeze({
+  PENDING: 'pending',
+  APPROVED: 'approved',
+  REJECTED: 'rejected',
+});
+
+/** Demand forecast methods. */
+export const FORECAST_METHOD = Object.freeze({
+  SIMPLE: 'simple',
+  WEIGHTED: 'weighted',
+  TREND: 'trend',
+});
+
+/** GSTR-2B match status. */
+export const GSTR2B_MATCH_STATUS = Object.freeze({
+  UNMATCHED: 'unmatched',
+  MATCHED: 'matched',
+  PARTIAL_MATCH: 'partial_match',
+  VALUE_MISMATCH: 'value_mismatch',
+  NOT_IN_BOOKS: 'not_in_books',
 });

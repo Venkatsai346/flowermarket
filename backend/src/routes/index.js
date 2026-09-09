@@ -21,6 +21,8 @@ import payoutRoutes from './payout.routes.js';
 import ledgerRoutes from './ledger.routes.js';
 import domainRoutes from './domain.routes.js';
 import searchRoutes from './search.routes.js';
+import reviewRoutes, { publicReviewRouter, adminReviewRouter } from './review.routes.js';
+import phase74Routes from './phase74.routes.js';
 
 /**
  * API v1 router.
@@ -65,5 +67,13 @@ apiRouter.use('/payouts', payoutRoutes);
 apiRouter.use('/ledger', ledgerRoutes);
 apiRouter.use('/domains', domainRoutes);
 apiRouter.use('/search', searchRoutes);
+
+// ---- Phase 7.4: product reviews ----
+apiRouter.use('/reviews', reviewRoutes);              // customer CRUD
+apiRouter.use('/reviews', publicReviewRouter);        // public listing
+
+// ---- Phase 7.4: demand forecasting, HSN, e-way, GSTR-2B, DLQ, pool ----
+apiRouter.use('/admin/reviews', adminReviewRouter);   // admin moderation
+apiRouter.use('/admin/phase74', phase74Routes);       // consolidated admin endpoints
 
 export default apiRouter;

@@ -54,6 +54,14 @@ async function bootstrap() {
     console.log('[db] reconnected');
   });
 
+  // Phase 7.4.16: register connection pool monitoring listeners
+  try {
+    const { default: connectionPoolService } = await import('./services/connectionPool.service.js');
+    connectionPoolService.registerListeners();
+  } catch {
+    // non-critical — pool stats just won't have event history
+  }
+
   const app = createApp();
   const server = app.listen(config.port, () => {
     // eslint-disable-next-line no-console

@@ -104,3 +104,9 @@ export { default as SearchDocument } from './searchDocument.model.js';
 export { default as RankingProfile } from './rankingProfile.model.js';
 export { default as SearchSynonym } from './searchSynonym.model.js';
 export { default as SearchQueryLog } from './searchQueryLog.model.js';
+
+// ---- Phase 7.4: reviews, compliance, infrastructure ----
+export { default as ProductReview } from './productReview.model.js';
+export { default as ScheduledJob } from './scheduledJob.model.js';
+export { default as FiscalPeriod } from './fiscalPeriod.model.js';
+export { default as StatutoryDeposit } from './statutoryDeposit.model.js';

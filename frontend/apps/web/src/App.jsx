@@ -36,6 +36,10 @@ import FiscalPeriodsPage from './features/platform/FiscalPeriodsPage.jsx';
 import SettlementIngestionPage from './features/payouts/SettlementIngestionPage.jsx';
 import StatutoryDepositsPage from './features/payouts/StatutoryDepositsPage.jsx';
 import DeliveryZonesPage from './features/hubs/DeliveryZonesPage.jsx';
+import ReviewModerationPage from './features/platform/ReviewModerationPage.jsx';
+import DemandForecastPage from './features/platform/DemandForecastPage.jsx';
+import DlqPage from './features/platform/DlqPage.jsx';
+import ConnectionPoolPage from './features/platform/ConnectionPoolPage.jsx';
 import VendorPayoutsPage from './features/payouts/VendorPayoutsPage.jsx';
 import VendorPayoutAccountPage from './features/payouts/VendorPayoutAccountPage.jsx';
 import VendorProductsPage from './features/vendor/VendorProductsPage.jsx';
@@ -139,6 +143,10 @@ export default function App() {
           <Route path="platform/settlements" element={platformOnly(<SettlementIngestionPage />)} />
           <Route path="platform/statutory-deposits" element={platformOnly(<StatutoryDepositsPage />)} />
           <Route path="platform/exports" element={platformOnly(<ExportCenterPage />)} />
+          <Route path="platform/reviews" element={platformOnly(<ReviewModerationPage />)} />
+          <Route path="platform/demand" element={platformOnly(<DemandForecastPage />)} />
+          <Route path="platform/dlq" element={platformOnly(<DlqPage />)} />
+          <Route path="platform/pool" element={platformOnly(<ConnectionPoolPage />)} />
           <Route path="vendor" element={vendorOnly(<VendorProfilePage />)} />
           <Route path="vendor/products" element={vendorOnly(<VendorProductsPage />)} />
           <Route path="vendor/payouts" element={vendorOnly(<VendorPayoutsPage />)} />

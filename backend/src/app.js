@@ -18,6 +18,8 @@ import traceId from './middleware/traceId.js';
 import { structuredLogger } from './middleware/structuredLogger.js';
 import { timeoutMiddleware } from './middleware/timeout.js';
 import { mountOpenAPI } from './middleware/openapi.js';
+import { deduplicate } from './middleware/deduplicate.js';
+import connectionPoolService from './services/connectionPool.service.js';
 
 /**
  * App factory — keeps server.js free of middleware wiring and lets tests
@@ -161,6 +163,9 @@ export function createApp() {
 
   // ---- request timeout (Phase 7.0.16: prevent hung requests) ----
   app.use(timeoutMiddleware(30_000));
+
+  // ---- request deduplication (Phase 7.4.17: idempotency protection) ----
+  app.use(deduplicate());
 
   // ---- health probes (Phase 7.0: /health, /health/ready, /health/deep) ----
   app.use('/health', healthRoutes);
