@@ -24,6 +24,20 @@ const config = {
 
   mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/flower_market',
 
+  // ---- MongoDB connection pool tuning (Phase 7.7.12) ----
+  mongoPool: {
+    maxPoolSize: Number(process.env.MONGO_MAX_POOL_SIZE) || 100,
+    minPoolSize: Number(process.env.MONGO_MIN_POOL_SIZE) || 5,
+    maxIdleTimeMS: Number(process.env.MONGO_MAX_IDLE_TIME_MS) || 60000,
+    waitQueueTimeoutMS: Number(process.env.MONGO_WAIT_QUEUE_TIMEOUT_MS) || 10000,
+    serverSelectionTimeoutMS: Number(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS) || 5000,
+    heartbeatFrequencyMS: Number(process.env.MONGO_HEARTBEAT_FREQUENCY_MS) || 10000,
+    compressors: (process.env.MONGO_COMPRESSORS || 'zstd,zlib').split(','),
+    readPreference: process.env.MONGO_READ_PREFERENCE || 'primaryPreferred',
+    retryWrites: process.env.MONGO_RETRY_WRITES !== 'false',
+    retryReads: process.env.MONGO_RETRY_READS !== 'false',
+  },
+
   // ---- Redis (optional: rate limiting, caching, job queues) ----
   // When REDIS_URL is not set, all Redis features fall back to in-memory.
   // Production should always have Redis for multi-instance deployments.

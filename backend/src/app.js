@@ -19,6 +19,7 @@ import { structuredLogger } from './middleware/structuredLogger.js';
 import { timeoutMiddleware } from './middleware/timeout.js';
 import { mountOpenAPI } from './middleware/openapi.js';
 import { deduplicate } from './middleware/deduplicate.js';
+import { responseCache } from './middleware/responseCache.js';
 import connectionPoolService from './services/connectionPool.service.js';
 
 /**
@@ -166,6 +167,9 @@ export function createApp() {
 
   // ---- request deduplication (Phase 7.4.17: idempotency protection) ----
   app.use(deduplicate());
+
+  // ---- response caching (Phase 7.7.11: cache GET responses) ----
+  app.use(responseCache());
 
   // ---- health probes (Phase 7.0: /health, /health/ready, /health/deep) ----
   app.use('/health', healthRoutes);
