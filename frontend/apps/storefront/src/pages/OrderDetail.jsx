@@ -29,6 +29,7 @@ export default function OrderDetail() {
 
   const [payStatus, setPayStatus] = useState(null);
   const [checkingPay, setCheckingPay] = useState(false);
+  const [reordering, setReordering] = useState(false);
 
   const { data, loading, refetch } = useApi(() => api.shop.order(id), [id]);
   const { data: timeline } = useApi(() => api.shop.orderTimeline(id), [id]);
@@ -154,7 +155,6 @@ export default function OrderDetail() {
   const openReturn = () => setReturnOpen(true);
 
   // 7.1.10: Reorder — add all items from this order to the cart
-  const [reordering, setReordering] = useState(false);
   const reorder = async () => {
     setReordering(true);
     try {

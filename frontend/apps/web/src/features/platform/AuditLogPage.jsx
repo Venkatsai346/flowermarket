@@ -34,7 +34,7 @@ export default function AuditLogPage() {
   });
 
   const { data, loading, error } = useApi(
-    () => api.admin.auditLog?.(filters) || Promise.resolve({ items: [], meta: {} }),
+    () => api.admin.auditLog(filters),
     [filters],
   );
 

@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom';
-import { Check, Plus } from 'lucide-react';
+import { Check, Heart, Plus } from 'lucide-react';
 import { Money, Stepper } from './ui.jsx';
 import FloralImage from './FloralImage.jsx';
 import { cn } from '../lib/utils.js';
+import { useWishlist } from '../lib/useWishlist.js';
 
 /**
  * A product tile.
@@ -12,6 +13,7 @@ import { cn } from '../lib/utils.js';
  * which is the single biggest driver of basket size in grocery-style shops.
  */
 export default function ProductCard({ listing, qty = 0, busy, onAdd, onQty, onOpen }) {
+  const { isWishlisted, toggle } = useWishlist();
   const p = listing.product || {};
   const price = listing.price?.sellingPrice ?? 0;
   const mrp = listing.price?.mrp ?? null;
@@ -19,7 +21,9 @@ export default function ProductCard({ listing, qty = 0, busy, onAdd, onQty, onOp
   const stock = listing.stockQty ?? 0;
   const out = stock <= 0;
   const low = !out && stock <= 5;
-  const href = `/p/${p.slug || p.id || listing.listingId}`;
+  const slug = p.slug || p.id || listing.listingId;
+  const href = `/p/${slug}`;
+  const wishlisted = isWishlisted(slug);
 
   return (
     <article className={cn('card group relative flex flex-col overflow-hidden transition hover:shadow-lift', out && 'opacity-70')}>
@@ -48,6 +52,19 @@ export default function ProductCard({ listing, qty = 0, busy, onAdd, onQty, onOp
             {off}% off
           </span>
         )}
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); toggle({ slug, title: p.title, imageUrl: p.imageUrl, price }); }}
+          className={cn(
+            'absolute right-2 top-2 rounded-full p-1.5 shadow-sm transition',
+            wishlisted
+              ? 'bg-rose-100 text-rose-600'
+              : 'bg-white/80 text-slate-400 opacity-0 group-hover:opacity-100',
+          )}
+          aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
+        >
+          <Heart className={cn('h-4 w-4', wishlisted && 'fill-current')} />
+        </button>
         {out && (
           <span className="absolute inset-x-0 bottom-0 bg-slate-900/75 py-1.5 text-center text-xs font-semibold text-white">
             Out of stock

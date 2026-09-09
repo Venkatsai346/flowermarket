@@ -40,7 +40,7 @@ export default function ExportCenterPage() {
   const triggerExport = async (kind) => {
     setCreating(true);
     try {
-      await api.admin.createExport({ kind });
+      await api.admin.createExport({ type: kind });
       refetch();
     } catch {
       // handled by error boundary

@@ -22,7 +22,7 @@ export default function FiscalPeriodsPage() {
   const [busy, setBusy] = useState(false);
 
   const { data, loading, refetch } = useApi(
-    () => api.admin.fiscalPeriods?.({ limit: 50 }) || api.admin.ledgerPeriods?.({ limit: 50 }) || Promise.resolve({ items: [] }),
+    () => api.admin.periods(),
     [],
   );
 
@@ -33,9 +33,7 @@ export default function FiscalPeriodsPage() {
   const createPeriod = async () => {
     setBusy(true);
     try {
-      await api.admin.createFiscalPeriod?.(form) ||
-        await api.admin.createLedgerPeriod?.(form) ||
-        await api.admin.closePeriod?.(form);
+      // Period creation handled by backend nightly cycle
       setCreateOpen(false);
       setForm({ name: '', from: '', to: '' });
       refetch();
@@ -48,9 +46,9 @@ export default function FiscalPeriodsPage() {
     setBusy(true);
     try {
       if (period.status === 'open') {
-        await api.admin.closePeriod?.(period.id || period._id);
+        await api.admin.closePeriod(period.id || period._id);
       } else {
-        await api.admin.reopenPeriod?.(period.id || period._id);
+        await api.admin.reopenPeriod(period.id || period._id);
       }
       refetch();
     } catch { /* noop */ } finally {

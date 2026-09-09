@@ -21,7 +21,7 @@ export default function DeliveryZonesPage() {
   const [busy, setBusy] = useState(false);
 
   const { data, loading, refetch } = useApi(
-    () => api.admin.deliveryZones?.({ limit: 100 }) || api.admin.zones?.({ limit: 100 }) || Promise.resolve({ items: [] }),
+    () => api.admin.hubs(),
     [],
   );
 
@@ -56,9 +56,9 @@ export default function DeliveryZonesPage() {
         isActive: form.isActive,
       };
       if (editItem) {
-        await api.admin.updateDeliveryZone?.(editItem.id || editItem._id, payload);
+        await api.admin.updateHub(editItem.id || editItem._id, payload);
       } else {
-        await api.admin.createDeliveryZone?.(payload);
+        await api.admin.createHub(payload);
       }
       setEditOpen(false);
       refetch();
@@ -70,7 +70,7 @@ export default function DeliveryZonesPage() {
   const remove = async (id) => {
     if (!confirm('Delete this delivery zone?')) return;
     try {
-      await api.admin.deleteDeliveryZone?.(id);
+      await api.admin.toggleHub(id);
       refetch();
     } catch { /* noop */ }
   };

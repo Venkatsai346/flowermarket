@@ -140,6 +140,11 @@ export function createEndpoints(client) {
       // Phase 11 — fiscal periods (tenant-scoped, read)
       periods: () => c.get('/admin/periods'),
       periodReport: (periodKey) => c.get(`/admin/periods/${periodKey}`),
+      closePeriod: (periodKey) => c.post(`/ledger/periods/${periodKey}/close`),
+      reopenPeriod: (periodKey) => c.post(`/ledger/periods/${periodKey}/reopen`),
+
+      // Audit log (platform-wide activity)
+      auditLog: (q = {}) => c.get('/catalog/admin/audit', { query: q }),
     },
 
     public: {
