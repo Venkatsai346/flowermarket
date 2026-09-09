@@ -1,0 +1,15 @@
+# Bloomy Storefront — robots.txt
+# Dynamic per-store sitemap served by the backend
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /checkout
+Disallow: /orders
+Disallow: /wallet
+Disallow: /addresses
+Disallow: /returns
+Disallow: /wishlist
+
+# Sitemap is served dynamically per-store
+Sitemap: /sitemap.xml

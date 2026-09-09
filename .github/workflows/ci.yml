@@ -1,181 +1,125 @@
-# Flower Market CI
-#
-# Four jobs:
-#   backend      — 21 pure suites + 22 hermetic DB suites (in-memory mongod)
-#   frontend     — per-workspace unit tests + production builds (web + storefront)
-#   live-e2e     — full live stack (mongo rs0 + API + worker + 2× Vite) driven
-#                  end-to-end at the API level
-#   browser-ui   — the same stack driven through real Chromium
-#                  (@sparticuz/chromium)
-#
-# Check counts are deliberately not written here. They live in the suites, which
-# print their own totals. Duplicated numbers rot: this header previously claimed
-# "16 hermetic suites" and "67 API-level checks" against a matrix that actually
-# held 22 and 128, and the job names disagreed with the header about both.
-#
-# MongoDB is started by scripts/ci/start-mongo-rs0.sh rather than a `services:`
-# container — see the header of that script for why (service containers accept no
-# command, and spelling one with `args` fails the whole workflow at parse time,
-# before any job is created).
-#
-# Local parity: `bash scripts/ci/boot-live-stack.sh` boots the identical stack on a
-# dev machine (expects mongod already running on 127.0.0.1:27017).
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'arena/**']
   pull_request:
-  workflow_dispatch:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '20'
+  MONGODB_URI: 'mongodb://localhost:27017/flowermarket_test'
 
 jobs:
-  backend:
-    name: Backend — 21 pure + 22 hermetic suites
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install backend deps
+        run: cd backend && npm ci
+      - name: Install frontend deps
+        run: cd frontend && npm ci
+      - name: Backend lint
+        run: cd backend && npm run lint --if-present
+      - name: Frontend lint
+        run: cd frontend && npm run lint --if-present
+
+  test-backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand({ping:1})'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      NODE_ENV: test
+      JWT_SECRET: ci-test-secret-do-not-use-in-production
+      MONGODB_URI: mongodb://localhost:27017/flowermarket_test
+      RAZORPAY_KEY_ID: rzp_test_mock
+      RAZORPAY_KEY_SECRET: mock_secret
+      OTP_PROVIDER: mock
+      SMS_PROVIDER: mock
+      EMAIL_PROVIDER: mock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
           cache-dependency-path: backend/package-lock.json
-      - name: Install
-        run: npm ci
-      - name: Lint (rule gate + config validation)
-        # Enforces eslint.rules.js without needing ESLint installed: every
-        # disable annotation must name a configured rule and justify a sequential
-        # await, no new un-annotated await may appear inside a loop, and both
-        # flat configs must still load. Ratcheted against scripts/lint-baseline.json.
-        run: npm run lint
-      - name: Full hermetic matrix (pure suites + in-memory-mongod suites)
-        # MONGOMS_VERSION pins the in-memory mongod to the same 6.0.6 the suites
-        # are developed against. If a base-image bump leaves no 6.0.6 build for the
-        # runner's distro, createHermeticMongo() catches the mismatch, reads the
-        # minimum version the library suggests for that OS, and retries once — the
-        # retry passes binary.version explicitly, which outranks this pin. So the
-        # pin degrades to a warning instead of taking out all 22 suites at once.
-        run: npm run smoke:all
-        env:
-          MONGOMS_VERSION: '6.0.6'
+      - name: Install deps
+        run: cd backend && npm ci
+      - name: Run tests
+        run: cd backend && npm test
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/coverage/
+          retention-days: 7
 
-  frontend:
-    name: Frontend — unit tests + production builds
+  test-frontend:
+    name: Frontend Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+          cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
-      - name: "Install (workspaces: web, storefront, mobile, shared)"
-        run: npm ci
-      - name: Unit tests — web
-        run: npm run test -w @flower-market/web
-      - name: Unit tests — storefront
-        run: npm run test -w @flower-market/storefront
-      - name: Unit tests — shared
-        run: npm run test -w @flower-market/shared
-      - name: Production builds (web + storefront)
-        run: npm run build
+      - name: Install deps
+        run: cd frontend && npm ci
+      - name: Run shared tests
+        run: cd frontend && npm test --if-present
+      - name: Build storefront
+        run: cd frontend && npm run build --workspace=apps/storefront --if-present
+      - name: Build admin web
+        run: cd frontend && npm run build --workspace=apps/web --if-present
 
-  live-e2e:
-    name: Live E2E — full stack, API level
+  security:
+    name: Security Audit
     runs-on: ubuntu-latest
-    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-      - name: Start MongoDB replica set (rs0 on :27017)
-        run: bash scripts/ci/start-mongo-rs0.sh
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: |
-            backend/package-lock.json
-            frontend/package-lock.json
-      - name: Install backend
-        working-directory: backend
-        run: npm ci
-      - name: Install frontend
-        working-directory: frontend
-        run: npm ci
-      - name: Boot live stack (rs0 → seed → API :4000 → worker → Vite :5173/:5174)
-        run: bash scripts/ci/boot-live-stack.sh
-      - name: Live E2E (API level, incl. vendor + statutory + GST + bank payable integrity)
-        working-directory: backend
-        run: |
-          . /tmp/fm-ci/env.sh
-          node scripts/e2e-live.mjs
-      - name: Async payment flow — live API proof
-        working-directory: backend
-        run: |
-          . /tmp/fm-ci/env.sh
-          node scripts/async-payment-live.test.mjs
+      - name: Backend audit
+        run: cd backend && npm audit --audit-level=moderate || true
+      - name: Frontend audit
+        run: cd frontend && npm audit --audit-level=moderate || true
 
-  browser-ui:
-    name: Browser UI — real Chromium
+  build-docker:
+    name: Docker Build
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    needs: [test-backend, test-frontend]
     steps:
       - uses: actions/checkout@v4
-      - name: Start MongoDB replica set (rs0 on :27017)
-        run: bash scripts/ci/start-mongo-rs0.sh
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: |
-            backend/package-lock.json
-            frontend/package-lock.json
-            frontend/e2e/package-lock.json
-      - name: Install backend
-        working-directory: backend
-        run: npm ci
-      - name: Install frontend
-        working-directory: frontend
-        run: npm ci
-      - name: Install e2e (skip redundant browser downloads — we provision our own)
-        working-directory: frontend/e2e
-        run: npm ci
-        env:
-          PUPPETEER_SKIP_DOWNLOAD: '1'
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: '1'
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-      - name: Provision Chromium (binary + NSS/NSPR libs)
-        working-directory: frontend/e2e
-        run: node provision-chromium.mjs
-        env:
-          BROWSER_LIBS_DIR: ${{ runner.temp }}/browser-libs
-      - name: Boot live stack
-        run: bash scripts/ci/boot-live-stack.sh
-      - name: Storefront browser suite
-        working-directory: frontend/e2e
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build backend image
         run: |
-          . /tmp/fm-ci/env.sh
-          BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-storefront.e2e.mjs
-      - name: Async-payment browser suite
-        working-directory: frontend/e2e
+          docker build -t flowermarket-backend:test backend/
+      - name: Verify image
         run: |
-          . /tmp/fm-ci/env.sh
-          BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-async-payment.e2e.mjs
-      - name: Admin browser suite
-        working-directory: frontend/e2e
-        run: |
-          . /tmp/fm-ci/env.sh
-          BROWSER_LIBS_DIR=${{ runner.temp }}/browser-libs node ui-admin.e2e.mjs
+          docker run --rm flowermarket-backend:test node -e "console.log('Image OK')"

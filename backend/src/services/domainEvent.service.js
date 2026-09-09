@@ -6,6 +6,7 @@ import RefundTransaction from '../models/refundTransaction.model.js';
 import PayoutBatch from '../models/payoutBatch.model.js';
 import LedgerJournal from '../models/ledgerJournal.model.js';
 import { DOMAIN_EVENT_TYPE, DOMAIN_EVENT_JOURNAL_KINDS, LEDGER_JOURNAL_KIND, ORDER_STATUS, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
+import { AppError, notFound, badRequest, conflict } from '../utils/ApiError.js';
 
 // the chain starts from a fixed genesis (no prevHash before the first event)
 const GENESIS_HASH = '0'.repeat(64);
@@ -434,83 +435,63 @@ class DomainEventService {
     switch (e.kind) {
       case DOMAIN_EVENT_TYPE.SALE_CAPTURED: {
         const order = await Order.findById(id);
-        if (!order) throw Object.assign(new Error('order missing'), { code: 'ORDER_MISSING' });
+        if (!order) throw notFound('order missing', 'ORDER_MISSING');
         // only re-post genuinely paid, non-cancelled orders
-        if (order.status === ORDER_STATUS.CANCELLED) throw Object.assign(new Error('order cancelled'), { code: 'ORDER_CANCELLED' });
+        if (order.status === ORDER_STATUS.CANCELLED) throw conflict('order cancelled', 'ORDER_CANCELLED');
         if (!order.paymentSummary?.paidAt && order.status === ORDER_STATUS.PAYMENT_PENDING) {
-          throw Object.assign(new Error('not yet paid'), { code: 'NOT_PAID' });
+          throw badRequest('not yet paid', 'NOT_PAID');
         }
         await ledgerPostingService.postSaleCaptured({ order });
         return;
       }
       case DOMAIN_EVENT_TYPE.REFUND_ISSUED: {
         const rt = await RefundTransaction.findById(id);
-        if (!rt) throw Object.assign(new Error('refund missing'), { code: 'REFUND_MISSING' });
-        if (rt.status !== REFUND_TRANSACTION_STATUS.SUCCESS) throw Object.assign(new Error('refund not successful'), { code: 'REFUND_NOT_SUCCESS' });
+        if (!rt) throw notFound('refund missing', 'REFUND_MISSING');
+        if (rt.status !== REFUND_TRANSACTION_STATUS.SUCCESS) throw badRequest('refund not successful', 'REFUND_NOT_SUCCESS');
         await ledgerPostingService.postRefund({ refundTransaction: rt });
         return;
       }
       case DOMAIN_EVENT_TYPE.PAYOUT_INITIATED: {
         const batch = await PayoutBatch.findById(id);
-        if (!batch) throw Object.assign(new Error('payout batch missing'), { code: 'BATCH_MISSING' });
+        if (!batch) throw notFound('payout batch missing', 'BATCH_MISSING');
         await payoutService.postPayoutJournal(batch);
         return;
       }
       case DOMAIN_EVENT_TYPE.PAYOUT_REVERSED: {
         const batch = await PayoutBatch.findById(id);
-        if (!batch) throw Object.assign(new Error('payout batch missing'), { code: 'BATCH_MISSING' });
+        if (!batch) throw notFound('payout batch missing', 'BATCH_MISSING');
         await payoutService.unwindPayoutJournal(batch, 'replay: restore reversal');
         return;
       }
       case DOMAIN_EVENT_TYPE.WALLET_TOPUP: {
-        // the WalletTransaction is the aggregate of record — re-derive the
-        // counter from its reason (top-up → gateway clearing, goodwill →
-        // goodwill expense)
         const { default: WalletTransaction } = await import('../models/walletTransaction.model.js');
         const { WALLET_TXN_REASON } = await import('../constants/enums.js');
         const txn = await WalletTransaction.findById(id).lean();
-        if (!txn) throw Object.assign(new Error('wallet transaction missing'), { code: 'AGGREGATE_MISSING' });
+        if (!txn) throw notFound('wallet transaction missing', 'AGGREGATE_MISSING');
         await ledgerPostingService.postWalletTopup({ walletTransaction: txn, goodwill: txn.reason === WALLET_TXN_REASON.GOODWILL });
         return;
       }
       case DOMAIN_EVENT_TYPE.COD_COLLECTED: {
-        // The Payment row is the aggregate of record: it carries both the amount
-        // owed and the amount actually collected, so the journal is fully
-        // re-derivable and replaying it is exact (and idempotent on payment id).
         const { default: Payment } = await import('../models/payment.model.js');
         const { PAYMENT_STATUS } = await import('../constants/enums.js');
         const payment = await Payment.findById(id).lean();
-        if (!payment) throw Object.assign(new Error('payment missing'), { code: 'AGGREGATE_MISSING' });
-        // Refuse to invent cash: only a payment that was really collected can
-        // be replayed. An uncollected receivable posting cash_on_hand would be
-        // the ledger claiming money nobody has counted.
+        if (!payment) throw notFound('payment missing', 'AGGREGATE_MISSING');
         if (payment.status !== PAYMENT_STATUS.SUCCESS || !payment.collectedAt) {
-          throw Object.assign(new Error('cash not collected'), { code: 'COD_NOT_COLLECTED' });
+          throw badRequest('cash not collected', 'COD_NOT_COLLECTED');
         }
         await ledgerPostingService.postCodCollected({ payment });
         return;
       }
       case DOMAIN_EVENT_TYPE.WALLET_BACKFILL:
-        // the reconciled difference is historical data — it cannot be
-        // re-derived after the fact, so replay REFUSES it loudly instead of
-        // guessing an amount
-        throw Object.assign(new Error('wallet backfill journal not re-derivable — restore manually'), { code: 'WALLET_BACKFILL_NOT_REPLAYABLE' });
+        throw badRequest('wallet backfill journal not re-derivable — restore manually', 'WALLET_BACKFILL_NOT_REPLAYABLE');
       case DOMAIN_EVENT_TYPE.VENDOR_BACKFILL:
-        // same design as wallet_backfill: the measured difference is not an
-        // aggregate state — refuse loudly instead of guessing
-        throw Object.assign(new Error('vendor backfill journal not re-derivable — restore manually'), { code: 'VENDOR_BACKFILL_NOT_REPLAYABLE' });
+        throw badRequest('vendor backfill journal not re-derivable — restore manually', 'VENDOR_BACKFILL_NOT_REPLAYABLE');
       case DOMAIN_EVENT_TYPE.STATUTORY_BACKFILL:
-        // same design: the measured TCS/TDS difference is not re-derivable —
-        // refuse loudly instead of guessing an amount
-        throw Object.assign(new Error('statutory backfill journal not re-derivable — restore manually'), { code: 'STATUTORY_BACKFILL_NOT_REPLAYABLE' });
+        throw badRequest('statutory backfill journal not re-derivable — restore manually', 'STATUTORY_BACKFILL_NOT_REPLAYABLE');
       case DOMAIN_EVENT_TYPE.GST_BACKFILL:
-        // same design: the measured GST difference is not re-derivable —
-        // refuse loudly instead of guessing an amount
-        throw Object.assign(new Error('gst backfill journal not re-derivable — restore manually'), { code: 'GST_BACKFILL_NOT_REPLAYABLE' });
+        throw badRequest('gst backfill journal not re-derivable — restore manually', 'GST_BACKFILL_NOT_REPLAYABLE');
       case DOMAIN_EVENT_TYPE.BANK_BACKFILL:
-        // same design: the measured bank-cash difference is not re-derivable —
-        // refuse loudly instead of guessing an amount
-        throw Object.assign(new Error('bank backfill journal not re-derivable — restore manually'), { code: 'BANK_BACKFILL_NOT_REPLAYABLE' });
+        throw badRequest('bank backfill journal not re-derivable — restore manually', 'BANK_BACKFILL_NOT_REPLAYABLE');
       case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT:
       case DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED: {
         // the StatutoryDeposit doc is the aggregate of record (findDrift does
@@ -521,7 +502,7 @@ class DomainEventService {
         const ledgerSvc = ledgerMod.default;
         const { ledgerAccounts } = ledgerMod;
         const deposit = await StatutoryDeposit.findById(id).lean();
-        if (!deposit) throw Object.assign(new Error('statutory deposit missing'), { code: 'AGGREGATE_MISSING' });
+        if (!deposit) throw notFound('statutory deposit missing', 'AGGREGATE_MISSING');
         const account = deposit.statute === 'tds' ? ledgerAccounts.tdsPayable() : ledgerAccounts.tcsPayable();
         const isRevert = e.kind === DOMAIN_EVENT_TYPE.STATUTORY_DEPOSIT_REVERTED;
         await ledgerSvc.post({
@@ -551,10 +532,8 @@ class DomainEventService {
         return;
       }
       case DOMAIN_EVENT_TYPE.PSP_SETTLED: {
-        // the event payload carries the exact settlement amount — re-post the
-        // identical clearing→bank move (idempotent on the same key)
         const order = await Order.findById(id);
-        if (!order) throw Object.assign(new Error('order missing'), { code: 'ORDER_MISSING' });
+        if (!order) throw notFound('order missing', 'ORDER_MISSING');
         const ledgerMod = await import('./ledger.service.js');
         const ledgerService = ledgerMod.default;
         const { ledgerAccounts } = ledgerMod;
@@ -576,7 +555,7 @@ class DomainEventService {
         return;
       }
       default:
-        throw Object.assign(new Error(`no replay for kind ${e.kind}`), { code: 'NO_REPLAY' });
+        throw badRequest(`no replay for kind ${e.kind}`, 'NO_REPLAY');
     }
   }
 
@@ -616,7 +595,7 @@ class DomainEventService {
         payload: { statute: j.meta?.statute, amountPaise: j.totalPaise, utr: j.meta?.originalUtr || null, reason: j.meta?.reason || null, accountCode: j.meta?.statute === 'tds' ? 'tds_payable' : 'tcs_payable', source: 'restored_from_journal' },
       },
     }[j.kind];
-    if (!map) throw Object.assign(new Error(`no event for journal kind ${j.kind}`), { code: 'NO_MAP' });
+    if (!map) throw badRequest(`no event for journal kind ${j.kind}`, 'NO_MAP');
     await this.append({
       tenantId: j.tenantId, traceId: j.traceId || null,
       ...map,

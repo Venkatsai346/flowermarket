@@ -3,17 +3,21 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
-import morgan from 'morgan';
 import config from './config/index.js';
 import apiRouter from './routes/index.js';
 import opsRoutes from './routes/ops.routes.js';
+import healthRoutes from './routes/health.routes.js';
 import PaymentController from './controllers/payment.controller.js';
 import PayoutController from './controllers/payout.controller.js';
+import SitemapController from './controllers/sitemap.controller.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { metricsMiddleware } from './middleware/metrics.js';
 import traceId from './middleware/traceId.js';
+import { structuredLogger } from './middleware/structuredLogger.js';
+import { timeoutMiddleware } from './middleware/timeout.js';
+import { mountOpenAPI } from './middleware/openapi.js';
 
 /**
  * App factory — keeps server.js free of middleware wiring and lets tests
@@ -62,10 +66,26 @@ export function createApp() {
   // ---- end-to-end correlation (Phase 10) — first, so every request, the
   //      access log and every aggregate it creates share one traceId ----
   app.use(traceId);
-  morgan.token('trace', (req) => req.traceId || '-');
 
   // ---- security headers ----
-  app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+    // Phase 7.0.8: Content-Security-Policy (report-only in dev, enforced in prod)
+    contentSecurityPolicy: config.isProd ? {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+        imgSrc: ["'self'", "data:", "https:", "blob:"],
+        connectSrc: ["'self'", "https://api.razorpay.com", "https://*.razorpay.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        frameSrc: ["'self'", "https://api.razorpay.com", "https://*.razorpay.com"],
+        objectSrc: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    } : false, // no CSP in dev (breaks Vite HMR)
+  }));
 
   // ---- request metrics (first thing, so every request — including 4xx/5xx —
   //      is timed; the ops endpoints exclude themselves) ----
@@ -135,16 +155,21 @@ export function createApp() {
   app.use(express.json({ limit: config.limits.jsonBody }));
   app.use(express.urlencoded({ extended: true, limit: config.limits.jsonBody }));
 
-  // ---- perf & logging ----
+  // ---- perf & logging (Phase 7.0.6: structured JSON in production) ----
   app.use(compression());
-  // ':trace' appends the end-to-end correlation id to every access-log line
-  // (mimics morgan's dev/combined formats, plus the trace token)
-  app.use(morgan(config.isDev
-    ? ':method :url :status - :response-time ms - :res[content-length] :trace'
-    : ':remote-addr - :remote-user [:date[dev]] ":method :url HTTP/:http-version" :status :res[content-length] ":req[referrer]" ":req[user-agent]" :trace'));
+  app.use(structuredLogger());
+
+  // ---- request timeout (Phase 7.0.16: prevent hung requests) ----
+  app.use(timeoutMiddleware(30_000));
+
+  // ---- health probes (Phase 7.0: /health, /health/ready, /health/deep) ----
+  app.use('/health', healthRoutes);
 
   // ---- routes ----
   app.use('/api/v1', apiRouter);
+
+  // ---- OpenAPI spec + Swagger UI (Phase 7.0.17) ----
+  mountOpenAPI(app);
 
   // ---- local storage: serve uploaded objects (public storefront images) ----
   if (config.storage.provider === 'local') {
@@ -169,6 +194,9 @@ h1{color:#f5b942}code{background:#1c2029;padding:2px 6px;border-radius:4px;color
 </body></html>`);
     });
   }
+
+  // ---- sitemap (SEO: dynamic per-tenant sitemap.xml) ----
+  app.get('/sitemap.xml', SitemapController.generate);
 
   // ---- 404 + error handling (must be last) ----
   app.use(notFoundHandler);

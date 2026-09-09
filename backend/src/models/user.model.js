@@ -156,6 +156,15 @@ const UserSchema = new Schema(
       importedFrom: { type: String, default: null },
       notes: { type: String, default: null },
     },
+
+    // ---- 2FA / TOTP (super_admin security) ----
+    twoFactor: {
+      enabled: { type: Boolean, default: false },
+      encryptedSecret: { type: String, select: false, default: null },
+      backupCodes: { type: [String], select: false, default: [] }, // SHA-256 hashed
+      enrolledAt: { type: Date, default: null },
+      lastVerifiedAt: { type: Date, default: null },
+    },
   },
   { collection: 'users' }
 );

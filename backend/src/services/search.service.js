@@ -5,6 +5,7 @@ import SearchQueryLog from '../models/searchQueryLog.model.js';
 import searchProvider from './searchProvider.service.js';
 import config from '../config/index.js';
 import { fromPaise } from '../utils/money.js';
+import { BoundedCache } from '../utils/BoundedCache.js';
 import { serializeList } from '../utils/serialize.js';
 import { parseQuery, relaxationPlan, textRelevance } from '../utils/queryUnderstanding.js';
 import {
@@ -31,9 +32,13 @@ const CACHE_TTL_MS = 60000;
 
 class SearchService {
   constructor() {
-    this.profileCache = new Map(); // tenantId → { at, profiles }
-    this.synonymCache = new Map();
-    this.vocabCache = new Map();
+    // Phase 7.4: bounded LRU caches (max 200 entries, 60s TTL).
+    // The previous unbounded Maps grew without limit in long-running
+    // processes, eventually causing OOM. Each cache now caps at 200
+    // entries (~200 tenants) and evicts LRU when full.
+    this.profileCache = new BoundedCache({ maxEntries: 200, ttlMs: CACHE_TTL_MS, name: 'search:profiles' });
+    this.synonymCache = new BoundedCache({ maxEntries: 200, ttlMs: CACHE_TTL_MS, name: 'search:synonyms' });
+    this.vocabCache = new BoundedCache({ maxEntries: 100, ttlMs: CACHE_TTL_MS * 5, name: 'search:vocab' });
   }
 
   // -------------------------------------------------------------------------
@@ -43,34 +48,34 @@ class SearchService {
   async loadProfiles(tenantId) {
     const key = String(tenantId || 'platform');
     const hit = this.profileCache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.profiles;
+    if (hit) return hit;
     const profiles = await RankingProfile.find({
       isActive: true,
       $or: [{ tenantId: null }, { tenantId }],
     }).lean();
-    this.profileCache.set(key, { at: Date.now(), profiles });
+    this.profileCache.set(key, profiles);
     return profiles;
   }
 
   async loadSynonyms(tenantId) {
     const key = String(tenantId || 'platform');
     const hit = this.synonymCache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.groups;
+    if (hit) return hit;
     const rows = await SearchSynonym.find({
       isActive: true,
       $or: [{ tenantId: null }, { tenantId }],
     }).lean();
     const groups = rows.map((r) => ({ terms: r.terms, type: r.type, from: r.from }));
-    this.synonymCache.set(key, { at: Date.now(), groups });
+    this.synonymCache.set(key, groups);
     return groups;
   }
 
   async loadVocabulary(tenantId) {
     const key = String(tenantId);
     const hit = this.vocabCache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS * 5) return hit.words;
+    if (hit) return hit;
     const words = await searchProvider.vocabulary({ tenantId });
-    this.vocabCache.set(key, { at: Date.now(), words });
+    this.vocabCache.set(key, words);
     return words;
   }
 

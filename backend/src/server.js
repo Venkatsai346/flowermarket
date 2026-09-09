@@ -70,6 +70,13 @@ async function bootstrap() {
     // eslint-disable-next-line no-console
     console.log(`[app] ${signal} received, shutting down...`);
     clearInterval(hbTimer);
+
+    // Close Redis connection (if active)
+    try {
+      const { closeRedis } = await import('./config/redis.js');
+      await closeRedis();
+    } catch { /* not critical */ }
+
     server.close(async () => {
       const { disconnectDb } = await import('./config/db.js');
       await disconnectDb();

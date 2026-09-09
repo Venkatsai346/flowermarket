@@ -90,6 +90,8 @@ router.get('/store/subscription', MarketplaceController.mySubscription);
 router.patch('/store/plan', validate(planChangeSchema), MarketplaceController.changeMyPlan);
 router.get('/store/invoices', validate(invoiceListQuerySchema, 'query'), MarketplaceController.myInvoices);
 router.get('/store/invoices/:id', MarketplaceController.myInvoiceDetail);
+router.get('/store/invoices/:id/pdf', MarketplaceController.myInvoicePdf);
+router.get('/store/invoices/:id/html', MarketplaceController.myInvoiceHtml);
 router.get('/store/vendors', MarketplaceController.storeVendors);
 router.post('/store/vendors/:vendorId/sync', MarketplaceController.syncVendorProducts);
 
@@ -115,6 +117,8 @@ router.patch('/admin/plans/:id', validate(planUpdateSchema), MarketplaceControll
 router.get('/admin/billing/invoices', validate(invoiceListQuerySchema, 'query'), MarketplaceController.adminInvoices);
 router.post('/admin/billing/cycle', validate(billingCycleSchema), MarketplaceController.runBillingCycle);
 router.get('/admin/billing/invoices/:id', MarketplaceController.adminInvoiceDetail);
+router.get('/admin/billing/invoices/:id/pdf', MarketplaceController.adminInvoicePdf);
+router.get('/admin/billing/invoices/:id/credit-note', MarketplaceController.adminCreditNotePdf);
 router.post('/admin/billing/invoices/:id/pay', MarketplaceController.payInvoice);
 router.post('/admin/billing/invoices/:id/void', MarketplaceController.voidInvoice);
 router.post('/admin/billing/overdue-sweep', MarketplaceController.overdueSweep);

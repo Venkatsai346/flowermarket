@@ -4,18 +4,19 @@ import inventoryService from './inventory.service.js';
 import auditService from './audit.service.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
 import { TENANT_LISTING_STATUS } from '../constants/enums.js';
+import { BoundedCache } from '../utils/BoundedCache.js';
 
 /**
  * BulkImportService — CSV price/stock uploads for a tenant.
  *
  * Implementation notes:
- *  - In-process async job registry (Map). A real deployment would back this
- *    with a queue (BullMQ/Redis) + worker; the API contract stays the same:
- *    POST creates a job, GET /:jobId polls status.
+ *  - In-process bounded job registry (BoundedCache, max 100 jobs, 1hr TTL).
+ *    A real deployment would back this with a queue (BullMQ/Redis) + worker;
+ *    the API contract stays the same: POST creates a job, GET /:jobId polls.
  *  - dryRun validates every row and reports errors WITHOUT writing.
  *  - Price rows create/activate listings; stock rows set inventory.
  */
-const jobs = new Map();
+const jobs = new BoundedCache({ maxEntries: 100, ttlMs: 60 * 60 * 1000, name: 'bulk-import:jobs' });
 let jobCounter = 0;
 
 class BulkImportService {
@@ -63,7 +64,13 @@ class BulkImportService {
   }
 
   listJobs({ tenantId } = {}) {
-    return [...jobs.values()].filter((j) => !tenantId || String(j.tenantId) === String(tenantId)).slice(-50).reverse();
+    const all = [];
+    for (const job of jobs.values()) {
+      if (!tenantId || String(job.tenantId) === String(tenantId)) {
+        all.push(job);
+      }
+    }
+    return all.slice(-50).reverse();
   }
 
   // ---------------- row processors ----------------

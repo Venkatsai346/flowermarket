@@ -29,6 +29,7 @@ import PlansAdminPage from './features/platform/PlansAdminPage.jsx';
 import VendorProfilePage from './features/vendor/VendorProfilePage.jsx';
 import PlatformPayoutsPage from './features/payouts/PlatformPayoutsPage.jsx';
 import LedgerPage from './features/platform/LedgerPage.jsx';
+import AuditLogPage from './features/platform/AuditLogPage.jsx';
 import VendorPayoutsPage from './features/payouts/VendorPayoutsPage.jsx';
 import VendorPayoutAccountPage from './features/payouts/VendorPayoutAccountPage.jsx';
 import VendorProductsPage from './features/vendor/VendorProductsPage.jsx';
@@ -124,6 +125,7 @@ export default function App() {
           <Route path="domains" element={storeOnly(<DomainsPage />)} />
           <Route path="platform/payouts" element={platformOnly(<PlatformPayoutsPage />)} />
           <Route path="platform/ledger" element={platformOnly(<LedgerPage />)} />
+          <Route path="platform/audit" element={platformOnly(<AuditLogPage />)} />
           <Route path="vendor" element={vendorOnly(<VendorProfilePage />)} />
           <Route path="vendor/products" element={vendorOnly(<VendorProductsPage />)} />
           <Route path="vendor/payouts" element={vendorOnly(<VendorPayoutsPage />)} />

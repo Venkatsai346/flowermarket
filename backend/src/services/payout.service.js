@@ -1794,10 +1794,10 @@ class PayoutService {
    */
   async postGstBackfill({ scope, vendorId = null, differencePaise, note = null, idempotencyKey = null }) {
     const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
-    if (!['vendor', 'platform'].includes(scope)) throw Object.assign(new Error('scope must be vendor or platform'), { status: 400, code: 'GST_BAD_SCOPE' });
-    if (scope === 'vendor' && !vendorId) throw Object.assign(new Error('vendorId is required for a vendor backfill'), { status: 400, code: 'GST_VENDOR_REQUIRED' });
+    if (!['vendor', 'platform'].includes(scope)) throw badRequest('scope must be vendor or platform', 'GST_BAD_SCOPE');
+    if (scope === 'vendor' && !vendorId) throw badRequest('vendorId is required for a vendor backfill', 'GST_VENDOR_REQUIRED');
     const diff = Math.round(Number(differencePaise) || 0);
-    if (diff === 0) throw Object.assign(new Error('Backfill difference must be non-zero'), { status: 422, code: 'GST_BACKFILL_EMPTY' });
+    if (diff === 0) throw new AppError('Backfill difference must be non-zero', { status: 422, code: 'GST_BACKFILL_EMPTY' });
 
     const owner = scope === 'platform' ? 'platform' : String(vendorId);
     const code = ledgerAccounts.gstOutputPayable(owner);
@@ -1913,7 +1913,7 @@ class PayoutService {
   async postBankBackfill({ differencePaise, note = null, idempotencyKey = null }) {
     const { default: ledgerService, ledgerAccounts } = await import('./ledger.service.js');
     const diff = Math.round(Number(differencePaise) || 0);
-    if (diff === 0) throw Object.assign(new Error('Backfill difference must be non-zero'), { status: 422, code: 'BANK_BACKFILL_EMPTY' });
+    if (diff === 0) throw new AppError('Backfill difference must be non-zero', { status: 422, code: 'BANK_BACKFILL_EMPTY' });
 
     const bank = ledgerAccounts.bank();
     const clearing = ledgerAccounts.gatewayClearing();

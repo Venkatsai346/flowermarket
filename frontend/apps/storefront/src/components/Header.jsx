@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Flower2, MapPin, Package, Search, ShoppingBag, X } from 'lucide-react';
+import { Flower2, Heart, MapPin, Package, Search, ShoppingBag, X } from 'lucide-react';
 import { useShop } from '../store.js';
 import { api, useShopAuth } from '../api.js';
 import { t } from '../i18n.js';
@@ -94,13 +94,15 @@ export default function Header() {
             onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
             placeholder={t(language, 'searchPlaceholder')}
             aria-label="Search products"
+            aria-expanded={showSuggest && suggestions.length > 0}
+            aria-haspopup="listbox"
             autoComplete="off"
             className="input rounded-full !py-2.5 pl-10 pr-9"
           />
           {showSuggest && suggestions.length > 0 && (
-            <ul className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1 shadow-lift">
+            <ul className="absolute left-0 right-0 top-full z-50 mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white py-1 shadow-lift" role="listbox" aria-label="Search suggestions" aria-live="polite">
               {suggestions.map((s) => (
-                <li key={s.text}>
+                <li key={s.text} role="option">
                   <button
                     type="button"
                     onMouseDown={() => pick(s.text)}
@@ -126,7 +128,7 @@ export default function Header() {
           )}
         </form>
 
-        <nav className="flex shrink-0 items-center gap-1">
+        <nav className="flex shrink-0 items-center gap-1" aria-label="Store navigation">
           <div className="hidden items-center rounded-full border border-slate-200 p-0.5 text-[11px] font-semibold sm:flex" role="group" aria-label="Language">
             <button
               type="button"
@@ -158,6 +160,13 @@ export default function Header() {
             aria-label="My orders"
           >
             <Package className="h-5 w-5" />
+          </Link>
+          <Link
+            to="/wishlist"
+            className="hidden h-10 w-10 items-center justify-center rounded-full text-slate-600 transition hover:bg-slate-100 sm:flex"
+            aria-label="My wishlist"
+          >
+            <Heart className="h-5 w-5" />
           </Link>
           <NotificationBell />
           <AccountMenu />

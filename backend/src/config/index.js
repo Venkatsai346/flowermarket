@@ -24,6 +24,13 @@ const config = {
 
   mongoUri: process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/flower_market',
 
+  // ---- Redis (optional: rate limiting, caching, job queues) ----
+  // When REDIS_URL is not set, all Redis features fall back to in-memory.
+  // Production should always have Redis for multi-instance deployments.
+  redis: {
+    url: process.env.REDIS_URL || '',
+  },
+
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET || 'dev-access-secret',
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'dev-refresh-secret',

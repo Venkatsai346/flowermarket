@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect } from 'react';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { Route, Routes, useLocation } from 'react-router-dom';
 import { Flower2, ServerCrash } from 'lucide-react';
 import { api, useShopAuth } from './api.js';
@@ -7,6 +8,7 @@ import { applyTheme, applyDocumentMeta, resolveBrandTheme } from './theme.js';
 import { kolkataDate, pickNextSlot } from './lib/arrival.js';
 import Header from './components/Header.jsx';
 import Footer from './components/Footer.jsx';
+import SkipLink from './components/SkipLink.jsx';
 import CartSheet from './components/CartSheet.jsx';
 import AuthSheet from './components/AuthSheet.jsx';
 import PincodeSheet from './components/PincodeSheet.jsx';
@@ -21,6 +23,7 @@ const OrderDetail = lazy(() => import('./pages/OrderDetail.jsx'));
 const Returns = lazy(() => import('./pages/Returns.jsx'));
 const Addresses = lazy(() => import('./pages/Addresses.jsx'));
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
+const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
 
 /**
  * The storefront shell.
@@ -176,10 +179,12 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col">
+      <SkipLink />
       <Header />
-      <main className="flex-1">
-        <Suspense fallback={<RouteFallback />}>
-          <Routes>
+      <main id="main-content" className="flex-1" role="main">
+        <ErrorBoundary>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/search" element={<Search />} />
             <Route path="/p/:slug" element={<Product />} />
@@ -188,10 +193,12 @@ export default function App() {
             <Route path="/orders/:id" element={<OrderDetail />} />
             <Route path="/returns" element={<Returns />} />
             <Route path="/wallet" element={<Wallet />} />
+            <Route path="/wishlist" element={<Wishlist />} />
             <Route path="/addresses" element={<Addresses />} />
             <Route path="*" element={<Home />} />
           </Routes>
-        </Suspense>
+          </Suspense>
+        </ErrorBoundary>
       </main>
 
       <Footer />

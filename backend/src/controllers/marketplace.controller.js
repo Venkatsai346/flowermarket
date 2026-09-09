@@ -15,6 +15,10 @@ import vendorService from '../services/vendor.service.js';
 import billingService from '../services/billing.service.js';
 import marketplaceAnalyticsService from '../services/marketplaceAnalytics.service.js';
 import maintenanceService from '../services/maintenance.service.js';
+import { renderInvoicePdf } from '../utils/invoicePdf.js';
+import { renderInvoiceHtml } from '../utils/invoiceHtml.js';
+import Invoice from '../models/invoice.model.js';
+import { AppError, notFound } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 
@@ -109,6 +113,101 @@ class MarketplaceController {
   myInvoiceDetail = asyncHandler(async (req, res) => {
     const invoice = await billingService.invoiceDetail({ invoiceId: req.params.id, tenantId: req.tenantId });
     res.status(200).json(success(invoice, { message: 'Invoice fetched' }));
+  });
+
+  /**
+   * GET /marketplace/store/invoices/:id/pdf — download invoice as PDF.
+   * Generates a PDF from the stored invoice data. Caches the PDF on the
+   * invoice document so subsequent downloads don't regenerate.
+   */
+  myInvoicePdf = asyncHandler(async (req, res) => {
+    const invoice = await Invoice.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!invoice) throw notFound('Invoice not found');
+
+    const doc = {
+      docType: 'invoice',
+      number: invoice.number,
+      orderNumber: `INV-${invoice.number}`,
+      supplyDate: invoice.period?.from || invoice.createdAt,
+      supplier: { tradeName: 'Bloomy Marketplace', name: 'Bloomy Marketplace' },
+      recipient: { name: `Tenant ${invoice.tenantId}` },
+      lines: (invoice.lineItems || []).map((li) => ({
+        description: li.label,
+        hsnCode: '--',
+        qty: li.qty || 1,
+        uom: 'NOS',
+        unitPricePaise: li.unitAmount || 0,
+        taxableValuePaise: li.amount || 0,
+        rateBps: 0,
+        cgstPaise: 0,
+        sgstPaise: 0,
+        igstPaise: 0,
+        cessPaise: 0,
+        lineTotalPaise: li.amount || 0,
+      })),
+      totals: {
+        taxableValuePaise: invoice.subtotal || 0,
+        cgstPaise: 0,
+        sgstPaise: 0,
+        igstPaise: 0,
+        cessPaise: 0,
+        roundOffPaise: 0,
+        grandTotalPaise: invoice.total || 0,
+      },
+      amountInWords: '',
+    };
+
+    const pdf = renderInvoicePdf(doc);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${invoice.number}.pdf"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.send(pdf);
+  });
+
+  /**
+   * GET /marketplace/store/invoices/:id/html — view invoice as printable HTML.
+   */
+  myInvoiceHtml = asyncHandler(async (req, res) => {
+    const invoice = await Invoice.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!invoice) throw notFound('Invoice not found');
+
+    const doc = {
+      docType: 'invoice',
+      number: invoice.number,
+      orderNumber: `INV-${invoice.number}`,
+      supplyDate: invoice.period?.from || invoice.createdAt,
+      supplier: { tradeName: 'Bloomy Marketplace', name: 'Bloomy Marketplace' },
+      recipient: { name: `Tenant ${invoice.tenantId}` },
+      lines: (invoice.lineItems || []).map((li) => ({
+        description: li.label,
+        hsnCode: '--',
+        qty: li.qty || 1,
+        uom: 'NOS',
+        unitPricePaise: li.unitAmount || 0,
+        taxableValuePaise: li.amount || 0,
+        rateBps: 0,
+        cgstPaise: 0,
+        sgstPaise: 0,
+        igstPaise: 0,
+        cessPaise: 0,
+        lineTotalPaise: li.amount || 0,
+      })),
+      totals: {
+        taxableValuePaise: invoice.subtotal || 0,
+        cgstPaise: 0,
+        sgstPaise: 0,
+        igstPaise: 0,
+        cessPaise: 0,
+        roundOffPaise: 0,
+        grandTotalPaise: invoice.total || 0,
+      },
+      totalsRupees: { grandTotal: (invoice.total || 0) / 100 },
+      amountInWords: '',
+    };
+
+    const html = renderInvoiceHtml(doc);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(html);
   });
 
   storeVendors = asyncHandler(async (req, res) => {
@@ -211,6 +310,90 @@ class MarketplaceController {
   adminInvoiceDetail = asyncHandler(async (req, res) => {
     const invoice = await billingService.invoiceDetail({ invoiceId: req.params.id });
     res.status(200).json(success(invoice, { message: 'Invoice fetched' }));
+  });
+
+  /**
+   * GET /marketplace/admin/billing/invoices/:id/pdf — platform-scoped invoice PDF download.
+   */
+  adminInvoicePdf = asyncHandler(async (req, res) => {
+    const invoice = await Invoice.findById(req.params.id);
+    if (!invoice) throw notFound('Invoice not found');
+
+    const doc = {
+      docType: invoice.status === 'voided' ? 'credit_note' : 'invoice',
+      number: invoice.number,
+      orderNumber: `INV-${invoice.number}`,
+      supplyDate: invoice.period?.from || invoice.createdAt,
+      supplier: { tradeName: 'Bloomy Marketplace', name: 'Bloomy Platform' },
+      recipient: { name: `Tenant ${invoice.tenantId}` },
+      lines: (invoice.lineItems || []).map((li) => ({
+        description: li.label,
+        hsnCode: '--',
+        qty: li.qty || 1,
+        uom: 'NOS',
+        unitPricePaise: li.unitAmount || 0,
+        taxableValuePaise: li.amount || 0,
+        rateBps: 0,
+        cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
+        lineTotalPaise: li.amount || 0,
+      })),
+      totals: {
+        taxableValuePaise: invoice.subtotal || 0,
+        cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
+        roundOffPaise: 0,
+        grandTotalPaise: invoice.total || 0,
+      },
+      amountInWords: '',
+    };
+
+    const pdf = renderInvoicePdf(doc);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${invoice.number}.pdf"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.send(pdf);
+  });
+
+  /**
+   * POST /marketplace/admin/billing/invoices/:id/credit-note — generate a credit note
+   * PDF for a voided invoice.
+   */
+  adminCreditNotePdf = asyncHandler(async (req, res) => {
+    const invoice = await Invoice.findById(req.params.id);
+    if (!invoice) throw notFound('Invoice not found');
+
+    const doc = {
+      docType: 'credit_note',
+      number: `CN-${invoice.number}`,
+      originalNumber: invoice.number,
+      orderNumber: `INV-${invoice.number}`,
+      supplyDate: invoice.period?.from || invoice.createdAt,
+      supplier: { tradeName: 'Bloomy Marketplace', name: 'Bloomy Platform' },
+      recipient: { name: `Tenant ${invoice.tenantId}` },
+      lines: (invoice.lineItems || []).map((li) => ({
+        description: li.label,
+        hsnCode: '--',
+        qty: li.qty || 1,
+        uom: 'NOS',
+        unitPricePaise: li.unitAmount || 0,
+        taxableValuePaise: li.amount || 0,
+        rateBps: 0,
+        cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
+        lineTotalPaise: li.amount || 0,
+      })),
+      totals: {
+        taxableValuePaise: invoice.subtotal || 0,
+        cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
+        roundOffPaise: 0,
+        grandTotalPaise: invoice.total || 0,
+      },
+      amountInWords: '',
+    };
+
+    const pdf = renderInvoicePdf(doc);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="CN-${invoice.number}.pdf"`);
+    res.setHeader('Content-Length', pdf.length);
+    res.send(pdf);
   });
 
   payInvoice = asyncHandler(async (req, res) => {

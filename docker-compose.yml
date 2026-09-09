@@ -1,120 +1,70 @@
-# Flower Market — local / staging stack
+# Flower Market — local development stack.
 #
-#   docker compose up --build
+# Usage:
+#   docker compose up -d          # start MongoDB + Redis
+#   cd backend && npm run dev     # start the API server
+#   cd frontend && npm run dev    # start the admin console + storefront
 #
-# Brings up a Mongo 6 replica set (rs0, transactions on), the API, the
-# worker, the admin console and the customer storefront.
-#
-# This file is the DEVELOPMENT happy path: mock payments, console OTP.
-# Production refuses those — use docker-compose.prod.yml plus a filled
-# `.env.production` (see docs/PRODUCTION.md).
-#
-# Frontends proxy `/api` → `http://api:4000` on the compose network so
-# the browser never has to know about localhost.
+# Services:
+#   - MongoDB 7 (port 27017) — primary database
+#   - Redis 7 (port 6379) — rate limiting, session cache, queues
+#   - Mongo Express (port 8081) — DB admin UI (optional, --profile debug)
 
-name: flowermarket
+version: '3.9'
 
 services:
-  mongo:
-    image: mongo:6.0
-    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+  mongodb:
+    image: mongo:7
+    container_name: flowermarket-mongo
+    restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+    environment:
+      MONGO_INITDB_DATABASE: flowermarket
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
-      interval: 5s
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand({ping:1})"]
+      interval: 10s
       timeout: 5s
-      retries: 20
+      retries: 5
+      start_period: 10s
 
-  mongo-init:
-    image: mongo:6.0
+  redis:
+    image: redis:7-alpine
+    container_name: flowermarket-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: MongoDB admin UI (start with: docker compose --profile debug up)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: flowermarket-mongo-express
+    restart: unless-stopped
+    profiles:
+      - debug
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017/flowermarket
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
     depends_on:
-      mongo:
+      mongodb:
         condition: service_healthy
-    restart: "no"
-    entrypoint:
-      - bash
-      - -c
-      - |
-        for i in $$(seq 1 30); do
-          mongosh --host mongo:27017 --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"mongo:27017"}]})' && exit 0
-          sleep 2
-        done
-        exit 1
-
-  api:
-    image: node:20-bookworm
-    working_dir: /app
-    volumes:
-      - ./backend:/app
-      - api_node_modules:/app/node_modules
-    command: bash -c "npm ci && node src/server.js"
-    env_file:
-      - ./backend/.env.example
-    environment:
-      NODE_ENV: development
-      PORT: "4000"
-      MONGODB_URI: mongodb://mongo:27017/flower_market?replicaSet=rs0
-      OTP_PROVIDER: console
-      PAYMENT_PROVIDER: mock
-      PAYOUT_PROVIDER: console
-      ALLOW_TENANT_HEADER_OVERRIDE: "true"
-    depends_on:
-      mongo-init:
-        condition: service_completed_successfully
-    ports:
-      - "4000:4000"
-
-  worker:
-    image: node:20-bookworm
-    working_dir: /app
-    volumes:
-      - ./backend:/app
-      - api_node_modules:/app/node_modules
-    command: bash -c "npm ci && node src/worker.js"
-    env_file:
-      - ./backend/.env.example
-    environment:
-      NODE_ENV: development
-      MONGODB_URI: mongodb://mongo:27017/flower_market?replicaSet=rs0
-      OTP_PROVIDER: console
-      PAYMENT_PROVIDER: mock
-      PAYOUT_PROVIDER: console
-    depends_on:
-      mongo-init:
-        condition: service_completed_successfully
-
-  web:
-    image: node:20-bookworm
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - fe_node_modules:/app/node_modules
-    command: bash -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
-    environment:
-      VITE_API_TARGET: http://api:4000
-    depends_on:
-      - api
-    ports:
-      - "5173:5173"
-
-  storefront:
-    image: node:20-bookworm
-    working_dir: /app
-    volumes:
-      - ./frontend:/app
-      - fe_node_modules:/app/node_modules
-    command: bash -c "npm ci && npm run storefront -- --host 0.0.0.0 --port 5174"
-    environment:
-      VITE_API_TARGET: http://api:4000
-    depends_on:
-      - api
-    ports:
-      - "5174:5174"
 
 volumes:
   mongo_data:
-  api_node_modules:
-  fe_node_modules:
+    driver: local
+  redis_data:
+    driver: local

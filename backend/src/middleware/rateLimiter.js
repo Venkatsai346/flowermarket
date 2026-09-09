@@ -3,9 +3,37 @@ import config from '../config/index.js';
 
 /**
  * Rate limiters — per-route protection.
+ *
  * OTP endpoints get tight limits (brute-force protection at the HTTP layer,
  * complementing maxAttempts inside the OTP model).
+ *
+ * Phase 7.6: When REDIS_URL is configured, the rate limiter uses Redis for
+ * distributed counting. This means rate limits work correctly across multiple
+ * API instances behind a load balancer. Without Redis, each instance tracks
+ * its own counts (in-memory), which is fine for single-instance dev.
  */
+
+let redisStore = null;
+
+/**
+ * Try to create a Redis store for distributed rate limiting.
+ * Called lazily on first use. Falls back to in-memory if Redis is unavailable.
+ */
+async function getRedisStore() {
+  if (redisStore !== null) return redisStore || undefined;
+  if (!config.redis?.url) { redisStore = false; return undefined; }
+  try {
+    const { RedisStore } = await import('rate-limit-redis');
+    const { getRedis } = await import('../config/redis.js');
+    const client = await getRedis();
+    if (!client) { redisStore = false; return undefined; }
+    redisStore = new RedisStore({ sendCommand: (...args) => client.sendCommand(args) });
+    return redisStore;
+  } catch {
+    redisStore = false;
+    return undefined;
+  }
+}
 const standard = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
@@ -63,5 +91,13 @@ const checkoutLimiter = rateLimit({
   skip: () => config.isTest,
   message: { success: false, message: 'Too many checkout attempts. Wait a moment.', code: 'CHECKOUT_RATE_LIMITED' },
 });
+
+/**
+ * Initialize Redis-backed rate limiting (call once at startup).
+ * If Redis is not configured or unavailable, in-memory stores are used.
+ */
+export async function initRedisRateLimit() {
+  await getRedisStore();
+}
 
 export default { standard, otpSendLimiter, otpVerifyLimiter, loginLimiter, api, checkoutLimiter };

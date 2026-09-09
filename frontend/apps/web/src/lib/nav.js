@@ -21,6 +21,7 @@ import {
   Percent,
   Receipt,
   Search,
+  Shield,
   ShoppingCart,
   Store,
   Truck,
@@ -41,6 +42,7 @@ export const GROUPS = {
       { to: '/platform/payouts', label: 'Payouts', icon: Banknote, keys: [] },
       { to: '/platform/ledger', label: 'Ledger', icon: BookOpenCheck, keys: ['trial', 'journal'] },
       { to: '/platform/plans', label: 'Plans', icon: Gem, keys: [] },
+      { to: '/platform/audit', label: 'Audit log', icon: Shield, keys: ['audit', 'log', 'activity'] },
     ],
   },
   store: {

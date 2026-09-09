@@ -1,8 +1,11 @@
 import AuthService from '../services/auth.service.js';
+import totpService from '../services/totp.service.js';
 import cartService from '../services/cart.service.js';
+import User from '../models/user.model.js';
 import { parseGuestKey, clearGuestCookie } from '../middleware/guestCart.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
+import { AppError, forbidden, badRequest, unauthorized } from '../utils/ApiError.js';
 
 /**
  * AuthController — HTTP adapter for authentication flows.
@@ -132,6 +135,120 @@ class AuthController {
       newPassword,
     });
     res.status(200).json(success(result));
+  });
+
+  // ================= 2FA / TOTP (super_admin) =================
+
+  /**
+   * POST /auth/2fa/enroll — begin TOTP enrollment.
+   * Generates a secret, backup codes, and otpauth URI.
+   * Only super_admin can enroll.
+   */
+  enroll2fa = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.auth.userId).select('+twoFactor.encryptedSecret +twoFactor.backupCodes');
+    if (!user) throw badRequest('User not found');
+    if (user.role !== 'super_admin') throw forbidden('Only super admins can enable 2FA');
+    if (user.twoFactor?.enabled) throw badRequest('2FA is already enabled. Disable it first.');
+
+    const enrollment = totpService.enroll(user._id.toString(), user.email?.address);
+
+    // Store the encrypted secret and hashed backup codes (but don't mark as enabled yet)
+    user.twoFactor = {
+      enabled: false,
+      encryptedSecret: enrollment.encryptedSecret,
+      backupCodes: enrollment.hashedBackupCodes,
+      enrolledAt: new Date(),
+      lastVerifiedAt: null,
+    };
+    await user.save();
+
+    // Return the secret, URI, and backup codes — shown ONCE to the user
+    res.status(200).json(success({
+      secret: enrollment.secret,
+      otpauthUri: enrollment.otpauthUri,
+      backupCodes: enrollment.backupCodes,
+      message: 'Scan the QR code in your authenticator app, then verify with a 6-digit code to complete setup.',
+    }, { message: '2FA enrollment started' }));
+  });
+
+  /**
+   * POST /auth/2fa/verify — verify a TOTP code and enable 2FA.
+   * Called once during enrollment to confirm the user set up their authenticator.
+   */
+  verify2faEnrollment = asyncHandler(async (req, res) => {
+    const { code } = req.body;
+    if (!code) throw badRequest('6-digit code is required');
+
+    const user = await User.findById(req.auth.userId).select('+twoFactor.encryptedSecret');
+    if (!user) throw badRequest('User not found');
+    if (user.twoFactor?.enabled) throw badRequest('2FA is already enabled');
+
+    const valid = totpService.verify(user.twoFactor?.encryptedSecret, code);
+    if (!valid) throw badRequest('Invalid code. Make sure your authenticator app is synced.');
+
+    user.twoFactor.enabled = true;
+    user.twoFactor.lastVerifiedAt = new Date();
+    await user.save();
+
+    res.status(200).json(success({
+      enabled: true,
+      message: '2FA is now enabled. You will need your authenticator code on every login.',
+    }, { message: '2FA enabled' }));
+  });
+
+  /**
+   * POST /auth/2fa/disable — disable 2FA (requires current TOTP code or backup code).
+   */
+  disable2fa = asyncHandler(async (req, res) => {
+    const { code, backupCode } = req.body;
+    if (!code && !backupCode) throw badRequest('Provide a TOTP code or backup code to disable 2FA');
+
+    const user = await User.findById(req.auth.userId).select('+twoFactor.encryptedSecret +twoFactor.backupCodes');
+    if (!user) throw badRequest('User not found');
+    if (!user.twoFactor?.enabled) throw badRequest('2FA is not enabled');
+
+    let authenticated = false;
+
+    if (backupCode) {
+      const idx = totpService.verifyBackupCode(user.twoFactor.backupCodes, backupCode);
+      if (idx >= 0) {
+        authenticated = true;
+        // Remove the used backup code
+        user.twoFactor.backupCodes.splice(idx, 1);
+      }
+    } else {
+      authenticated = totpService.verify(user.twoFactor.encryptedSecret, code);
+    }
+
+    if (!authenticated) throw badRequest('Invalid code');
+
+    user.twoFactor = {
+      enabled: false,
+      encryptedSecret: null,
+      backupCodes: [],
+      enrolledAt: null,
+      lastVerifiedAt: null,
+    };
+    await user.save();
+
+    res.status(200).json(success({
+      enabled: false,
+      message: '2FA has been disabled.',
+    }, { message: '2FA disabled' }));
+  });
+
+  /**
+   * GET /auth/2fa/status — check 2FA status for the current user.
+   */
+  status2fa = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.auth.userId);
+    if (!user) throw badRequest('User not found');
+
+    res.status(200).json(success({
+      enabled: user.twoFactor?.enabled || false,
+      enrolledAt: user.twoFactor?.enrolledAt || null,
+      backupCodesRemaining: user.twoFactor?.backupCodes?.length || 0,
+    }, { message: '2FA status' }));
   });
 }
 
