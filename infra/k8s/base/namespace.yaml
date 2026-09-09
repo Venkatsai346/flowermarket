@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flowermarket
+  labels:
+    app.kubernetes.io/name: flowermarket
+    app.kubernetes.io/part-of: flowermarket

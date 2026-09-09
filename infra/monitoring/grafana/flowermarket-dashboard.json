@@ -1,0 +1,137 @@
+{
+  "dashboard": {
+    "title": "Flower Market — Production Overview",
+    "tags": ["flowermarket", "production"],
+    "timezone": "Asia/Kolkata",
+    "refresh": "30s",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "type": "graph",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+        "targets": [{
+          "expr": "sum(rate(http_requests_total[5m])) by (route)",
+          "legendFormat": "{{route}}"
+        }],
+        "yaxes": [{ "format": "reqps" }]
+      },
+      {
+        "title": "Response Latency (p95)",
+        "type": "graph",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+        "targets": [{
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route))",
+          "legendFormat": "{{route}}"
+        }],
+        "yaxes": [{ "format": "s" }]
+      },
+      {
+        "title": "Error Rate",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+        "targets": [{
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m])) * 100",
+          "legendFormat": "Error %"
+        }],
+        "thresholds": { "steps": [
+          { "value": 0, "color": "green" },
+          { "value": 1, "color": "yellow" },
+          { "value": 5, "color": "red" }
+        ]}
+      },
+      {
+        "title": "Active Connections",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+        "targets": [{
+          "expr": "db_connected",
+          "legendFormat": "Connected"
+        }]
+      },
+      {
+        "title": "Outbox Depth",
+        "type": "graph",
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+        "targets": [{
+          "expr": "outbox_events{status=\"pending\"}",
+          "legendFormat": "Pending"
+        }]
+      },
+      {
+        "title": "Payment Pending",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+        "targets": [{
+          "expr": "payment_pending_count",
+          "legendFormat": "Pending"
+        }],
+        "thresholds": { "steps": [
+          { "value": 0, "color": "green" },
+          { "value": 10, "color": "yellow" },
+          { "value": 50, "color": "red" }
+        ]}
+      },
+      {
+        "title": "Scheduled Job Status",
+        "type": "table",
+        "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+        "targets": [{
+          "expr": "scheduled_job_last_status",
+          "legendFormat": "{{job}}"
+        }]
+      },
+      {
+        "title": "Worker Liveness",
+        "type": "stat",
+        "gridPos": { "h": 6, "w": 6, "x": 12, "y": 12 },
+        "targets": [{
+          "expr": "worker_alive",
+          "legendFormat": "Alive"
+        }],
+        "thresholds": { "steps": [
+          { "value": 0, "color": "red" },
+          { "value": 1, "color": "green" }
+        ]}
+      },
+      {
+        "title": "Memory Usage",
+        "type": "graph",
+        "gridPos": { "h": 6, "w": 6, "x": 18, "y": 12 },
+        "targets": [
+          { "expr": "process_memory_heap_bytes", "legendFormat": "Heap" },
+          { "expr": "process_memory_rss_bytes", "legendFormat": "RSS" }
+        ],
+        "yaxes": [{ "format": "bytes" }]
+      },
+      {
+        "title": "Event Loop Lag",
+        "type": "graph",
+        "gridPos": { "h": 6, "w": 12, "x": 0, "y": 18 },
+        "targets": [
+          { "expr": "process_event_loop_lag_seconds{stat=\"mean\"}", "legendFormat": "Mean" },
+          { "expr": "process_event_loop_lag_seconds{stat=\"max\"}", "legendFormat": "Max" }
+        ],
+        "yaxes": [{ "format": "s" }]
+      },
+      {
+        "title": "COD Outstanding",
+        "type": "stat",
+        "gridPos": { "h": 6, "w": 6, "x": 12, "y": 18 },
+        "targets": [{
+          "expr": "cod_outstanding_paise / 100",
+          "legendFormat": "₹"
+        }],
+        "yaxes": [{ "format": "currencyINR" }]
+      },
+      {
+        "title": "Pricing Fallbacks",
+        "type": "graph",
+        "gridPos": { "h": 6, "w": 6, "x": 18, "y": 18 },
+        "targets": [{
+          "expr": "rate(pricing_fallback_total[5m])",
+          "legendFormat": "{{kind}}"
+        }]
+      }
+    ]
+  }
+}

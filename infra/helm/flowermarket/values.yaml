@@ -1,0 +1,79 @@
+# Flower Market — Helm values
+# Override per environment: values-staging.yaml, values-production.yaml
+
+replicaCount: 2
+
+image:
+  repository: flowermarket/api
+  tag: latest
+  pullPolicy: IfNotPresent
+
+api:
+  enabled: true
+  port: 4000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPU: 70
+    targetMemory: 80
+
+worker:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+scheduler:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+  hosts:
+    - host: api.flowermarket.in
+      paths:
+        - path: /
+          pathType: Prefix
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+
+secrets:
+  # Use External Secrets Operator in production
+  externalSecrets: false
+  secretsManagerName: flowermarket/staging
+
+mongodb:
+  enabled: false # Use external MongoDB Atlas in production
+  architecture: replicaset
+
+redis:
+  enabled: false # Use external ElastiCache in production
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

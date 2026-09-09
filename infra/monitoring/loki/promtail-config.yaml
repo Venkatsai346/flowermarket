@@ -1,0 +1,68 @@
+# Promtail configuration for Flower Market log aggregation.
+# Collects structured JSON logs from the API and worker containers.
+#
+# Deployment: deploy as DaemonSet on EKS nodes.
+# Docs: https://grafana.com/docs/loki/latest/clients/promtail/
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    # In production, use the Loki gateway URL
+    # url: https://loki.flowermarket.in/loki/api/v1/push
+
+scrape_configs:
+  # ── Kubernetes pod logs ──
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Only scrape flowermarket namespace
+      - source_labels: [__meta_kubernetes_namespace]
+        regex: flowermarket
+        action: keep
+      # Extract container name
+      - source_labels: [__meta_kubernetes_pod_container_name]
+        target_label: container
+      # Extract pod name
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      # Extract component label
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+        target_label: component
+
+    pipeline_stages:
+      # Parse structured JSON logs from the API
+      - json:
+          expressions:
+            level: level
+            msg: msg
+            traceId: traceId
+            method: method
+            url: url
+            status: status
+            duration: duration
+            error: error
+
+      # Set log level from JSON
+      - labels:
+          level:
+
+      # Extract trace ID for correlation
+      - labels:
+          traceId:
+
+      # Drop health check logs (noisy)
+      - match:
+          selector: '{container="api"}'
+          stages:
+            - json:
+                expressions:
+                  url: url
+            - drop:
+                expression: ".*(/health|/metrics|/readyz).*"

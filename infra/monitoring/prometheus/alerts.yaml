@@ -1,0 +1,149 @@
+groups:
+  - name: flowermarket-critical
+    rules:
+      # ── API Availability ──
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          service: flowermarket
+        annotations:
+          summary: "High error rate (>5%)"
+          description: "{{ $value | humanizePercentage }} of requests are returning 5xx errors"
+
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "p95 latency > 2s"
+          description: "95th percentile latency is {{ $value }}s"
+
+      # ── Database ──
+      - alert: MongoDBDisconnected
+        expr: db_connected == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: flowermarket
+        annotations:
+          summary: "MongoDB disconnected"
+          description: "The API has lost its MongoDB connection"
+
+      - alert: ConnectionPoolExhausted
+        expr: fm_connection_pool_available < 5
+        for: 2m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Connection pool nearly exhausted"
+          description: "Only {{ $value }} connections available"
+
+      # ── Worker ──
+      - alert: WorkerDown
+        expr: worker_alive == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: flowermarket
+        annotations:
+          summary: "Async worker is down"
+          description: "Worker heartbeat is stale (> {{ $value }}s)"
+
+      - alert: OutboxBacklog
+        expr: outbox_events{status="pending"} > 100
+        for: 10m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Outbox backlog growing"
+          description: "{{ $value }} pending outbox events"
+
+      - alert: OutboxOldestStuck
+        expr: outbox_oldest_pending_age_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Oldest outbox event stuck for >10min"
+          description: "Oldest pending event is {{ $value }}s old"
+
+      # ── DLQ ──
+      - alert: DLQDepthGrowing
+        expr: outbox_dlq_depth > 50
+        for: 30m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Dead letter queue depth > 50"
+          description: "{{ $value }} events in DLQ — manual intervention needed"
+
+      # ── Payments ──
+      - alert: StuckPayments
+        expr: payment_pending_count > 20
+        for: 15m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "{{ $value }} payments stuck PENDING"
+          description: "Payments pending for >15 minutes — check reconciliation"
+
+      - alert: CODExposure
+        expr: cod_outstanding_paise > 5000000
+        for: 1h
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "COD exposure > ₹50,000"
+          description: "₹{{ $value }} in uncollected cash-on-delivery"
+
+      # ── Scheduled Jobs ──
+      - alert: JobFailed
+        expr: scheduled_job_last_status == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Scheduled job failed: {{ $labels.job }}"
+          description: "Job {{ $labels.job }} last run was an error"
+
+      - alert: JobOverdue
+        expr: scheduled_job_next_run_in_seconds < -600
+        for: 5m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Scheduled job overdue: {{ $labels.job }}"
+          description: "Job {{ $labels.job }} is {{ $value }}s overdue"
+
+      # ── Process ──
+      - alert: HighMemory
+        expr: process_memory_rss_bytes > 1073741824
+        for: 10m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Process RSS > 1GB"
+          description: "RSS is {{ $value | humanize1024 }}B — possible memory leak"
+
+      - alert: HighEventLoopLag
+        expr: process_event_loop_lag_seconds{stat="max"} > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: flowermarket
+        annotations:
+          summary: "Event loop lag > 1s"
+          description: "Max event loop lag is {{ $value }}s — CPU-bound work blocking the loop"

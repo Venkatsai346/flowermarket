@@ -1,0 +1,25 @@
+apiVersion: v2
+name: flowermarket
+description: Flower Market — multi-tenant e-commerce platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - ecommerce
+  - flowers
+  - multi-tenant
+  - marketplace
+
+maintainers:
+  - name: Flower Market Team
+
+dependencies:
+  - name: mongodb
+    version: "14.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: mongodb.enabled
+  - name: redis
+    version: "18.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
