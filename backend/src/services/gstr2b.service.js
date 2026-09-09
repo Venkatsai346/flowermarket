@@ -119,6 +119,8 @@ class Gstr2bService {
     // Upsert (idempotent on supplierGstin + invoiceNumber)
     let imported = 0;
     for (const doc of docs) {
+      // sequential matching against purchase invoices
+      // eslint-disable-next-line no-await-in-loop
       await Gstr2bEntry.updateOne(
         { tenantId, supplierGstin: doc.supplierGstin, invoiceNumber: doc.invoiceNumber },
         { $set: doc },
@@ -177,6 +179,8 @@ class Gstr2bService {
       const bookDoc = purchaseIndex.get(key);
 
       if (!bookDoc) {
+        // sequential matching against purchase invoices
+        // eslint-disable-next-line no-await-in-loop
         await Gstr2bEntry.updateOne(
           { _id: entry._id },
           { $set: { matchStatus: 'not_in_books', matchNotes: 'No matching invoice found in books' } },
@@ -190,6 +194,8 @@ class Gstr2bService {
       const tolerance = Math.max(entry.invoiceValue * 0.01, 10); // 1% or ₹10
 
       if (diff <= tolerance) {
+        // sequential matching against purchase invoices
+        // eslint-disable-next-line no-await-in-loop
         await Gstr2bEntry.updateOne(
           { _id: entry._id },
           {
@@ -202,6 +208,8 @@ class Gstr2bService {
         );
         matched += 1;
       } else {
+        // sequential matching against purchase invoices
+        // eslint-disable-next-line no-await-in-loop
         await Gstr2bEntry.updateOne(
           { _id: entry._id },
           {

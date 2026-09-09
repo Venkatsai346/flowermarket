@@ -43,11 +43,13 @@ export async function getRedis() {
 
     redisClient.on('error', (err) => {
       redisAvailable = false;
+      // eslint-disable-next-line no-console
       console.warn('[redis] Connection error:', err.message);
     });
 
     redisClient.on('ready', () => {
       redisAvailable = true;
+      // eslint-disable-next-line no-console
       console.log('[redis] Connected');
     });
 
@@ -55,6 +57,7 @@ export async function getRedis() {
     redisAvailable = true;
     return redisClient;
   } catch (err) {
+    // eslint-disable-next-line no-console
     console.warn('[redis] Failed to connect:', err.message);
     redisAvailable = false;
     return null;

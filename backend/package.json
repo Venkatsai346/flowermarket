@@ -45,7 +45,8 @@
     "search:eval": "node scripts/search-eval.mjs",
     "search:baseline": "node scripts/search-eval.mjs --baseline",
     "smoke:payments": "node scripts/smoke-payments.test.js",
-    "smoke:cod": "node scripts/smoke-cod.test.js"
+    "smoke:cod": "node scripts/smoke-cod.test.js",
+    "test": "node scripts/money.test.js && node scripts/tax-calc.test.js && node scripts/inclusive-mrp.golden.test.js && node scripts/payout-calc.test.js && node scripts/payout-provider.test.js && node scripts/hostname.test.js && node scripts/ranking.test.js && node scripts/search-eval.mjs && node scripts/invariants.test.js && node scripts/production-guard.test.js && node scripts/provider-adapters.test.js && node scripts/invoice-pdf.test.js && node scripts/refund-calc.test.js && node scripts/cod-ledger.test.js && node scripts/return-window.test.js && node scripts/slot-forecast.test.js && node scripts/hermetic-bootstrap.test.js && node scripts/discount-allocation.test.js && node scripts/onboarding-readiness.test.js && node scripts/lint.test.js && node --test src/middleware/guestCart.test.js"
   },
   "keywords": [
     "ecommerce",

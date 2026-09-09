@@ -128,6 +128,8 @@ class HsnSummaryService {
       const fromStr = from.toISOString().slice(0, 10);
       const toStr = to.toISOString().slice(0, 10);
 
+      // sequential monthly trend queries
+      // eslint-disable-next-line no-await-in-loop
       const monthData = await this.summary({
         tenantId,
         from: fromStr,

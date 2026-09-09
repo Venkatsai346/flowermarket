@@ -24,3 +24,5 @@ export default function Badge({ tone = 'slate', dot = false, children, className
     </span>
   );
 }
+
+export { Badge };

@@ -153,6 +153,8 @@ class EwayBillService {
     const payloads = [];
     for (const inv of interstate) {
       try {
+        // sequential invoice payload generation
+        // eslint-disable-next-line no-await-in-loop
         const payload = await this.generatePayload({ tenantId, invoiceId: inv.invoiceId });
         payloads.push(payload);
       } catch {

@@ -15,3 +15,5 @@ export default function EmptyState({ icon: Icon = Inbox, title = 'Nothing here y
     </div>
   );
 }
+
+export { EmptyState };

@@ -674,6 +674,9 @@ export const AUDIT_ACTION = Object.freeze({
   DLQ_BULK_REQUEUE: 'dlq_bulk_requeue',
   DLQ_PURGE: 'dlq_purge',
 
+  // ---- Phase 7.4: warehouse transfers ----
+  STOCK_TRANSFER: 'stock_transfer',
+
   OTHER: 'other',
 });
 

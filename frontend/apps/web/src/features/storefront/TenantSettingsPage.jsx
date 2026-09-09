@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
 import Card from '../../components/ui/Card.jsx';
-import Field from '../../components/ui/Field.jsx';
+import { Field } from '../../components/ui/Field.jsx';
 import Button from '../../components/ui/Button.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import Badge from '../../components/ui/Badge.jsx';

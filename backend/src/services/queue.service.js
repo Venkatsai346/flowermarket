@@ -64,7 +64,9 @@ export async function addJob(queueName, jobType, data, opts = {}) {
   }
 
   // Fallback: execute immediately (development mode)
-  console.log(`[queue:${queueName}] No Redis — executing ${jobType} immediately`);
+  // eslint-disable-next-line no-console
+      // eslint-disable-next-line no-console
+    console.log(`[queue:${queueName}] No Redis — executing ${jobType} immediately`);
   return { id: `inline-${Date.now()}`, data, opts };
 }
 
@@ -79,6 +81,8 @@ export async function queueStats() {
 
   const stats = {};
   for (const [name, queue] of queues) {
+    // sequential queue stats collection
+    // eslint-disable-next-line no-await-in-loop
     const [waiting, active, completed, failed, delayed] = await Promise.all([
       queue.getWaitingCount(),
       queue.getActiveCount(),
@@ -98,6 +102,8 @@ export async function queueStats() {
 export async function closeQueues() {
   if (queues) {
     for (const [, queue] of queues) {
+      // sequential queue stats collection
+      // eslint-disable-next-line no-await-in-loop
       await queue.close();
     }
     queues = null;

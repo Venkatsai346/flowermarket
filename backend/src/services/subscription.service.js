@@ -127,6 +127,8 @@ class SubscriptionService {
           sub.status = SUBSCRIPTION_STATUS.EXPIRED;
         }
 
+        // sequential subscription order processing
+        // eslint-disable-next-line no-await-in-loop
         await sub.save();
         processed += 1;
 

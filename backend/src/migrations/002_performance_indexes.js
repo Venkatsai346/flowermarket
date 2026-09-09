@@ -84,6 +84,8 @@ export async function down(db) {
 
   for (const { col, name } of indexes) {
     try {
+      // sequential migration steps required
+      // eslint-disable-next-line no-await-in-loop
       await db.collection(col).dropIndex(name);
     } catch { /* index may not exist */ }
   }

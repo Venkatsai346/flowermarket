@@ -57,6 +57,8 @@ class AdvancedAnalyticsService {
       const monthStart = new Date(now.getFullYear(), now.getMonth() - i, 1);
       const monthEnd = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
 
+      // sequential aggregation queries per cohort
+      // eslint-disable-next-line no-await-in-loop
       const [newUsers, returningUsers] = await Promise.all([
         User.countDocuments({ tenantId, createdAt: { $gte: monthStart, $lt: monthEnd } }),
         Order.distinct('userId', {
@@ -66,6 +68,8 @@ class AdvancedAnalyticsService {
         }).then(async (activeUserIds) => {
           const prevMonth = new Date(monthStart);
           prevMonth.setMonth(prevMonth.getMonth() - 1);
+          // sequential aggregation queries per cohort
+          // eslint-disable-next-line no-await-in-loop
           const prevUsers = await User.distinct('_id', { tenantId, createdAt: { $lt: monthStart } });
           return activeUserIds.filter((id) => prevUsers.some((p) => String(p) === String(id))).length;
         }),

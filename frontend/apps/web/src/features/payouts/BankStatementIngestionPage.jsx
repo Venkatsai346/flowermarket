@@ -1,9 +1,9 @@
 import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '../../lib/api.js';
-import Button from '../ui/Button.jsx';
-import { Badge } from '../ui/Badge.jsx';
-import { showToast } from '../ui/Toast.jsx';
+import api from '../../api.js';
+import Button from '../../components/ui/Button.jsx';
+import { Badge } from '../../components/ui/Badge.jsx';
+import { showToast } from '../../components/ui/Toast.jsx';
 
 /**
  * BankStatementIngestionPage — upload and reconcile bank statement CSVs.

@@ -440,8 +440,14 @@ section('10. every DB-backed suite bootstraps mongod through the shared helper')
   const HELPER = path.join(BACKEND, 'scripts/lib/hermeticMongo.js');
   check('scripts/lib/hermeticMongo.js exists', fs.existsSync(HELPER));
 
-  const suites = jsFiles(path.join(BACKEND, 'scripts'))
+  const allSmoke = jsFiles(path.join(BACKEND, 'scripts'))
     .filter((f) => /smoke.*\.test\.js$/.test(path.basename(f)));
+  // Only DB-backed smoke suites need the hermetic helper — filter out pure
+  // unit tests that test middleware / headers / TOTP without touching MongoDB.
+  const suites = allSmoke.filter((f) => {
+    const src = fs.readFileSync(f, 'utf8');
+    return /hermeticMongo|createHermeticMongo|MongoMemoryServer|mongoose|mongoDb/i.test(src);
+  });
   check(`found the DB-backed suite family (${suites.length} suites)`, suites.length >= 20,
     `only ${suites.length}`);
 

@@ -41,6 +41,8 @@ class WarehouseTransferService {
       }
 
       // Deduct from source
+      // sequential stock transfer per item
+      // eslint-disable-next-line no-await-in-loop
       const sourceRow = await Inventory.findOneAndUpdate(
         {
           tenantId,
@@ -58,6 +60,8 @@ class WarehouseTransferService {
       }
 
       // Add to destination (create row if missing)
+      // sequential stock transfer per item
+      // eslint-disable-next-line no-await-in-loop
       await Inventory.findOneAndUpdate(
         { tenantId, tenantProductId, warehouseId: toHubId },
         {
@@ -70,6 +74,8 @@ class WarehouseTransferService {
 
       results.transferred.push({ tenantProductId, qty, from: fromHubId, to: toHubId });
 
+      // sequential stock transfer per item
+      // eslint-disable-next-line no-await-in-loop
       await auditService.record({
         action: 'stock_transfer',
         entityType: 'inventory',

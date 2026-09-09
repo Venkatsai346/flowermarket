@@ -6,7 +6,7 @@ import Table from '../../components/ui/Table.jsx';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Modal from '../../components/ui/Modal.jsx';
-import Field from '../../components/ui/Field.jsx';
+import { Field } from '../../components/ui/Field.jsx';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
 import { EmptyState } from '../../components/ui/EmptyState.jsx';

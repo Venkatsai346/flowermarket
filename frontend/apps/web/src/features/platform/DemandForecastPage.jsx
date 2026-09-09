@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import api from '../../lib/api.js';
+import api from '../../api.js';
 import Button from '../../components/ui/Button.jsx';
 import { Badge } from '../../components/ui/Badge.jsx';
 

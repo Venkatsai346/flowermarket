@@ -35,6 +35,8 @@ class VoiceOrderService {
 
     for (const { product: productName, qty } of parsed) {
       // Search for matching products
+      // sequential product search per parsed item
+      // eslint-disable-next-line no-await-in-loop
       const results = await TenantProduct.find({
         tenantId,
         status: 'active',

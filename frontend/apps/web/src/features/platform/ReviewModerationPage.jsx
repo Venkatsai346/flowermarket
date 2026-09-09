@@ -1,8 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import api from '../../lib/api.js';
-import { fmtINR } from '../../lib/format.js';
+import api from '../../api.js';
 import Button from '../../components/ui/Button.jsx';
 import { Badge } from '../../components/ui/Badge.jsx';
 import { showToast } from '../../components/ui/Toast.jsx';

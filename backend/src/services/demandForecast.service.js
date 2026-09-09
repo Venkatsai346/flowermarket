@@ -56,6 +56,10 @@ class DemandForecastService {
       createdAt: { $gte: since },
     };
 
+    if (tenantProductId) {
+      matchStage['items.tenantProductId'] = tenantProductId;
+    }
+
     const pipeline = [
       { $match: matchStage },
       { $unwind: '$items' },
@@ -74,9 +78,7 @@ class DemandForecastService {
       { $sort: { '_id.year': 1, '_id.week': 1 } },
     ];
 
-    if (tenantProductId) {
-      pipeline[0].$match['items.tenantProductId'] = tenantProductId; // eslint-disable-line
-    }
+    // filtering was applied above via matchStage
 
     const weeklyData = await Order.aggregate(pipeline);
 
@@ -98,8 +100,12 @@ class DemandForecastService {
     const results = [];
     for (const [productId, weeks_data] of byProduct) {
       const forecasted = this._calculateForecast(weeks_data, forecastWeeks, method);
+      // sequential product lookups for small result sets
+      // eslint-disable-next-line no-await-in-loop
       const product = await TenantProduct.findOne({ _id: productId, tenantId })
         .select('name sku stockQty availability').lean();
+      // sequential product lookups for small result sets
+      // eslint-disable-next-line no-await-in-loop
       const inventory = await Inventory.findOne({ tenantId, tenantProductId: productId })
         .select('qtyOnHand qtyReserved').lean();
 
