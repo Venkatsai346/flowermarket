@@ -108,6 +108,34 @@ jobs:
         run: cd backend && npm audit --audit-level=moderate || true
       - name: Frontend audit
         run: cd frontend && npm audit --audit-level=moderate || true
+      - name: Security audit tests
+        run: node tests/security/security-audit.test.js
+
+  contracts:
+    name: API Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+      - name: Install deps
+        run: cd backend && npm ci
+      - name: Contract tests
+        run: cd backend && node ../tests/contract/api-contracts.test.js
+
+  a11y:
+    name: Accessibility Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: A11y configuration tests
+        run: node tests/a11y/axe-test.js
 
   build-docker:
     name: Docker Build
