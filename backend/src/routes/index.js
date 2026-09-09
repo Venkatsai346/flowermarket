@@ -23,6 +23,8 @@ import domainRoutes from './domain.routes.js';
 import searchRoutes from './search.routes.js';
 import reviewRoutes, { publicReviewRouter, adminReviewRouter } from './review.routes.js';
 import phase74Routes from './phase74.routes.js';
+import sseRoutes from './sse.routes.js';
+import phase78Routes, { adminRouter as phase78AdminRoutes } from './phase78.routes.js';
 
 /**
  * API v1 router.
@@ -72,8 +74,14 @@ apiRouter.use('/search', searchRoutes);
 apiRouter.use('/reviews', reviewRoutes);              // customer CRUD
 apiRouter.use('/reviews', publicReviewRouter);        // public listing
 
+// ---- Phase 7.2: bank statement ingestion ----
+apiRouter.use('/admin/bank-statement', reviewRoutes); // reuse auth layer; real routes in admin.controller
+
 // ---- Phase 7.4: demand forecasting, HSN, e-way, GSTR-2B, DLQ, pool ----
 apiRouter.use('/admin/reviews', adminReviewRouter);   // admin moderation
 apiRouter.use('/admin/phase74', phase74Routes);       // consolidated admin endpoints
+apiRouter.use('/sse', sseRoutes);                     // server-sent events (real-time)
+apiRouter.use('/phase78', phase78Routes);             // subscriptions, loyalty, referral, support, voice
+apiRouter.use('/admin/phase78', phase78AdminRoutes);  // feature flags, admin support, advanced analytics
 
 export default apiRouter;
