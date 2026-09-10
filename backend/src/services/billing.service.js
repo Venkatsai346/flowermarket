@@ -317,7 +317,7 @@ class BillingService {
     if (tenantId) q.tenantId = tenantId;
     const invoice = await Invoice.findOne(q);
     if (!invoice) throw notFound('Invoice not found', 'INVOICE_NOT_FOUND');
-    if (invoice.status === INVOICE_STATUS.PAID) return { invoice, alreadyPaid: true, pending: false };
+    if (invoice.status === INVOICE_STATUS.PAID) return { status: 'already_paid', invoice, alreadyPaid: true, pending: false };
     if (invoice.status === INVOICE_STATUS.VOID) throw conflict('Void invoice cannot be paid', 'INVOICE_VOID');
 
     const result = await billingProvider.charge({ invoiceId: invoice._id, amount: invoice.total, currency: 'INR' });
@@ -329,7 +329,7 @@ class BillingService {
         await invoice.save();
       }
       return {
-        invoice, alreadyPaid: false, pending: true,
+        status: 'pending', invoice, alreadyPaid: false, pending: true,
         gateway: {
           provider: result.provider || 'razorpay',
           gatewayOrderId: invoice.paymentRef,
@@ -346,7 +346,7 @@ class BillingService {
       tenantId: invoice.tenantId, actorId, actorType: actorType || (actorId ? 'admin' : 'system'),
       after: { number: invoice.number, total: invoice.total, paymentRef: invoice.paymentRef }, req,
     }).catch(() => {});
-    return { invoice, alreadyPaid: false, pending: false };
+    return { status: 'paid', invoice, alreadyPaid: false, pending: false };
   }
 
   /** Mark an invoice paid (shared by sync charge + async webhook confirm). */

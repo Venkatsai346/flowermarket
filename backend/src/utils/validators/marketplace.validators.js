@@ -118,9 +118,9 @@ export const invoiceListQuerySchema = Joi.object({
   status: Joi.string().valid('draft', 'open', 'paid', 'overdue', 'void').allow('').optional(),
 });
 
-export const invoicePaySchema = Joi.object({
-  provider: Joi.string().valid('mock', 'razorpay').optional(),
-});
+// Owner pay takes no body: the money rail is a server config decision, never a
+// client choice (a browser-picked "mock" would mark invoices paid for free).
+export const invoicePaySchema = Joi.object({});
 
 export const emailVerifyConfirmSchema = Joi.object({
   code: Joi.string().trim().min(4).max(10).required(),

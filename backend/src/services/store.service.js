@@ -301,7 +301,10 @@ class StoreService {
     }
 
     const tenant = await Tenant.findById(tenantId).select('store gstin ownerUserId').lean();
-    let ownerEmailVerified = false;
+    // Legacy grandfather: a tenant with no recorded owner has nobody to verify
+    // as — every store created by registerStore DOES have one, so only
+    // pre-verification rows take this path, and they stay published.
+    let ownerEmailVerified = true;
     if (tenant?.ownerUserId) {
       const owner = await User.findById(tenant.ownerUserId).select('email.verified').lean();
       ownerEmailVerified = Boolean(owner?.email?.verified);

@@ -586,13 +586,14 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 | `GET /marketplace/plans` | active plan catalog (free/pro/business, price + commission bps + marketplace flag) |
 | `GET /marketplace/stores?search=&page=&limit=` | store discovery (published stores only) |
 | `GET /marketplace/stores/:slug` | storefront: branding + theme + vendor products (only when marketplace mode) + vendors |
-| `POST /marketplace/tenants/register` `{name, slug, plan?, contactEmail?, owner{firstName, lastName, email, password}}` | create store → tenant + owner admin (never super_admin) + trial subscription + owner auto-login tokens; slug unique/reserved → 409 |
+| `POST /marketplace/tenants/register` `{name, slug, plan?, contactEmail?, owner{firstName, lastName, email, password}}` | create store → tenant + owner admin (never super_admin) + trial subscription + owner auto-login tokens; slug unique/reserved → 409; owner email starts UNVERIFIED (see verify-email) |
 
 ### Vendor (auth; role `vendor` — granted ONLY by an approved application)
 
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /marketplace/vendor/apply` `{businessName, slug?, contactPhone?, gstin?, categories[], city?}` | any authenticated user; one application per user (re-submit updates) |
+| `GET /marketplace/vendor/my-application` | my application status (+ vendor profile once approved); nulls when never applied |
 | `GET /marketplace/vendor/me` | vendor profile + stats (gmv/orders from `orderitems.vendorId`) + commissionRateBps |
 | `PATCH /marketplace/vendor/me` `{businessName?, city?, categories?, gstin?, payout{...}}` | update business info / payout metadata |
 | `GET /marketplace/vendor/products?status=` | my products |
@@ -604,10 +605,13 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /marketplace/store` | my store: branding + plan + subscription |
-| `PATCH /marketplace/store` `{name?, logoUrl?, theme?, tagline?, description?, bannerUrl?, socialLinks?, isPublished?}` | update branding; publish flips onboarding → active |
+| `PATCH /marketplace/store` `{name?, logoUrl?, theme?, tagline?, description?, bannerUrl?, socialLinks?, isPublished?}` | update branding; publish flips onboarding → active, refused with `STORE_NOT_READY` while blockers (incl. unverified owner email) remain |
 | `GET /marketplace/store/subscription` | live subscription (trial/active/past_due) |
 | `PATCH /marketplace/store/plan` `{planCode}` | change plan (creates subscription for existing stores); mid-period change → pro-rata `pendingAdjustment` on next invoice |
 | `GET /marketplace/store/invoices?status=` · `GET /marketplace/store/invoices/:id` | my invoices (frozen line items) |
+| `POST /marketplace/store/invoices/:id/pay` | owner self-pay (tenant-scoped: other stores' invoices 404); sync rail → `paid`, async rail → `pending` + gateway order, confirmed by webhook |
+| `GET /marketplace/store/usage` | plan limits + live usage (hubs/listings/staff) for the billing-page meters |
+| `POST /marketplace/store/verify-email/request` · `POST /marketplace/store/verify-email/confirm` `{code}` | owner-email OTP; publishing is blocked until verified |
 | `GET /marketplace/store/vendors` | vendors whose products are synced into this store |
 | `POST /marketplace/store/vendors/:vendorId/sync` | **(marketplace mode required)** idempotently create TenantProduct rows for the vendor's approved, marketplace-listed products |
 
@@ -631,6 +635,13 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 | `GET /marketplace/admin/analytics/top-tenants?from=&to=` · `.../top-vendors` | bounded rankings |
 | `POST /marketplace/admin/analytics/rebuild` `{from, to}` | idempotent `platformdailies` upsert |
 | `POST /marketplace/admin/nightly` | platform-wide marketplace pass: billing → overdue sweep → rollup → drain → notify (idempotent) |
+
+### Billing webhooks (no login; raw body + HMAC, mounted before `express.json()`)
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /marketplace/billing/webhook/razorpay` | async capture confirmations; verify-then-parse, idempotent + amount-checked via `billingService.applyBillingWebhook` (acks 200 except bad signature) |
+| `POST /marketplace/billing/webhook/mock` | same pipeline for the mock rail (`{gatewayOrderId, amountPaise?}` + `x-mock-signature`) |
 
 ## Media uploads (`/media` — authenticated; blueprint: `uploads/media_upload.md`)
 

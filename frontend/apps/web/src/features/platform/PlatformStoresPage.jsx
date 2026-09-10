@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Store } from 'lucide-react';
+import { PauseCircle, PlayCircle, Search, Store } from 'lucide-react';
 import {
   bpsToPct,
   fmtDate,
@@ -9,10 +9,13 @@ import {
   titleCase,
 } from '@flower-market/shared';
 import { api } from '../../api.js';
-import { useApi } from '../../lib/useApi.js';
+import { useApi, useAction } from '../../lib/useApi.js';
+import { errMsg } from '../../lib/utils.js';
+import { toast } from '../../lib/toasts.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import Card from '../../components/ui/Card.jsx';
 import Badge from '../../components/ui/Badge.jsx';
+import Button from '../../components/ui/Button.jsx';
 import Table from '../../components/ui/Table.jsx';
 import Pagination from '../../components/ui/Pagination.jsx';
 import Modal from '../../components/ui/Modal.jsx';
@@ -26,13 +29,29 @@ export default function PlatformStoresPage() {
   const [plan, setPlan] = useState('');
   const [selected, setSelected] = useState(null);
   const [limit] = useState(20);
+  const [reason, setReason] = useState('');
+  const { busy: settingStatus, run: runStatus } = useAction();
 
-  const { data, meta, loading } = useApi(
+  const { data, meta, loading, refetch } = useApi(
     () => api.marketplace.adminTenants({ page, limit, search: search || undefined, plan: plan || undefined }),
     [page, search, plan]
   );
 
   const selectedTenant = (data || []).find((t) => t.id === selected);
+  const suspended = selectedTenant && selectedTenant.status !== 'active';
+
+  /** Suspend halts the storefront + writes; re-activate restores it. */
+  const setStatus = async (status) => {
+    if (!selectedTenant) return;
+    try {
+      await runStatus(() => api.marketplace.adminSetTenantStatus(selectedTenant.id, { status, reason: reason || undefined }));
+      toast.success(status === 'active' ? `“${selectedTenant.name}” re-activated` : `“${selectedTenant.name}” suspended`);
+      setReason('');
+      refetch();
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
 
   return (
     <div>
@@ -86,9 +105,28 @@ export default function PlatformStoresPage() {
 
       <Modal
         open={Boolean(selectedTenant)}
-        onClose={() => setSelected(null)}
+        onClose={() => { setSelected(null); setReason(''); }}
         title={selectedTenant?.name}
         subtitle={`@${selectedTenant?.slug}`}
+        footer={selectedTenant ? (
+          <>
+            <Input
+              className="min-w-[180px] flex-1"
+              placeholder={suspended ? 'Reason for re-activating (optional)' : 'Reason for suspending (optional)'}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            {suspended ? (
+              <Button icon={PlayCircle} loading={settingStatus} onClick={() => setStatus('active')}>
+                Re-activate
+              </Button>
+            ) : (
+              <Button icon={PauseCircle} variant="danger" loading={settingStatus} onClick={() => setStatus('suspended')}>
+                Suspend
+              </Button>
+            )}
+          </>
+        ) : undefined}
       >
         {selectedTenant ? (
           <div className="space-y-4">

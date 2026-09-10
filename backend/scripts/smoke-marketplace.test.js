@@ -171,6 +171,29 @@ async function main() {
   assert.equal(r.body.data.length, 0, 'unpublished stores hidden from discovery');
   ok('public: discovery hides unpublished stores');
 
+  // ---- 1b. owner email verification gates publishing ----
+  // A fresh store's owner email starts UNVERIFIED (registration must never
+  // self-attest an address), and onboarding blocks publish on it.
+  r = await call('/marketplace/store/onboarding', { token: storeBOwnerTok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.data.blocking.includes('ownerEmail'), 'fresh store blocks publish on unverified owner email');
+  r = await call('/marketplace/store/verify-email/request', { method: 'POST', token: storeBOwnerTok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.alreadyVerified, false);
+  assert.equal(r.body.data.email, 'ravi@kakatiya.in');
+  const { default: smsSender } = await import('../src/services/smsSender.service.js');
+  const emailCode = smsSender.getLastCode({ channel: 'email', target: 'ravi@kakatiya.in', purpose: 'email_verify' });
+  assert.ok(emailCode, 'memory sender captured the verification code');
+  r = await call('/marketplace/store/verify-email/confirm', { method: 'POST', token: storeBOwnerTok, body: { code: '000000' } });
+  assert.equal(r.status, 400, 'wrong code must be rejected');
+  assert.equal(r.body.code, 'OTP_INVALID');
+  r = await call('/marketplace/store/verify-email/confirm', { method: 'POST', token: storeBOwnerTok, body: { code: emailCode } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  r = await call('/marketplace/store/onboarding', { token: storeBOwnerTok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(!r.body.data.blocking.includes('ownerEmail'), 'verified email clears the gate (other gaps remain)');
+  ok('owner email: unverified blocks publish, wrong code rejected, correct code verifies');
+
   // ================= 2. storefront: owner branding + publish =================
   r = await call('/marketplace/store', { token: ownerATok });
   assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -382,6 +405,33 @@ async function main() {
   const subA3 = await M.Subscription.findById(subAFresh.id);
   assert.equal(subA3.status, 'past_due', 'overdue invoice → subscription past_due');
   ok('billing: pay (mock, idempotent), overdue sweep → past_due');
+
+  // ---- 5b. owner self-pay (tenant-scoped) + usage + vendor status ----
+  // store B's owner pays store A's invoice → 404 (tenant scope, not a leak)
+  r = await call(`/marketplace/store/invoices/${invA.id}/pay`, { method: 'POST', token: storeBOwnerTok });
+  assert.equal(r.status, 404, 'cross-tenant pay must not resolve');
+  assert.equal(r.body.code, 'INVOICE_NOT_FOUND');
+  // store A's owner pays its own open invoice (mock settles synchronously)
+  const ownOpen = await M.Invoice.findOne({ tenantId: tenantA.id, status: { $in: ['open', 'overdue'] } });
+  assert.ok(ownOpen, 'store A has an open invoice to self-pay');
+  r = await call(`/marketplace/store/invoices/${ownOpen.id}/pay`, { method: 'POST', token: ownerATok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.status, 'paid');
+  assert.equal(r.body.data.invoice.status, 'paid');
+  r = await call(`/marketplace/store/invoices/${ownOpen.id}/pay`, { method: 'POST', token: ownerATok });
+  assert.equal(r.body.data.status, 'already_paid', 'owner pay idempotent');
+  // usage snapshot: business plan caps vs live counts
+  r = await call('/marketplace/store/usage', { token: ownerATok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.planCode, 'business');
+  assert.ok(r.body.data.hubs.used >= 1 && r.body.data.hubs.limit === 10, 'hub usage under the business cap');
+  assert.ok(r.body.data.products.used >= 1, 'listing usage counted');
+  // vendor application status for an approved applicant
+  r = await call('/marketplace/vendor/my-application', { token: applicant1Tok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.application.status, 'approved');
+  assert.ok(r.body.data.vendor?.id, 'approved applicant has a vendor profile');
+  ok('billing: owner self-pay (scoped, idempotent), usage meters, vendor status');
 
   // ================= 6. cross-tenant analytics =================
   r = await call(`/marketplace/admin/analytics/dashboard?from=${from30}&to=${today}`, { token: platTok });

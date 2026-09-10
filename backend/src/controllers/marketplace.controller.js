@@ -130,12 +130,19 @@ class MarketplaceController {
    * confirmed later by the billing webhook, never by the browser.
    */
   payMyInvoice = asyncHandler(async (req, res) => {
+    // NOTE: no client provider choice — which money rail runs is a server
+    // config decision; letting the browser pick "mock" would mark invoices
+    // paid without money moving.
     const result = await billingService.payInvoice({
       invoiceId: req.params.id, tenantId: req.tenantId,
-      actorId: req.auth.userId, provider: req.body?.provider, req,
+      actorId: req.auth.userId, actorType: 'admin', req,
     });
     res.status(200).json(success(result, {
-      message: result.status === 'paid' ? 'Invoice paid' : 'Gateway order created — complete payment to confirm',
+      message: result.status === 'paid'
+        ? 'Invoice paid'
+        : result.status === 'already_paid'
+          ? 'Invoice already paid'
+          : 'Gateway order created — complete payment to confirm',
     }));
   });
 
