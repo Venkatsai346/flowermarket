@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -14,8 +13,9 @@ import { toast } from '../../lib/toasts.js';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
-import { Input } from '../../components/ui/Field.jsx';
 import { cn, errMsg } from '../../lib/utils.js';
+import { FIX_ROUTE } from './onboardingFixes.js';
+import VerifyEmailAction from './VerifyEmailAction.jsx';
 
 /**
  * OnboardingChecklist — what stands between a registered store and a selling one.
@@ -36,89 +36,7 @@ import { cn, errMsg } from '../../lib/utils.js';
  * slot window passes or a hub is deactivated.
  */
 
-/**
- * Where each gap gets fixed. Ids are the API contract from ONBOARDING_ITEM.
- * `ownerEmail` has no route — it is verified inline (code by email) because
- * leaving the dashboard to prove an address would be absurd.
- */
-const FIX_ROUTE = {
-  hub: { to: '/hubs', label: 'Add a hub' },
-  pincodes: { to: '/hubs', label: 'Manage pincodes' },
-  slots: { to: '/hubs', label: 'Open slots' },
-  feePolicy: { to: '/policies', label: 'Set the fee' },
-  products: { to: '/catalog', label: 'List products' },
-  taxPolicies: { to: '/tax', label: 'Add tax policies' },
-  profile: { to: '/storefront', label: 'Edit branding' },
-  gstin: { to: '/tax', label: 'Add GSTIN' },
-};
-
 const STATE_TONE = { done: 'emerald', todo: 'rose', warn: 'amber' };
-
-/** Inline code-entry for the ownerEmail item: request → type the code → done. */
-function VerifyEmailAction({ onVerified }) {
-  const [sent, setSent] = useState(false);
-  const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const { busy, run } = useAction();
-
-  const request = async () => {
-    try {
-      const r = await run(() => api.marketplace.requestEmailVerify());
-      if (r.data?.alreadyVerified) {
-        toast.success('Owner email already verified');
-        onVerified();
-        return;
-      }
-      setEmail(r.data?.email || '');
-      setSent(true);
-      toast.success(`Code sent${r.data?.email ? ` to ${r.data.email}` : ''}`);
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  };
-
-  const confirm = async () => {
-    if (!code.trim()) return;
-    try {
-      await run(() => api.marketplace.confirmEmailVerify(code.trim()));
-      toast.success('Owner email verified');
-      onVerified();
-    } catch (e) {
-      toast.error(errMsg(e));
-    }
-  };
-
-  if (!sent) {
-    return (
-      <Button variant="secondary" size="sm" loading={busy} onClick={request}>
-        Send code
-      </Button>
-    );
-  }
-  return (
-    <div className="flex shrink-0 items-center gap-2">
-      <Input
-        className="w-28! text-center font-mono tracking-widest"
-        placeholder="••••••"
-        value={code}
-        maxLength={10}
-        onChange={(e) => setCode(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
-        aria-label={`Verification code sent to ${email}`}
-      />
-      <Button size="sm" loading={busy} disabled={!code.trim()} onClick={confirm}>
-        Verify
-      </Button>
-      <button
-        type="button"
-        className="text-xs font-semibold text-slate-400 hover:text-slate-600"
-        onClick={request}
-      >
-        Resend
-      </button>
-    </div>
-  );
-}
 
 function ItemRow({ item, onVerified }) {
   const fix = FIX_ROUTE[item.id];
@@ -198,8 +116,10 @@ export default function OnboardingChecklist({ onChanged } = {}) {
       await status.refetch();
       onChanged?.();
     } catch (e) {
-      // STORE_NOT_READY carries the blocking list in details; the shared client
-      // already toasted the server's sentence, which names every gap.
+      // Reachable when readiness decays between fetch and click (a slot window
+      // can expire overnight). The shared client does NOT toast — say it here,
+      // then refetch so the list shows the fresh gaps.
+      toast.error(errMsg(e));
       await status.refetch();
     }
   };
@@ -210,8 +130,8 @@ export default function OnboardingChecklist({ onChanged } = {}) {
       toast.success('Store unpublished. Customers can no longer reach it.');
       await status.refetch();
       onChanged?.();
-    } catch {
-      /* the shared client surfaces the error */
+    } catch (e) {
+      toast.error(errMsg(e));
     }
   };
 

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@flower-market/shared';
 import { api } from './api.js';
@@ -57,12 +57,14 @@ const PlatformLifecyclePage = lazy(() => import('./features/platform/PlatformLif
 function RequireAuth() {
   const location = useLocation();
   const accessToken = useAuthStore((s) => s.accessToken);
+  const user = useAuthStore((s) => s.user);
   const isAuth = useAuthStore((s) => s.isAuthenticated());
   // Loop breaker: a 401 here means the SESSION is unusable, not merely
   // expired (the client already retried past a refresh). Without this, each
   // rotation mints a new accessToken, the effect refires, /users/me 401s
   // again — a refresh storm behind a spinner that never resolves.
   const hydrationDead = useRef(false);
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     if (!accessToken || hydrationDead.current) return undefined;
@@ -70,19 +72,32 @@ function RequireAuth() {
     api.auth
       .me()
       .then((r) => {
-        if (alive) useAuthStore.getState().updateUser(r.data);
+        if (!alive) return;
+        useAuthStore.getState().updateUser(r.data);
+        setHydrated(true);
       })
       .catch((e) => {
         if (!alive) return;
         if (e?.status === 401) {
           hydrationDead.current = true;
           useAuthStore.getState().clear();
+          return;
         }
+        // A non-401 (network blip, 500) must not wedge the gate below: render
+        // the shell and let each page surface its own retryable error.
+        setHydrated(true);
       });
     return () => { alive = false; };
   }, [accessToken]);
 
   if (!isAuth) return <Navigate to="/login" state={{ from: location.pathname }} replace />;
+  // Hydration gate: while a token exists but the profile hasn't loaded, hold a
+  // spinner instead of rendering pages whose queries would fire userless (no
+  // tenant header → TENANT_MISMATCH) and never refetch. Sessions with a
+  // persisted user skip this entirely.
+  if (!user && !hydrated && !hydrationDead.current) {
+    return <LoadingBlock label="Loading your workspace…" />;
+  }
   return <Outlet />;
 }
 
@@ -105,6 +120,21 @@ function HomeRedirect() {
   return <Navigate to={home} replace />;
 }
 
+/** index route: admins land ON the dashboard, everyone else redirects onward */
+function HomeRoute() {
+  const role = useAuthStore((s) => s.user?.role);
+  // RequireAuth's hydration gate guarantees a role (or a login redirect)
+  // before any child route renders; the guard below is belt-and-braces.
+  if (!role) return <LoadingBlock />;
+  // The store dashboard is an admin's home: subscription, launch checklist,
+  // KPIs. It used to be unreachable — the index rendered HomeRedirect, whose
+  // admin branch navigated to the very page it was on, so the sidebar's
+  // "Dashboard" opened a blank shell and the email-verification UI (mounted
+  // only inside the dashboard's checklist) existed nowhere reachable.
+  if (role === 'admin') return <StoreDashboard />;
+  return <HomeRedirect />;
+}
+
 const storeOnly = (el) => <RoleGuard roles={['admin', 'super_admin']}>{el}</RoleGuard>;
 const platformOnly = (el) => <RoleGuard roles={['super_admin']}>{el}</RoleGuard>;
 const vendorOnly = (el) => <RoleGuard roles={['vendor']}>{el}</RoleGuard>;
@@ -117,7 +147,7 @@ export default function App() {
       <Route path="/register" element={<RegisterStorePage />} />
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
-          <Route index element={<HomeRedirect />} />
+          <Route index element={<HomeRoute />} />
           <Route path="catalog" element={storeOnly(<CatalogPage />)} />
           <Route path="catalog/masters" element={storeOnly(<MastersPage />)} />
           <Route path="catalog/categories" element={storeOnly(<CategoriesPage />)} />

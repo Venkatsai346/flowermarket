@@ -624,7 +624,13 @@ class StoreService {
     const { default: OtpService } = await import('./otp.service.js');
     const { default: TenantService } = await import('./tenant.service.js');
     const authCfg = await TenantService.getAuthConfig(tenantId);
-    await OtpService.request({
+    // Pass the OTP result through (not just "sent"): expiresInSeconds lets the
+    // UI say when the code dies, and devCode — present ONLY when the console
+    // provider echoes it, which production boot refuses — is the only way a
+    // dev/laptop env can complete this flow. Auth OTP already returns it
+    // verbatim; swallowing it here stranded console-env owners with a "code
+    // sent" toast and no code anywhere they could see.
+    const otp = await OtpService.request({
       tenantId,
       purpose: 'email_verify',
       channel: 'email',
@@ -634,7 +640,12 @@ class StoreService {
       ttlSeconds: authCfg.otpTtlSeconds || config.otp.ttlSeconds,
       maxAttempts: authCfg.otpMaxAttempts || config.otp.maxAttempts,
     });
-    return { alreadyVerified: false, email: target };
+    return {
+      alreadyVerified: false,
+      email: target,
+      expiresInSeconds: otp.expiresInSeconds,
+      ...(otp.devCode ? { devCode: otp.devCode } : {}),
+    };
   }
 
   /** Confirm the code → owner email verified (unblocks publishing). */

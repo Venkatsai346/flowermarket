@@ -13,12 +13,16 @@ import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import { Field, Input, Textarea } from '../../components/ui/Field.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
+import PublishBlockedPanel from '../dashboard/PublishBlockedPanel.jsx';
 
 export default function BrandingPage() {
   const store = useApi(() => api.marketplace.myStore(), []);
   const { busy, run } = useAction();
 
   const [form, setForm] = useState(null);
+  // The last STORE_NOT_READY answer, rendered as a way forward (not a toast
+  // the merchant has to decode) until publishing succeeds or they unpublish.
+  const [blocked, setBlocked] = useState(null);
 
   useEffect(() => {
     if (store.data?.tenant && !form) {
@@ -71,8 +75,15 @@ export default function BrandingPage() {
     try {
       await run(() => api.marketplace.updateStore({ isPublished: !form.isPublished }));
       toast.success(form.isPublished ? 'Storefront unpublished' : 'Storefront is live! 🎉');
+      setBlocked(null);
       store.refetch();
     } catch (err) {
+      if (err?.code === 'STORE_NOT_READY') {
+        // The panel IS the message — it lists the gaps with links and the
+        // inline email fix, so no toast; toasting too would double-report.
+        setBlocked(err.details || {});
+        return;
+      }
       toast.error(errMsg(err));
     }
   };
@@ -94,6 +105,16 @@ export default function BrandingPage() {
           </Button>
         }
       />
+
+      {blocked && (
+        <div className="mb-6">
+          <PublishBlockedPanel
+            reasons={blocked.reasons || []}
+            blocking={blocked.blocking || []}
+            onResolved={async () => { setBlocked(null); await store.refetch(); }}
+          />
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-5">
         <Card title="Branding" className="lg:col-span-3">
