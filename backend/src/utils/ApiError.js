@@ -26,8 +26,8 @@ export const notFound = (message = 'Not found', code = 'NOT_FOUND') =>
   new AppError(message, { status: 404, code });
 export const conflict = (message = 'Conflict', code = 'CONFLICT', details) =>
   new AppError(message, { status: 409, code, details });
-export const tooMany = (message = 'Too many requests', code = 'RATE_LIMITED') =>
-  new AppError(message, { status: 429, code });
+export const tooMany = (message = 'Too many requests', code = 'RATE_LIMITED', details) =>
+  new AppError(message, { status: 429, code, details });
 /** 402 — billing gates (past-due subscription, plan limit exceeded). */
 export const paymentRequired = (message = 'Payment required', code = 'PAYMENT_REQUIRED', details) =>
   new AppError(message, { status: 402, code, details });

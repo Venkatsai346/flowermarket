@@ -754,7 +754,16 @@ section('13. a newly registered store is told what it cannot yet do');
     // a route. The allowlist is explicit and tiny: anything else without a
     // route is a dead end, exactly what this check was written to catch.
     const INLINE_HANDLED = new Set(['ownerEmail']);
-    const hasFix = (id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)
+    // The fix map may live in a sibling module the checklist imports (it is
+    // shared with every other STORE_NOT_READY surface) — follow the import so
+    // the check tests the contract, not the file layout.
+    let fixSrc = ui;
+    const fixFrom = ui.match(/FIX_ROUTE\s*}\s*from\s*'([^']+)'/);
+    if (fixFrom) {
+      const fixPath = path.join(path.dirname(uiPath), fixFrom[1]);
+      if (fs.existsSync(fixPath)) fixSrc += `\n${fs.readFileSync(fixPath, 'utf8')}`;
+    }
+    const hasFix = (id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(fixSrc)
       || (INLINE_HANDLED.has(id) && new RegExp(`item\\.id === '${id}'`).test(ui));
     check('every item id the API can return has somewhere to go',
       Object.values(readiness.ONBOARDING_ITEM).every(hasFix),
@@ -764,6 +773,23 @@ section('13. a newly registered store is told what it cannot yet do');
     const dash = fs.readFileSync(
       path.join(REPO, 'frontend/apps/web/src/features/dashboard/StoreDashboard.jsx'), 'utf8');
     check('the dashboard mounts it', /<OnboardingChecklist/.test(dash));
+    // A blocked publish must name a way forward on EVERY page that can hit
+    // it — the Storefront page used to answer STORE_NOT_READY with a bare
+    // toast and no fix in sight.
+    const panelPath = path.join(REPO, 'frontend/apps/web/src/features/dashboard/PublishBlockedPanel.jsx');
+    check('a blocked-publish panel exists', fs.existsSync(panelPath));
+    if (fs.existsSync(panelPath)) {
+      const panel = fs.readFileSync(panelPath, 'utf8');
+      check('the panel reuses the fix map', /FIX_ROUTE/.test(panel));
+      check('the panel verifies email inline', /<VerifyEmailAction/.test(panel));
+    }
+    // The dashboard itself must be REACHABLE: it once rendered nowhere (the
+    // index route redirected admins to the page they were already on), which
+    // orphaned the only email-verification UI in the product.
+    const app = fs.readFileSync(path.join(REPO, 'frontend/apps/web/src/App.jsx'), 'utf8');
+    check('the index route lands admins on the dashboard',
+      /<Route index element=\{<HomeRoute/.test(app)
+      && /role === 'admin'\) return <StoreDashboard/.test(app));
   }
 }
 

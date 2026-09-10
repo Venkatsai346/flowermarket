@@ -224,6 +224,14 @@ async function main() {
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.data.alreadyVerified, false);
   assert.equal(r.body.data.email, 'ravi@kakatiya.in');
+  assert.equal(typeof r.body.data.expiresInSeconds, 'number', 'request tells the UI when the code dies');
+  assert.equal(r.body.data.devCode, undefined, 'memory provider never echoes the code over HTTP');
+  // an immediate re-request trips the resend cooldown WITHOUT revoking the
+  // live code, and says how long to wait so the UI can count down.
+  r = await call('/marketplace/store/verify-email/request', { method: 'POST', token: storeBOwnerTok });
+  assert.equal(r.status, 429, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'OTP_RESEND_COOLDOWN');
+  assert.ok(r.body.details?.retryAfterSeconds > 0, 'cooldown names its remaining seconds');
   const { default: smsSender } = await import('../src/services/smsSender.service.js');
   const emailCode = smsSender.getLastCode({ channel: 'email', target: 'ravi@kakatiya.in', purpose: 'email_verify' });
   assert.ok(emailCode, 'memory sender captured the verification code');

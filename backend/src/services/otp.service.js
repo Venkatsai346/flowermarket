@@ -27,7 +27,10 @@ class OtpService {
     const last = await OtpVerification.findOne({ tenantId, purpose, channel, target })
       .sort({ createdAt: -1 });
     if (last && !last.consumedAt && last.resendCooldownUntil && last.resendCooldownUntil > new Date()) {
-      throw tooMany('Please wait before requesting another OTP', 'OTP_RESEND_COOLDOWN');
+      // Tell the client HOW LONG to wait so the UI can count down instead of
+      // inviting another tap into another 429.
+      const retryAfterSeconds = Math.max(1, Math.ceil((last.resendCooldownUntil.getTime() - Date.now()) / 1000));
+      throw tooMany('Please wait before requesting another OTP', 'OTP_RESEND_COOLDOWN', { retryAfterSeconds });
     }
 
     // revoke any other live OTPs for this target+purpose (one live code at a time)
