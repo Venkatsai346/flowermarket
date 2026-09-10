@@ -25,6 +25,9 @@ const Returns = lazy(() => import('./pages/Returns.jsx'));
 const Addresses = lazy(() => import('./pages/Addresses.jsx'));
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
 const Sell = lazy(() => import('./pages/Sell.jsx'));
+const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
+const Browse = lazy(() => import('./pages/Browse.jsx'));
+const About = lazy(() => import('./pages/About.jsx'));
 
 /**
  * The storefront shell.
