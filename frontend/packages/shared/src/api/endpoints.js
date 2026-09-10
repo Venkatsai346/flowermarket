@@ -32,10 +32,20 @@ export function createEndpoints(client) {
       changePlan: (planCode) => c.patch('/marketplace/store/plan', { planCode }),
       myInvoices: (q = {}) => c.get('/marketplace/store/invoices', { query: q }),
       myInvoiceDetail: (id) => c.get(`/marketplace/store/invoices/${id}`),
+      // Owner self-pay: sync providers confirm immediately; async providers
+      // return { status:'pending', gateway:{...} } for a browser checkout.
+      payMyInvoice: (id, body = {}) => c.post(`/marketplace/store/invoices/${id}/pay`, body),
+      // Plan limits + live usage for the usage meters.
+      myUsage: () => c.get('/marketplace/store/usage'),
+      requestEmailVerify: () => c.post('/marketplace/store/verify-email/request'),
+      confirmEmailVerify: (code) => c.post('/marketplace/store/verify-email/confirm', { code }),
       storeVendors: () => c.get('/marketplace/store/vendors'),
       syncVendorProducts: (vendorId) => c.post(`/marketplace/store/vendors/${vendorId}/sync`),
 
       // vendor
+      applyVendor: (body) => c.post('/marketplace/vendor/apply', body),
+      // Any logged-in user's own application + vendor state (nulls when none).
+      myApplication: () => c.get('/marketplace/vendor/my-application'),
       vendorMe: () => c.get('/marketplace/vendor/me'),
       updateVendorMe: (body) => c.patch('/marketplace/vendor/me', body),
       vendorProducts: (q = {}) => c.get('/marketplace/vendor/products', { query: q }),

@@ -72,8 +72,9 @@ router.get('/stores/:slug', MarketplaceController.storefront);
 router.post('/tenants/register', validate(storeRegisterSchema), MarketplaceController.registerTenant);
 
 // ---------------- vendor ----------------
-// apply is open to ANY authenticated user (you aren't a vendor yet)
+// apply + status are open to ANY authenticated user (you aren't a vendor yet)
 router.post('/vendor/apply', authenticate, validate(vendorApplySchema), MarketplaceController.applyVendor);
+router.get('/vendor/my-application', authenticate, MarketplaceController.myApplication);
 
 // the rest of /vendor requires the vendor role (granted ONLY by an approved application)
 router.use('/vendor', authenticate, authorize(USER_ROLES.VENDOR));

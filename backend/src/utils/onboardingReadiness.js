@@ -107,6 +107,9 @@ export function evaluateOnboarding(facts = {}, options = {}) {
   const categoriesMissingTaxPolicy = asCount(f.categoriesMissingTaxPolicy);
   const tagline = asText(f.tagline);
   const gstin = asText(f.gstin);
+  // Missing/legacy fact pictures predate email verification: treat an absent
+  // flag as done (old stores stay published), an explicit false as blocking.
+  const ownerEmailVerified = f.ownerEmailVerified == null ? true : asBool(f.ownerEmailVerified);
 
   const days = Number.isFinite(Number(slotDaysAhead)) && Number(slotDaysAhead) > 0
     ? Math.floor(Number(slotDaysAhead)) : 3;

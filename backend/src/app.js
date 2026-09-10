@@ -130,6 +130,11 @@ export function createApp() {
   // express.json() consumes the stream.
   app.post('/api/v1/payouts/webhook', express.raw({ type: '*/*' }), PayoutController.webhook);
 
+  // Billing webhooks (subscription invoice capture). Same raw-bytes rule —
+  // HMAC is over exact bytes, mounted before express.json() consumes them.
+  app.post('/api/v1/marketplace/billing/webhook/razorpay', express.raw({ type: '*/*' }), MarketplaceController.webhookBillingRazorpay);
+  app.post('/api/v1/marketplace/billing/webhook/mock', express.raw({ type: '*/*' }), MarketplaceController.webhookBillingMock);
+
   // keep the verified-custom-domain set warm (throttled internally)
   app.use((req, _res, nextMw) => { refreshLiveHosts(); nextMw(); });
 

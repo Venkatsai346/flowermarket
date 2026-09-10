@@ -123,6 +123,42 @@ class MarketplaceController {
     res.status(200).json(success(invoice, { message: 'Invoice fetched' }));
   });
 
+  /**
+   * Owner self-pay: start a payment for one of this store's open invoices.
+   * Sync providers (mock) confirm immediately; async providers (Razorpay)
+   * return a pending gateway order for the browser checkout — the invoice is
+   * confirmed later by the billing webhook, never by the browser.
+   */
+  payMyInvoice = asyncHandler(async (req, res) => {
+    const result = await billingService.payInvoice({
+      invoiceId: req.params.id, tenantId: req.tenantId,
+      actorId: req.auth.userId, provider: req.body?.provider, req,
+    });
+    res.status(200).json(success(result, {
+      message: result.status === 'paid' ? 'Invoice paid' : 'Gateway order created — complete payment to confirm',
+    }));
+  });
+
+  /** Plan limits + live usage for this store (drives the billing-page meters). */
+  myUsage = asyncHandler(async (req, res) => {
+    const usage = await entitlementService.usage({ tenantId: req.tenantId });
+    res.status(200).json(success(usage, { message: 'Plan usage fetched' }));
+  });
+
+  requestEmailVerify = asyncHandler(async (req, res) => {
+    const result = await storeService.requestEmailVerify({ tenantId: req.tenantId, actorId: req.auth.userId });
+    res.status(200).json(success(result, {
+      message: result.alreadyVerified ? 'Owner email already verified' : 'Verification code sent to the owner email',
+    }));
+  });
+
+  confirmEmailVerify = asyncHandler(async (req, res) => {
+    const result = await storeService.confirmEmailVerify({
+      tenantId: req.tenantId, code: req.body.code, actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Owner email verified' }));
+  });
+
   storeVendors = asyncHandler(async (req, res) => {
     const items = await storeService.storeVendors({ tenantId: req.tenantId });
     res.status(200).json(success(items, { message: 'Store vendors fetched' }));
