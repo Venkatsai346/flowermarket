@@ -3,6 +3,7 @@ import CartController from '../controllers/cart.controller.js';
 import { authenticate, optionalAuthenticate } from '../middleware/authenticate.js';
 import { guestCart } from '../middleware/guestCart.js';
 import { requireActiveTenant } from '../middleware/requireActiveTenant.js';
+import { requireBillingCurrent } from '../middleware/requireBillingCurrent.js';
 import { validate } from '../middleware/validate.js';
 import rateLimiters from '../middleware/rateLimiter.js';
 import {
@@ -34,7 +35,7 @@ router.delete('/clear', requireActiveTenant, CartController.clear);
 router.post('/revalidate', requireActiveTenant, CartController.revalidate);
 router.post('/merge', authenticate, CartController.merge);
 router.post('/quote', authenticate, requireActiveTenant, validate(checkoutQuoteSchema), CartController.quote);
-router.post('/checkout', authenticate, requireActiveTenant, rateLimiters.checkoutLimiter, validate(checkoutSchema), CartController.checkout);
+router.post('/checkout', authenticate, requireActiveTenant, requireBillingCurrent, rateLimiters.checkoutLimiter, validate(checkoutSchema), CartController.checkout);
 
 // coupons (Phase 3.5)
 router.post('/coupon', requireActiveTenant, validate(cartCouponSchema), CartController.applyCoupon);

@@ -40,6 +40,8 @@ import {
   storeUpdateSchema,
   planChangeSchema,
   invoiceListQuerySchema,
+  invoicePaySchema,
+  emailVerifyConfirmSchema,
   applicationReviewSchema,
   vendorAdminUpdateSchema,
   planCreateSchema,
@@ -70,8 +72,9 @@ router.get('/stores/:slug', MarketplaceController.storefront);
 router.post('/tenants/register', validate(storeRegisterSchema), MarketplaceController.registerTenant);
 
 // ---------------- vendor ----------------
-// apply is open to ANY authenticated user (you aren't a vendor yet)
+// apply + status are open to ANY authenticated user (you aren't a vendor yet)
 router.post('/vendor/apply', authenticate, validate(vendorApplySchema), MarketplaceController.applyVendor);
+router.get('/vendor/my-application', authenticate, MarketplaceController.myApplication);
 
 // the rest of /vendor requires the vendor role (granted ONLY by an approved application)
 router.use('/vendor', authenticate, authorize(USER_ROLES.VENDOR));
@@ -90,8 +93,10 @@ router.get('/store/subscription', MarketplaceController.mySubscription);
 router.patch('/store/plan', validate(planChangeSchema), MarketplaceController.changeMyPlan);
 router.get('/store/invoices', validate(invoiceListQuerySchema, 'query'), MarketplaceController.myInvoices);
 router.get('/store/invoices/:id', MarketplaceController.myInvoiceDetail);
-router.get('/store/invoices/:id/pdf', MarketplaceController.myInvoicePdf);
-router.get('/store/invoices/:id/html', MarketplaceController.myInvoiceHtml);
+router.post('/store/invoices/:id/pay', validate(invoicePaySchema), MarketplaceController.payMyInvoice);
+router.get('/store/usage', MarketplaceController.myUsage);
+router.post('/store/verify-email/request', MarketplaceController.requestEmailVerify);
+router.post('/store/verify-email/confirm', validate(emailVerifyConfirmSchema), MarketplaceController.confirmEmailVerify);
 router.get('/store/vendors', MarketplaceController.storeVendors);
 router.post('/store/vendors/:vendorId/sync', MarketplaceController.syncVendorProducts);
 

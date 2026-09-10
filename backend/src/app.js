@@ -9,7 +9,7 @@ import opsRoutes from './routes/ops.routes.js';
 import healthRoutes from './routes/health.routes.js';
 import PaymentController from './controllers/payment.controller.js';
 import PayoutController from './controllers/payout.controller.js';
-import SitemapController from './controllers/sitemap.controller.js';
+import MarketplaceController from './controllers/marketplace.controller.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -151,6 +151,11 @@ export function createApp() {
   // the HMAC is over the exact bytes, so this MUST be mounted before
   // express.json() consumes the stream.
   app.post('/api/v1/payouts/webhook', express.raw({ type: '*/*' }), PayoutController.webhook);
+
+  // Billing webhooks (subscription invoice capture). Same raw-bytes rule —
+  // HMAC is over exact bytes, mounted before express.json() consumes them.
+  app.post('/api/v1/marketplace/billing/webhook/razorpay', express.raw({ type: '*/*' }), MarketplaceController.webhookBillingRazorpay);
+  app.post('/api/v1/marketplace/billing/webhook/mock', express.raw({ type: '*/*' }), MarketplaceController.webhookBillingMock);
 
   // keep the verified-custom-domain set warm (throttled internally)
   app.use((req, _res, nextMw) => { refreshLiveHosts(); nextMw(); });

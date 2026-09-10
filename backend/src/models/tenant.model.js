@@ -60,10 +60,18 @@ const TenantSchema = new Schema(
     timezone: { type: String, default: 'Asia/Kolkata' },
 
     // ---- Plan / subscription ----
+    // Free-form reference to `plans.code` (deliberately NOT an enum): plans are
+    // operator-created data, so constraining this field meant every new plan
+    // needed a code deploy — and the stale enum ('enterprise') already rejected
+    // the real 'business' plan at registration. Unknown codes fail SAFE to the
+    // free-plan limits in entitlement.service.js.
     plan: {
       type: String,
-      enum: Object.values(TENANT_PLAN),
       default: TENANT_PLAN.FREE,
+      trim: true,
+      lowercase: true,
+      maxlength: 40,
+      index: true,
     },
     planExpiresAt: { type: Date, default: null },
     features: {

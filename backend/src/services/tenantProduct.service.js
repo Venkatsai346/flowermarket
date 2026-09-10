@@ -66,6 +66,15 @@ class TenantProductService {
       this.assertPriceValid(payload.price);
     }
 
+    // Plan entitlement: the products cap counts ACTIVE listings. Drafts are
+    // always creatable (merchants stage freely); the cap bites on activation.
+    // Bulk inherits this per row — excess rows land in `skipped`, never 402
+    // the whole batch (see bulkCreateListings partial-success contract).
+    if ((payload.status || TENANT_LISTING_STATUS.DRAFT) === TENANT_LISTING_STATUS.ACTIVE) {
+      const { default: entitlementService } = await import('./entitlement.service.js');
+      await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
+    }
+
     const listing = await TenantProduct.create({
       tenantId,
       productMasterId: master.id,
@@ -289,6 +298,12 @@ class TenantProductService {
   async updateStatus({ tenantId, listingId, status, expectedVersion, actorId = null, req = null }) {
     const listing = await this.getListing({ tenantId, listingId });
     this.assertTransition(listing, status);
+
+    // Activating past the plan's products cap is a 402 (deactivations always pass).
+    if (status === TENANT_LISTING_STATUS.ACTIVE && listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
+      const { default: entitlementService } = await import('./entitlement.service.js');
+      await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
+    }
 
     await updateWithVersion(listing, expectedVersion, { status, lastStatusChangedAt: new Date() });
 

@@ -7,12 +7,17 @@
  *  - Store owner (tenant admin): branding, plan, invoices, vendor sync
  *  - Platform operator (super_admin): applications, vendors, plans, billing,
  *    cross-tenant analytics, nightly
+ *  - Billing webhooks (raw-body, signature-verified, no login): async gateway
+ *    capture confirmations
  */
 
+import crypto from 'node:crypto';
 import storeService from '../services/store.service.js';
 import planService from '../services/plan.service.js';
 import vendorService from '../services/vendor.service.js';
 import billingService from '../services/billing.service.js';
+import billingProvider from '../services/billingProvider.service.js';
+import entitlementService from '../services/entitlement.service.js';
 import marketplaceAnalyticsService from '../services/marketplaceAnalytics.service.js';
 import maintenanceService from '../services/maintenance.service.js';
 import { renderInvoicePdf } from '../utils/invoicePdf.js';
@@ -20,6 +25,7 @@ import { renderInvoiceHtml } from '../utils/invoiceHtml.js';
 import Invoice from '../models/invoice.model.js';
 import { AppError, notFound } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { badRequest, unauthorized } from '../utils/ApiError.js';
 import { success, created } from '../utils/ApiResponse.js';
 
 class MarketplaceController {
@@ -47,6 +53,12 @@ class MarketplaceController {
   applyVendor = asyncHandler(async (req, res) => {
     const result = await vendorService.apply({ userId: req.auth.userId, payload: req.body, req });
     res.status(result.reSubmitted ? 200 : 201).json(success(result, { message: result.reSubmitted ? 'Application updated' : 'Application submitted — pending platform review' }));
+  });
+
+  /** Any logged-in user's own application + vendor state (nulls when none). */
+  myApplication = asyncHandler(async (req, res) => {
+    const data = await vendorService.myApplication({ userId: req.auth.userId });
+    res.status(200).json(success(data, { message: 'Application status fetched' }));
   });
 
   vendorMe = asyncHandler(async (req, res) => {
@@ -116,98 +128,46 @@ class MarketplaceController {
   });
 
   /**
-   * GET /marketplace/store/invoices/:id/pdf — download invoice as PDF.
-   * Generates a PDF from the stored invoice data. Caches the PDF on the
-   * invoice document so subsequent downloads don't regenerate.
+   * Owner self-pay: start a payment for one of this store's open invoices.
+   * Sync providers (mock) confirm immediately; async providers (Razorpay)
+   * return a pending gateway order for the browser checkout — the invoice is
+   * confirmed later by the billing webhook, never by the browser.
    */
-  myInvoicePdf = asyncHandler(async (req, res) => {
-    const invoice = await Invoice.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!invoice) throw notFound('Invoice not found');
-
-    const doc = {
-      docType: 'invoice',
-      number: invoice.number,
-      orderNumber: `INV-${invoice.number}`,
-      supplyDate: invoice.period?.from || invoice.createdAt,
-      supplier: { tradeName: 'Bloomy Marketplace', name: 'Bloomy Marketplace' },
-      recipient: { name: `Tenant ${invoice.tenantId}` },
-      lines: (invoice.lineItems || []).map((li) => ({
-        description: li.label,
-        hsnCode: '--',
-        qty: li.qty || 1,
-        uom: 'NOS',
-        unitPricePaise: li.unitAmount || 0,
-        taxableValuePaise: li.amount || 0,
-        rateBps: 0,
-        cgstPaise: 0,
-        sgstPaise: 0,
-        igstPaise: 0,
-        cessPaise: 0,
-        lineTotalPaise: li.amount || 0,
-      })),
-      totals: {
-        taxableValuePaise: invoice.subtotal || 0,
-        cgstPaise: 0,
-        sgstPaise: 0,
-        igstPaise: 0,
-        cessPaise: 0,
-        roundOffPaise: 0,
-        grandTotalPaise: invoice.total || 0,
-      },
-      amountInWords: '',
-    };
-
-    const pdf = renderInvoicePdf(doc);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${invoice.number}.pdf"`);
-    res.setHeader('Content-Length', pdf.length);
-    res.send(pdf);
+  payMyInvoice = asyncHandler(async (req, res) => {
+    // NOTE: no client provider choice — which money rail runs is a server
+    // config decision; letting the browser pick "mock" would mark invoices
+    // paid without money moving.
+    const result = await billingService.payInvoice({
+      invoiceId: req.params.id, tenantId: req.tenantId,
+      actorId: req.auth.userId, actorType: 'admin', req,
+    });
+    res.status(200).json(success(result, {
+      message: result.status === 'paid'
+        ? 'Invoice paid'
+        : result.status === 'already_paid'
+          ? 'Invoice already paid'
+          : 'Gateway order created — complete payment to confirm',
+    }));
   });
 
-  /**
-   * GET /marketplace/store/invoices/:id/html — view invoice as printable HTML.
-   */
-  myInvoiceHtml = asyncHandler(async (req, res) => {
-    const invoice = await Invoice.findOne({ _id: req.params.id, tenantId: req.tenantId });
-    if (!invoice) throw notFound('Invoice not found');
+  /** Plan limits + live usage for this store (drives the billing-page meters). */
+  myUsage = asyncHandler(async (req, res) => {
+    const usage = await entitlementService.usage({ tenantId: req.tenantId });
+    res.status(200).json(success(usage, { message: 'Plan usage fetched' }));
+  });
 
-    const doc = {
-      docType: 'invoice',
-      number: invoice.number,
-      orderNumber: `INV-${invoice.number}`,
-      supplyDate: invoice.period?.from || invoice.createdAt,
-      supplier: { tradeName: 'Bloomy Marketplace', name: 'Bloomy Marketplace' },
-      recipient: { name: `Tenant ${invoice.tenantId}` },
-      lines: (invoice.lineItems || []).map((li) => ({
-        description: li.label,
-        hsnCode: '--',
-        qty: li.qty || 1,
-        uom: 'NOS',
-        unitPricePaise: li.unitAmount || 0,
-        taxableValuePaise: li.amount || 0,
-        rateBps: 0,
-        cgstPaise: 0,
-        sgstPaise: 0,
-        igstPaise: 0,
-        cessPaise: 0,
-        lineTotalPaise: li.amount || 0,
-      })),
-      totals: {
-        taxableValuePaise: invoice.subtotal || 0,
-        cgstPaise: 0,
-        sgstPaise: 0,
-        igstPaise: 0,
-        cessPaise: 0,
-        roundOffPaise: 0,
-        grandTotalPaise: invoice.total || 0,
-      },
-      totalsRupees: { grandTotal: (invoice.total || 0) / 100 },
-      amountInWords: '',
-    };
+  requestEmailVerify = asyncHandler(async (req, res) => {
+    const result = await storeService.requestEmailVerify({ tenantId: req.tenantId, actorId: req.auth.userId });
+    res.status(200).json(success(result, {
+      message: result.alreadyVerified ? 'Owner email already verified' : 'Verification code sent to the owner email',
+    }));
+  });
 
-    const html = renderInvoiceHtml(doc);
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(html);
+  confirmEmailVerify = asyncHandler(async (req, res) => {
+    const result = await storeService.confirmEmailVerify({
+      tenantId: req.tenantId, code: req.body.code, actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Owner email verified' }));
   });
 
   storeVendors = asyncHandler(async (req, res) => {
@@ -436,6 +396,59 @@ class MarketplaceController {
   marketplaceNightly = asyncHandler(async (req, res) => {
     const result = await maintenanceService.marketplaceNightly({ actorId: req.auth.userId, actorType: 'admin', req, opts: req.body || {} });
     res.status(200).json(success(result, { message: 'Marketplace nightly pass complete (idempotent)' }));
+  });
+
+  // ================= billing webhooks (raw body, no login) =================
+  /**
+   * Razorpay billing webhook. Verify-before-parse, then route through the
+   * single billing event pipeline (idempotent + amount-checked). Always acks
+   * 200 except on a bad signature — 4xx on operator-fixable states would make
+   * the gateway storm retries.
+   */
+  webhookBillingRazorpay = asyncHandler(async (req, res) => {
+    const rawBody = req.body; // Buffer (express.raw)
+    const signature = req.headers['x-razorpay-signature'] || '';
+    const verified = billingProvider.verifyWebhook('razorpay', rawBody, signature);
+    if (!verified.ok) {
+      throw unauthorized('Webhook signature verification failed', 'WEBHOOK_SIGNATURE_INVALID');
+    }
+    const event = JSON.parse(rawBody.toString('utf8') || '{}');
+    const { event: eventName } = event;
+    const entity = event.payload?.payment?.entity || event.payload?.order?.entity || {};
+    const result = await billingService.applyBillingWebhook({
+      provider: 'razorpay',
+      eventType: eventName,
+      gatewayOrderId: entity.order_id || entity.receipt || null,
+      gatewayPaymentId: entity.id || null,
+      amountPaise: entity.amount ?? null,
+    });
+    return res.status(200).json(success({ result: result.status }, { message: `Webhook ${result.status}` }));
+  });
+
+  /**
+   * Mock billing webhook — exercises the async capture path without real
+   * gateway keys: POST { gatewayOrderId, amountPaise? } with an HMAC signature.
+   */
+  webhookBillingMock = asyncHandler(async (req, res) => {
+    const rawBody = req.body;
+    const signature = req.headers['x-mock-signature'] || '';
+    const verified = billingProvider.verifyWebhook('mock', rawBody, signature);
+    if (!verified.ok) {
+      throw unauthorized('Webhook signature verification failed', 'WEBHOOK_SIGNATURE_INVALID');
+    }
+    const parsed = JSON.parse(rawBody.toString('utf8') || '{}');
+    const { gatewayOrderId, gatewayPaymentId, amountPaise } = parsed;
+    if (!gatewayOrderId) {
+      throw badRequest('gatewayOrderId is required', 'GATEWAY_ORDER_REQUIRED');
+    }
+    const result = await billingService.applyBillingWebhook({
+      provider: 'mock',
+      eventType: 'payment.captured',
+      gatewayOrderId,
+      gatewayPaymentId: gatewayPaymentId || `mock_${crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 16)}`,
+      amountPaise: amountPaise ?? null,
+    });
+    return res.status(200).json(success({ result: result.status }, { message: `Mock webhook ${result.status}` }));
   });
 }
 

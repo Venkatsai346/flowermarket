@@ -2,6 +2,7 @@ import User from '../models/user.model.js';
 import AddressService from './address.service.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
 import { USER_STATUS, USER_ROLES } from '../constants/enums.js';
+import { assertRoleChangeAllowed, assertStatusChangeAllowed, isStaffRole } from '../utils/roleGuards.js';
 import { isValidObjectId } from 'mongoose';
 
 /**
@@ -93,19 +94,50 @@ class UserService {
     return user;
   }
 
-  async setRole({ tenantId, userId, role }) {
+  /**
+   * Hardened role change — the ONLY setter both role routes use.
+   *
+   * `actor` ({id, role}) is REQUIRED: roleGuards fail closed without it, so a
+   * future caller that forgets the actor gets FORBIDDEN, not a silent bypass.
+   * Promotions INTO a staff role additionally consume plan staff seats
+   * (entitlements); demotions and lateral moves never check limits.
+   */
+  async setRole({ tenantId, userId, role, actor = null, req = null }) {
     if (!Object.values(USER_ROLES).includes(role)) throw badRequest('Invalid role', 'INVALID_ROLE');
     const user = await this.getUserById({ tenantId, userId });
+    assertRoleChangeAllowed({ actor, target: user, newRole: role });
+    if (role !== user.role && isStaffRole(role) && !isStaffRole(user.role)) {
+      const { default: entitlementService } = await import('./entitlement.service.js');
+      await entitlementService.assertWithinLimit({ tenantId, resource: 'staff' });
+    }
+    const before = user.role;
     user.role = role;
+    if (role === USER_ROLES.RIDER && !user.rider?.availability) {
+      user.rider = { ...(user.rider || {}), availability: 'available' };
+    }
     await user.save();
+    const { default: auditService } = await import('./audit.service.js');
+    await auditService.record({
+      action: 'role_change', entityType: 'user', entityId: user._id,
+      tenantId, actorId: actor?.id || null, actorType: 'admin',
+      before: { role: before }, after: { role }, req,
+    }).catch(() => {});
     return user;
   }
 
-  async setStatus({ tenantId, userId, status }) {
+  async setStatus({ tenantId, userId, status, actor = null, req = null }) {
     if (!Object.values(USER_STATUS).includes(status)) throw badRequest('Invalid status', 'INVALID_STATUS');
     const user = await this.getUserById({ tenantId, userId });
+    assertStatusChangeAllowed({ actor, target: user });
+    const before = user.status;
     user.status = status;
     await user.save();
+    const { default: auditService } = await import('./audit.service.js');
+    await auditService.record({
+      action: 'status_change', entityType: 'user', entityId: user._id,
+      tenantId, actorId: actor?.id || null, actorType: 'admin',
+      before: { status: before }, after: { status }, req,
+    }).catch(() => {});
     return user;
   }
 }

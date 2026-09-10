@@ -24,6 +24,10 @@ export class AdminSlotsService {
   async createHub({ tenantId, payload, actorId = null, req = null }) {
     const existing = await Hub.findOne({ tenantId, code: payload.code });
     if (existing) throw conflict('Hub code already exists for this tenant', 'DUPLICATE_HUB_CODE');
+    // Plan entitlement: hubs beyond the cap are a 402 with an upgrade hint.
+    // (Onboarding's seeded hub bypasses this — it writes Hub directly.)
+    const { default: entitlementService } = await import('./entitlement.service.js');
+    await entitlementService.assertWithinLimit({ tenantId, resource: 'hubs' });
     const hub = await Hub.create({
       tenantId,
       name: payload.name,

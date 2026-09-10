@@ -67,11 +67,14 @@ class StoreService {
     await TenantAuthConfig.create({ tenantId: tenant.id });
 
     // ---- owner admin (NEVER super_admin; token tenant = this new store) ----
+    // Identity is UNVERIFIED at registration: claiming an email must never mark
+    // it verified (typo/hijack risk). The owner proves it via the verify-email
+    // OTP flow, and publishing is blocked until they do (onboarding item).
     const { default: AuthService } = await import('./auth.service.js');
     const ownerUser = await User.create({
       tenantId: tenant.id,
-      email: owner.email ? { address: String(owner.email).toLowerCase(), verified: true, verifiedAt: new Date() } : { verified: false },
-      phone: owner.phone ? { countryCode: '+91', number: owner.phone, verified: true } : { verified: false },
+      email: owner.email ? { address: String(owner.email).toLowerCase(), verified: false } : { verified: false },
+      phone: owner.phone ? { countryCode: '+91', number: owner.phone, verified: false } : { verified: false },
       role: USER_ROLES.ADMIN,
       status: 'active',
       profile: { firstName: owner.firstName || 'Store', lastName: owner.lastName || 'Owner' },
@@ -297,7 +300,15 @@ class StoreService {
       }
     }
 
-    const tenant = await Tenant.findById(tenantId).select('store gstin').lean();
+    const tenant = await Tenant.findById(tenantId).select('store gstin ownerUserId').lean();
+    // Legacy grandfather: a tenant with no recorded owner has nobody to verify
+    // as — every store created by registerStore DOES have one, so only
+    // pre-verification rows take this path, and they stay published.
+    let ownerEmailVerified = true;
+    if (tenant?.ownerUserId) {
+      const owner = await User.findById(tenant.ownerUserId).select('email.verified').lean();
+      ownerEmailVerified = Boolean(owner?.email?.verified);
+    }
 
     return {
       activeHubs,
@@ -310,6 +321,7 @@ class StoreService {
       categoriesMissingTaxPolicy,
       tagline: tenant?.store?.tagline || null,
       gstin: gstinRow?.gstin || tenant?.gstin || null,
+      ownerEmailVerified,
     };
   }
 
@@ -503,6 +515,56 @@ class StoreService {
       after: { vendorId: vendor._id, created, skipped, failed }, req,
     }).catch(() => {});
     return { vendorId: vendor._id, vendorName: vendor.businessName, mastersScanned: masters.length, created, skipped, failed };
+  }
+
+  // ---------------- owner email verification ----------------
+  /**
+   * Send the owner an email-verification OTP (purpose `email_verify`).
+   * Any store admin may trigger it; the code always goes to the OWNER's email
+   * (tenant.ownerUserId), since that address anchors recovery + invoicing.
+   */
+  async requestEmailVerify({ tenantId, actorId = null }) {
+    const tenant = await Tenant.findById(tenantId).select('ownerUserId').lean();
+    if (!tenant?.ownerUserId) throw notFound('Store owner not found', 'OWNER_NOT_FOUND');
+    const owner = await User.findOne({ _id: tenant.ownerUserId, tenantId }).select('email').lean();
+    const target = owner?.email?.address;
+    if (!target) throw badRequest('Owner has no email address to verify', 'NO_OWNER_EMAIL');
+    if (owner.email.verified) return { alreadyVerified: true, email: target };
+    const { default: OtpService } = await import('./otp.service.js');
+    const { default: TenantService } = await import('./tenant.service.js');
+    const authCfg = await TenantService.getAuthConfig(tenantId);
+    await OtpService.request({
+      tenantId,
+      purpose: 'email_verify',
+      channel: 'email',
+      target,
+      userId: owner._id,
+      length: authCfg.otpLength || config.otp.length,
+      ttlSeconds: authCfg.otpTtlSeconds || config.otp.ttlSeconds,
+      maxAttempts: authCfg.otpMaxAttempts || config.otp.maxAttempts,
+    });
+    return { alreadyVerified: false, email: target };
+  }
+
+  /** Confirm the code → owner email verified (unblocks publishing). */
+  async confirmEmailVerify({ tenantId, code, actorId = null, req = null }) {
+    const tenant = await Tenant.findById(tenantId).select('ownerUserId').lean();
+    if (!tenant?.ownerUserId) throw notFound('Store owner not found', 'OWNER_NOT_FOUND');
+    const owner = await User.findOne({ _id: tenant.ownerUserId, tenantId });
+    const target = owner?.email?.address;
+    if (!target) throw badRequest('Owner has no email address to verify', 'NO_OWNER_EMAIL');
+    if (owner.email.verified) return { alreadyVerified: true, email: target };
+    const { default: OtpService } = await import('./otp.service.js');
+    await OtpService.verify({ tenantId, purpose: 'email_verify', channel: 'email', target, code });
+    owner.email.verified = true;
+    owner.email.verifiedAt = new Date();
+    await owner.save();
+    await auditService.record({
+      action: 'verify', entityType: 'user', entityId: owner._id,
+      tenantId, actorId, actorType: 'admin',
+      after: { email: target, verified: true }, req,
+    }).catch(() => {});
+    return { alreadyVerified: false, email: target };
   }
 
   /** Vendors whose products are in this store. */

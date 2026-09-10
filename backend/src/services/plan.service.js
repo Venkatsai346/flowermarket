@@ -9,10 +9,11 @@
 import Plan from '../models/plan.model.js';
 import { serializeList } from '../utils/serialize.js';
 import { notFound, conflict } from '../utils/ApiError.js';
+import { TENANT_PLAN } from '../constants/enums.js';
 
 export const DEFAULT_PLANS = [
   {
-    code: 'free',
+    code: TENANT_PLAN.FREE,
     name: 'Free',
     description: 'For getting started — one hub, 50 products, standard delivery.',
     priceMonthly: 0,
@@ -22,7 +23,7 @@ export const DEFAULT_PLANS = [
     sortOrder: 10,
   },
   {
-    code: 'pro',
+    code: TENANT_PLAN.PRO,
     name: 'Pro',
     description: 'Growing stores — 3 hubs, unlimited products, marketplace ready.',
     priceMonthly: 999,
@@ -32,7 +33,7 @@ export const DEFAULT_PLANS = [
     sortOrder: 20,
   },
   {
-    code: 'business',
+    code: TENANT_PLAN.BUSINESS,
     name: 'Business',
     description: 'Full marketplace play — 10 hubs, vendor routing, priority support.',
     priceMonthly: 2999,
@@ -94,6 +95,22 @@ class PlanService {
   async update({ planId, payload }) {
     const plan = await Plan.findById(planId);
     if (!plan) throw notFound('Plan not found', 'PLAN_NOT_FOUND');
+    // Referential guard: deactivating a plan with live subscribers would strand
+    // stores on a dead code (entitlements fail-safe to free limits, but the
+    // operator should move subscribers FIRST — deliberately, not by accident).
+    if (payload.isActive === false && plan.isActive !== false) {
+      const { default: Subscription } = await import('../models/subscription.model.js');
+      const live = await Subscription.countDocuments({
+        planCode: plan.code, status: { $in: ['trial', 'active', 'past_due'] },
+      });
+      if (live > 0) {
+        throw conflict(
+          `Plan "${plan.code}" still has ${live} live subscription(s) — move them first`,
+          'PLAN_HAS_SUBSCRIBERS',
+          { planCode: plan.code, liveSubscriptions: live }
+        );
+      }
+    }
     const allowed = ['name', 'description', 'priceMonthly', 'commissionRateBps', 'features', 'trialDays', 'isActive', 'sortOrder'];
     for (const k of allowed) {
       if (k in payload) plan[k] = payload[k];

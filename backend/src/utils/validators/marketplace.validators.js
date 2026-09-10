@@ -118,6 +118,14 @@ export const invoiceListQuerySchema = Joi.object({
   status: Joi.string().valid('draft', 'open', 'paid', 'overdue', 'void').allow('').optional(),
 });
 
+// Owner pay takes no body: the money rail is a server config decision, never a
+// client choice (a browser-picked "mock" would mark invoices paid for free).
+export const invoicePaySchema = Joi.object({});
+
+export const emailVerifyConfirmSchema = Joi.object({
+  code: Joi.string().trim().min(4).max(10).required(),
+});
+
 // ---------------- platform admin ----------------
 export const applicationReviewSchema = Joi.object({
   decision: Joi.string().valid('approve', 'reject').required(),

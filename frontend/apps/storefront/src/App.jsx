@@ -24,9 +24,7 @@ const OrderDetail = lazy(() => import('./pages/OrderDetail.jsx'));
 const Returns = lazy(() => import('./pages/Returns.jsx'));
 const Addresses = lazy(() => import('./pages/Addresses.jsx'));
 const Wallet = lazy(() => import('./pages/Wallet.jsx'));
-const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
-const Browse = lazy(() => import('./pages/Browse.jsx'));
-const About = lazy(() => import('./pages/About.jsx'));
+const Sell = lazy(() => import('./pages/Sell.jsx'));
 
 /**
  * The storefront shell.
@@ -201,6 +199,7 @@ export default function App() {
             <Route path="/browse" element={<Browse />} />
             <Route path="/about" element={<About />} />
             <Route path="/addresses" element={<Addresses />} />
+            <Route path="/sell" element={<Sell />} />
             <Route path="*" element={<Home />} />
           </Routes>
           </Suspense>

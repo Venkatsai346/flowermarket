@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
@@ -13,7 +14,8 @@ import { toast } from '../../lib/toasts.js';
 import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import Card from '../../components/ui/Card.jsx';
-import { cn } from '../../lib/utils.js';
+import { Input } from '../../components/ui/Field.jsx';
+import { cn, errMsg } from '../../lib/utils.js';
 
 /**
  * OnboardingChecklist — what stands between a registered store and a selling one.
@@ -34,7 +36,11 @@ import { cn } from '../../lib/utils.js';
  * slot window passes or a hub is deactivated.
  */
 
-/** Where each gap gets fixed. Ids are the API contract from ONBOARDING_ITEM. */
+/**
+ * Where each gap gets fixed. Ids are the API contract from ONBOARDING_ITEM.
+ * `ownerEmail` has no route — it is verified inline (code by email) because
+ * leaving the dashboard to prove an address would be absurd.
+ */
 const FIX_ROUTE = {
   hub: { to: '/hubs', label: 'Add a hub' },
   pincodes: { to: '/hubs', label: 'Manage pincodes' },
@@ -48,7 +54,73 @@ const FIX_ROUTE = {
 
 const STATE_TONE = { done: 'emerald', todo: 'rose', warn: 'amber' };
 
-function ItemRow({ item }) {
+/** Inline code-entry for the ownerEmail item: request → type the code → done. */
+function VerifyEmailAction({ onVerified }) {
+  const [sent, setSent] = useState(false);
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const { busy, run } = useAction();
+
+  const request = async () => {
+    try {
+      const r = await run(() => api.marketplace.requestEmailVerify());
+      if (r.data?.alreadyVerified) {
+        toast.success('Owner email already verified');
+        onVerified();
+        return;
+      }
+      setEmail(r.data?.email || '');
+      setSent(true);
+      toast.success(`Code sent${r.data?.email ? ` to ${r.data.email}` : ''}`);
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  const confirm = async () => {
+    if (!code.trim()) return;
+    try {
+      await run(() => api.marketplace.confirmEmailVerify(code.trim()));
+      toast.success('Owner email verified');
+      onVerified();
+    } catch (e) {
+      toast.error(errMsg(e));
+    }
+  };
+
+  if (!sent) {
+    return (
+      <Button variant="secondary" size="sm" loading={busy} onClick={request}>
+        Send code
+      </Button>
+    );
+  }
+  return (
+    <div className="flex shrink-0 items-center gap-2">
+      <Input
+        className="w-28! text-center font-mono tracking-widest"
+        placeholder="••••••"
+        value={code}
+        maxLength={10}
+        onChange={(e) => setCode(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') confirm(); }}
+        aria-label={`Verification code sent to ${email}`}
+      />
+      <Button size="sm" loading={busy} disabled={!code.trim()} onClick={confirm}>
+        Verify
+      </Button>
+      <button
+        type="button"
+        className="text-xs font-semibold text-slate-400 hover:text-slate-600"
+        onClick={request}
+      >
+        Resend
+      </button>
+    </div>
+  );
+}
+
+function ItemRow({ item, onVerified }) {
   const fix = FIX_ROUTE[item.id];
   const Icon = item.state === 'done' ? CheckCircle2 : item.state === 'warn' ? AlertTriangle : Circle;
 
@@ -86,6 +158,9 @@ function ItemRow({ item }) {
           <p className="mt-1 text-xs leading-relaxed text-slate-500">{item.hint}</p>
         )}
       </div>
+      {item.state !== 'done' && item.id === 'ownerEmail' && (
+        <VerifyEmailAction onVerified={onVerified} />
+      )}
       {item.state !== 'done' && fix && (
         <Link
           to={fix.to}
@@ -211,7 +286,11 @@ export default function OnboardingChecklist({ onChanged } = {}) {
 
       <ul className="divide-y divide-slate-100">
         {items.map((item) => (
-          <ItemRow key={item.id} item={item} />
+          <ItemRow
+            key={item.id}
+            item={item}
+            onVerified={async () => { await status.refetch(); onChanged?.(); }}
+          />
         ))}
       </ul>
     </Card>

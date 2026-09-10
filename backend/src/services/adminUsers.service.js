@@ -79,6 +79,11 @@ export class AdminUsersService {
     if (!STAFF_ROLES.includes(role)) {
       throw badRequest('Role must be admin, picker or rider', 'INVALID_STAFF_ROLE');
     }
+    // Plan staff seats: the owner counts as one; creation beyond the cap is a
+    // 402 with an upgrade hint (checked before the identity lookup so seat
+    // exhaustion never leaks whether an identity exists).
+    const { default: entitlementService } = await import('./entitlement.service.js');
+    await entitlementService.assertWithinLimit({ tenantId, resource: 'staff' });
     const identity = payload.email?.trim() || payload.phone?.number?.trim();
     if (!identity) throw badRequest('Email or phone is required', 'IDENTITY_REQUIRED');
 
@@ -111,40 +116,20 @@ export class AdminUsersService {
     return user;
   }
 
-  async setStatus({ tenantId, userId, status, actorId = null, req = null }) {
-    if (!Object.values(USER_STATUS).includes(status)) throw badRequest('Invalid status', 'INVALID_STATUS');
-    if (String(userId) === String(actorId)) throw badRequest('You cannot change your own status', 'SELF_MODIFICATION');
-    const user = await User.findOne({ _id: userId, tenantId });
-    if (!user) throw notFound('User not found', 'USER_NOT_FOUND');
-    if (user.role === SUPER) throw forbidden('Super admins cannot be modified', 'FORBIDDEN');
-    const before = user.status;
-    user.status = status;
-    await user.save();
-    await auditService.record({
-      action: 'status_change', entityType: 'user', entityId: user._id,
-      tenantId, actorId, actorType: 'admin', before: { status: before }, after: { status }, req,
-    });
-    return user;
+  /**
+   * Single-policy delegation: both role routes (`/users/:id/role` and
+   * `/admin/users/:id/role`) enforce utils/roleGuards.js via UserService.
+   * Two implementations once drifted here and opened a privilege-escalation
+   * hole (any store owner could self-promote to super_admin) — never again.
+   */
+  async setStatus({ tenantId, userId, status, actorId = null, actorRole = null, req = null }) {
+    const { default: userService } = await import('./user.service.js');
+    return userService.setStatus({ tenantId, userId, status, actor: { id: actorId, role: actorRole }, req });
   }
 
-  async setRole({ tenantId, userId, role, actorId = null, req = null }) {
-    if (!Object.values(USER_ROLES).includes(role)) throw badRequest('Invalid role', 'INVALID_ROLE');
-    if (String(userId) === String(actorId)) throw badRequest('You cannot change your own role', 'SELF_MODIFICATION');
-    if (role === SUPER) throw forbidden('Cannot grant super_admin', 'FORBIDDEN');
-    const user = await User.findOne({ _id: userId, tenantId });
-    if (!user) throw notFound('User not found', 'USER_NOT_FOUND');
-    if (user.role === SUPER) throw forbidden('Super admins cannot be modified', 'FORBIDDEN');
-    const before = user.role;
-    user.role = role;
-    if (role === USER_ROLES.RIDER && !user.rider?.availability) {
-      user.rider = { ...(user.rider || {}), availability: 'available' };
-    }
-    await user.save();
-    await auditService.record({
-      action: 'role_change', entityType: 'user', entityId: user._id,
-      tenantId, actorId, actorType: 'admin', before: { role: before }, after: { role }, req,
-    });
-    return user;
+  async setRole({ tenantId, userId, role, actorId = null, actorRole = null, req = null }) {
+    const { default: userService } = await import('./user.service.js');
+    return userService.setRole({ tenantId, userId, role, actor: { id: actorId, role: actorRole }, req });
   }
 
   /** Per-rider ops stats over a window. */

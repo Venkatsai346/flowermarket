@@ -45,22 +45,26 @@ class UserController {
     res.status(200).json(success(user, { message: 'User fetched' }));
   });
 
-  /** PATCH /users/:id/role — assign role (vendor/admin). */
+  /** PATCH /users/:id/role — assign role. Hardened: no self-change, never super_admin/vendor. */
   setRole = asyncHandler(async (req, res) => {
     const user = await UserService.setRole({
       tenantId: req.tenantId,
       userId: req.params.id,
       role: req.body.role,
+      actor: { id: req.auth.userId, role: req.auth.role },
+      req,
     });
     res.status(200).json(success(user, { message: 'Role updated' }));
   });
 
-  /** PATCH /users/:id/status — block / activate. */
+  /** PATCH /users/:id/status — block / activate. Hardened: no self-change, never super_admin. */
   setStatus = asyncHandler(async (req, res) => {
     const user = await UserService.setStatus({
       tenantId: req.tenantId,
       userId: req.params.id,
       status: req.body.status,
+      actor: { id: req.auth.userId, role: req.auth.role },
+      req,
     });
     res.status(200).json(success(user, { message: 'Status updated' }));
   });

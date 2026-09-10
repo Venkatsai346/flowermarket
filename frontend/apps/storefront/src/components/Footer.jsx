@@ -28,6 +28,9 @@ export default function Footer() {
           </p>
         )}
         <p className="text-[11px] text-slate-400">{t(language, 'pricesInclusive')}</p>
+        <Link to="/sell" className="mt-1 text-xs font-semibold text-slate-500 hover:text-slate-800">
+          Sell on {store?.name || 'this marketplace'} →
+        </Link>
         {(social.instagram || social.facebook || social.website) && (
           <p className="mt-2 flex gap-3 text-xs text-slate-500">
             {social.instagram && <a href={social.instagram} className="hover:text-slate-800">Instagram</a>}

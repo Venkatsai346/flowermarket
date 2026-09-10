@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, Receipt, RefreshCw, Sparkles } from 'lucide-react';
+import { CreditCard, Eye, Receipt, RefreshCw, Sparkles } from 'lucide-react';
 import {
   bpsToPct,
   daysUntil,
@@ -37,12 +37,26 @@ const INVOICE_META = {
   void: { label: 'Void', tone: 'slate' },
 };
 
-function InvoiceDetail({ invoiceId, onClose }) {
-  const { data, loading } = useApi(() => api.marketplace.myInvoiceDetail(invoiceId), [invoiceId]);
+function InvoiceDetail({ invoiceId, onClose, onPay, paying }) {
+  const { data, loading, refetch } = useApi(() => api.marketplace.myInvoiceDetail(invoiceId), [invoiceId]);
   if (loading) return <Modal open onClose={onClose} title="Invoice"><LoadingBlock compact /></Modal>;
   const inv = data || {};
+  const payable = inv.status === 'open' || inv.status === 'overdue';
   return (
-    <Modal open onClose={onClose} title={`Invoice ${inv.number || ''}`} subtitle={periodLabel(inv.period)}>
+    <Modal
+      open
+      onClose={onClose}
+      title={`Invoice ${inv.number || ''}`}
+      subtitle={periodLabel(inv.period)}
+      footer={payable ? (
+        <>
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+          <Button icon={CreditCard} loading={paying} onClick={() => onPay(inv, refetch)}>
+            Pay {inr(inv.total)}
+          </Button>
+        </>
+      ) : undefined}
+    >
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <Badge tone={INVOICE_META[inv.status]?.tone || 'slate'}>{INVOICE_META[inv.status]?.label || inv.status}</Badge>
@@ -89,8 +103,10 @@ export default function StoreBillingPage() {
   const store = useApi(() => api.marketplace.myStore(), []);
   const invoices = useApi(() => api.marketplace.myInvoices({ page, limit }), [page]);
   const plans = useApi(() => api.marketplace.plans(), []);
+  const usage = useApi(() => api.marketplace.myUsage(), []);
 
   const { busy: changing, run: runChange } = useAction();
+  const { busy: paying, run: runPay } = useAction();
   const [planCode, setPlanCode] = useState('');
 
   const sub = store.data?.subscription || null;
@@ -111,13 +127,62 @@ export default function StoreBillingPage() {
 
   const canMarketplace = (p) => Boolean(p.features?.marketplaceEnabled);
 
+  /**
+   * Owner self-pay. Sync gateways confirm immediately; async gateways return a
+   * pending order — the browser completes it via gateway checkout, and the
+   * server-side webhook confirms the invoice (the browser can never mark paid).
+   */
+  const payInvoice = async (inv, refetchDetail) => {
+    try {
+      const r = await runPay(() => api.marketplace.payMyInvoice(inv.id));
+      const result = r.data || {};
+      if (result.status === 'paid' || result.status === 'already_paid') {
+        toast.success(result.status === 'paid' ? `Invoice ${result.invoice?.number || ''} paid` : 'Invoice already paid');
+        invoices.refetch();
+        store.refetch();
+        refetchDetail?.();
+        return;
+      }
+      // pending: hand off to the gateway checkout when its SDK is present
+      const gw = result.gateway || {};
+      if (gw.provider === 'razorpay' && gw.gatewayOrderId && typeof window !== 'undefined' && window.Razorpay) {
+        const rzp = new window.Razorpay({
+          key: gw.keyId,
+          order_id: gw.gatewayOrderId,
+          amount: gw.amountPaise,
+          currency: gw.currency || 'INR',
+          name: 'FlowerMarket subscription',
+          description: `Invoice ${result.invoice?.number || ''}`,
+          handler: () => {
+            toast.success('Payment submitted — confirming…');
+            setTimeout(() => { invoices.refetch(); store.refetch(); refetchDetail?.(); }, 4000);
+          },
+          modal: { ondismiss: () => { invoices.refetch(); refetchDetail?.(); } },
+        });
+        rzp.open();
+      } else {
+        toast.success(`Payment started (gateway order ${gw.gatewayOrderId || 'pending'}) — the invoice confirms automatically once the gateway reports back.`);
+        invoices.refetch();
+        refetchDetail?.();
+      }
+    } catch (err) {
+      toast.error(errMsg(err));
+    }
+  };
+
+  const meters = [
+    { key: 'hubs', label: 'Delivery hubs' },
+    { key: 'products', label: 'Active listings' },
+    { key: 'staff', label: 'Staff seats' },
+  ];
+
   return (
     <div>
       <PageHeader
         title="Billing"
         description="Your subscription, plan changes and invoices."
         actions={
-          <Button variant="secondary" icon={RefreshCw} onClick={() => { store.refetch(); invoices.refetch(); }}>
+          <Button variant="secondary" icon={RefreshCw} onClick={() => { store.refetch(); invoices.refetch(); usage.refetch(); }}>
             Refresh
           </Button>
         }
@@ -157,6 +222,41 @@ export default function StoreBillingPage() {
           <Button className="mt-5 w-full" icon={Sparkles} onClick={() => { setPlanCode(sub?.planCode || ''); setPlansOpen(true); }}>
             {sub ? 'Change plan' : 'Choose a plan'}
           </Button>
+
+          {/* plan usage meters */}
+          <div className="mt-5 border-t border-slate-100 pt-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Plan usage</p>
+            {usage.loading && !usage.data ? (
+              <div className="mt-3"><LoadingBlock compact /></div>
+            ) : (
+              <div className="mt-3 space-y-3">
+                {meters.map((m) => {
+                  const u = usage.data?.[m.key] || { used: 0, limit: 0 };
+                  const unlimited = u.limit == null;
+                  const pct = unlimited || u.limit <= 0 ? 0 : Math.min(100, Math.round((u.used / u.limit) * 100));
+                  const full = !unlimited && u.limit > 0 && u.used >= u.limit;
+                  return (
+                    <div key={m.key}>
+                      <div className="flex items-baseline justify-between text-xs">
+                        <span className="font-medium text-slate-600">{m.label}</span>
+                        <span className={cn('font-semibold', full ? 'text-rose-600' : 'text-slate-800')}>
+                          {u.used}{unlimited ? ' / ∞' : ` / ${u.limit}`}
+                        </span>
+                      </div>
+                      {!unlimited && (
+                        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div className={cn('h-full rounded-full', full ? 'bg-rose-500' : 'bg-emerald-500')} style={{ width: `${pct}%` }} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {usage.data?.fallback && (
+                  <p className="text-[11px] text-amber-600">Plan code “{usage.data.planCode}” is unknown — showing free-plan limits.</p>
+                )}
+              </div>
+            )}
+          </div>
         </Card>
 
         {/* invoices */}
@@ -225,7 +325,7 @@ export default function StoreBillingPage() {
         )}
       </Modal>
 
-      {selected && <InvoiceDetail invoiceId={selected} onClose={() => setSelected(null)} />}
+      {selected && <InvoiceDetail invoiceId={selected} onClose={() => setSelected(null)} onPay={payInvoice} paying={paying} />}
     </div>
   );
 }
