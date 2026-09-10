@@ -33,13 +33,19 @@ export const createAuthStore = (options) => {
         /** last tenant id seen — prefilled on the login form for store-owner re-login */
         lastTenantId: null,
 
-        setSession: ({ user, tokens }) =>
-          set({
-            user: user || null,
+        setSession: ({ user, owner, tokens }) => {
+          // Login returns {user, tokens}; store registration returns
+          // {owner, tokens} — and the owner IS the logged-in user. A userless
+          // session bricks every tenant header and role gate (the console
+          // spins "loading" forever), so both auth shapes seat the session.
+          const sessionUser = user || owner || null;
+          return set({
+            user: sessionUser,
             accessToken: tokens?.accessToken || null,
             refreshToken: tokens?.refreshToken || null,
-            lastTenantId: user?.tenantId || get().lastTenantId,
-          }),
+            lastTenantId: sessionUser?.tenantId || get().lastTenantId,
+          });
+        },
 
         updateUser: (user) => set({ user }),
 

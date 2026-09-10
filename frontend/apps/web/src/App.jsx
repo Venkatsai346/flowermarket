@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { useAuthStore } from '@flower-market/shared';
 import { api } from './api.js';
@@ -47,16 +47,27 @@ function RequireAuth() {
   const location = useLocation();
   const accessToken = useAuthStore((s) => s.accessToken);
   const isAuth = useAuthStore((s) => s.isAuthenticated());
+  // Loop breaker: a 401 here means the SESSION is unusable, not merely
+  // expired (the client already retried past a refresh). Without this, each
+  // rotation mints a new accessToken, the effect refires, /users/me 401s
+  // again — a refresh storm behind a spinner that never resolves.
+  const hydrationDead = useRef(false);
 
   useEffect(() => {
-    if (!accessToken) return undefined;
+    if (!accessToken || hydrationDead.current) return undefined;
     let alive = true;
     api.auth
       .me()
       .then((r) => {
         if (alive) useAuthStore.getState().updateUser(r.data);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (!alive) return;
+        if (e?.status === 401) {
+          hydrationDead.current = true;
+          useAuthStore.getState().clear();
+        }
+      });
     return () => { alive = false; };
   }, [accessToken]);
 

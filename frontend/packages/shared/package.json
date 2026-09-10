@@ -7,7 +7,7 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "test": "node --test src/api/*.test.js src/utils/*.test.js src/brand/*.test.js"
+    "test": "node --test src/api/*.test.js src/auth/*.test.js src/utils/*.test.js src/brand/*.test.js"
   },
   "dependencies": {
     "zustand": "^5.0.3"
