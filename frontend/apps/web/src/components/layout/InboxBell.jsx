@@ -18,6 +18,7 @@ function timeAgo(iso) {
  */
 export default function InboxBell() {
   const isAuth = useAuthStore((s) => s.isAuthenticated?.() ?? Boolean(s.accessToken));
+  const sessionId = useAuthStore((s) => s.sessionId);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState([]);
   const [unread, setUnread] = useState(0);
@@ -34,11 +35,16 @@ export default function InboxBell() {
   };
 
   useEffect(() => {
+    // The previous identity's notifications must never survive a session
+    // change (logout → login, or an account switch) even if this component
+    // stays mounted — clear first, then load the current identity's inbox.
+    setItems([]);
+    setUnread(0);
     load();
     if (!isAuth) return undefined;
     const t = setInterval(load, 60_000);
     return () => clearInterval(t);
-  }, [isAuth]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isAuth, sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!open) return undefined;
