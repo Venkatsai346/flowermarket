@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ChevronLeft, Droplets, Leaf, Scissors, Snowflake, Sun, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
@@ -11,7 +11,7 @@ import ProductCard from '../components/ProductCard.jsx';
 import FloralImage from '../components/FloralImage.jsx';
 import ArrivalPromise from '../components/ArrivalPromise.jsx';
 import { Button, Empty, Money, ProductSkeleton, Stepper } from '../components/ui.jsx';
-import { errMsg } from '../lib/utils.js';
+import { cn, errMsg } from '../lib/utils.js';
 
 const CARE_DEFAULT = 'Trim stems on an angle, change the water daily, keep out of direct sun and away from fruit. A cool room stretches vase life.';
 const OCCASIONS = ['birthday', 'anniversary', 'sorry', 'pooja', 'wedding', 'love', 'congratulations'];
@@ -52,11 +52,13 @@ function JsonLd({ product, listing, store }) {
 
 export default function Product() {
   const { slug } = useParams();
+  const [params, setParams] = useSearchParams();
   const store = useShop((s) => s.store);
   const language = useShop((s) => s.language);
   const nextSlot = useShop((s) => s.nextSlot);
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
   const [active, setActive] = useState(0);
+  const [selListingId, setSelListingId] = useState(null);
 
   const { data, loading, error } = useApi(
     () => api.shop.productBySlug(slug),
@@ -66,18 +68,50 @@ export default function Product() {
   const product = data?.product || {};
   const listing = data?.listing || {};
   const related = data?.related || [];
+  const family = data?.variants || [];
+  const multi = family.length > 1;
+
+  // Seed the selection once the family arrives: ?variantId= wins when it names
+  // a live member, otherwise the server's default. Switching afterwards is
+  // instant — every family row already carries price, stock and gallery.
+  useEffect(() => {
+    if (!data) return;
+    const want = params.get('variantId');
+    const fromUrl = want ? family.find((v) => String(v.variantId) === want) : null;
+    setSelListingId(fromUrl?.listingId || listing.listingId || listing.id || null);
+    setActive(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  useEffect(() => { setSelListingId(null); }, [slug]);
+
+  const selected = family.find((v) => String(v.listingId) === String(selListingId)) || null;
+  const effListing = selected
+    ? { listingId: selected.listingId, price: selected.price, stockQty: selected.stockQty, variantId: selected.variantId }
+    : listing;
+
+  const pick = (v) => {
+    setSelListingId(v.listingId);
+    setActive(0);
+    const next = new URLSearchParams(params);
+    if (v.variantId) next.set('variantId', v.variantId);
+    else next.delete('variantId');
+    setParams(next, { replace: true });
+  };
+
   const listingView = useMemo(() => ({
-    listingId: listing.listingId || listing.id,
-    price: listing.price,
-    stockQty: listing.stockQty,
+    listingId: effListing.listingId || effListing.id,
+    price: effListing.price,
+    stockQty: effListing.stockQty,
     product: {
       ...product,
-      imageUrl: product.imageUrl || product.images?.[0]?.url,
+      imageUrl: selected?.imageUrl || product.imageUrl || product.images?.[0]?.url,
     },
-  }), [listing, product]);
+  }), [effListing, selected, product]);
 
-  const images = product.images?.length
-    ? product.images
+  const gallery = selected?.images?.length ? selected.images : (product.images || []);
+  const images = gallery.length
+    ? gallery
     : product.imageUrl
       ? [{ url: product.imageUrl, altText: product.title, isPrimary: true }]
       : [];
@@ -86,9 +120,9 @@ export default function Product() {
   const colour = attrs.color || attrs.colour;
   const stems = attrs.stem_count || attrs.stems;
   const care = attrs.care_notes?.value || (product.isPerishable ? CARE_DEFAULT : null);
-  const price = listing.price?.sellingPrice ?? 0;
-  const mrp = listing.price?.mrp ?? null;
-  const stock = listing.stockQty ?? 0;
+  const price = effListing.price?.sellingPrice ?? 0;
+  const mrp = effListing.price?.mrp ?? null;
+  const stock = effListing.stockQty ?? 0;
   const out = stock <= 0;
   const qty = qtyByListing.get(String(listingView.listingId))?.qty || 0;
   const tags = (product.tags || []).map((x) => String(x).toLowerCase());
@@ -136,7 +170,7 @@ export default function Product() {
 
   return (
     <>
-      <JsonLd product={product} listing={listing} store={store} />
+      <JsonLd product={product} listing={effListing} store={store} />
       <div className="wrap py-6">
         <Link to="/" className="mb-5 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800">
           <ChevronLeft className="h-4 w-4" /> {t(language, 'backToShop')}
@@ -190,6 +224,43 @@ export default function Product() {
                     {o}
                   </Link>
                 ))}
+              </div>
+            )}
+
+            {multi && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  {(selected?.variantType || 'Option').replace(/_/g, ' ')}
+                  {selected?.label && <span className="ml-1.5 normal-case text-slate-700">— {selected.label}</span>}
+                </p>
+                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Choose a variant">
+                  {family.map((v) => {
+                    const isSel = String(v.listingId) === String(selListingId);
+                    const vOut = (v.stockQty ?? 0) <= 0;
+                    return (
+                      <button
+                        key={v.listingId}
+                        type="button"
+                        role="radio"
+                        aria-checked={isSel}
+                        onClick={() => pick(v)}
+                        className={cn(
+                          'flex min-w-[7rem] flex-col items-start gap-0.5 rounded-2xl border px-3.5 py-2.5 text-left transition',
+                          isSel
+                            ? 'border-transparent bg-slate-900 text-white shadow-lift'
+                            : 'border-slate-200 bg-white text-slate-800 hover:border-slate-400',
+                          vOut && !isSel && 'opacity-60'
+                        )}
+                      >
+                        <span className="text-[13px] font-semibold leading-tight">{v.label || v.value || 'Standard'}</span>
+                        <span className={cn('text-xs', isSel ? 'text-white/80' : 'text-slate-500')}>
+                          <Money value={v.price?.sellingPrice ?? 0} />
+                          {vOut && <span className="ml-1.5 font-medium">· sold out</span>}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -288,10 +359,10 @@ export default function Product() {
                 <ProductCard
                   key={l.listingId}
                   listing={l}
-                  qty={qtyByListing.get(String(l.listingId))?.qty || 0}
-                  busy={busyId === l.listingId}
+                  qtyByListing={qtyByListing}
+                  busyId={busyId}
                   onAdd={add}
-                  onQty={(q) => changeQty(l, q)}
+                  onQty={changeQty}
                 />
               ))}
             </div>
@@ -306,10 +377,10 @@ export default function Product() {
                 <ProductCard
                   key={l.listingId}
                   listing={l}
-                  qty={qtyByListing.get(String(l.listingId))?.qty || 0}
-                  busy={busyId === l.listingId}
+                  qtyByListing={qtyByListing}
+                  busyId={busyId}
                   onAdd={add}
-                  onQty={(q) => changeQty(l, q)}
+                  onQty={changeQty}
                 />
               ))}
             </div>

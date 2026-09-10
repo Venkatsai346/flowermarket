@@ -233,9 +233,16 @@ class SearchService {
     const d = r.doc;
     return {
       listingId: String(d.listingId),
+      variantId: d.variantId ? String(d.variantId) : null,
       price: { sellingPrice: fromPaise(d.pricePaise), mrp: d.mrpPaise ? fromPaise(d.mrpPaise) : null, currency: 'INR' },
       stockQty: d.stockQty,
       availability: { status: d.inStock ? 'in_stock' : 'out_of_stock' },
+      variant: d.variantId ? {
+        id: String(d.variantId),
+        label: d.variantLabel || null,
+        value: d.variantLabel || null,
+        variantType: d.variantType || null,
+      } : null,
       product: {
         id: String(d.masterId),
         title: d.title,

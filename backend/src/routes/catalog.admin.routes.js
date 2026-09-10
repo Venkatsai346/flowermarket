@@ -16,12 +16,17 @@ import {
   masterUpdateSchema,
   masterQuerySchema,
   variantCreateSchema,
+  variantUpdateSchema,
   imageCreateSchema,
+  variantImageCreateSchema,
+  imagePrimarySchema,
   attributeSetSchema,
   changeRequestReviewSchema,
   changeRequestQuerySchema,
   auditQuerySchema,
   idParamSchema,
+  masterVariantParamSchema,
+  masterImageParamSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -53,7 +58,12 @@ router.patch('/masters/:id', validate(idParamSchema, 'params'), validate(masterU
 router.post('/masters/:id/review', validate(idParamSchema, 'params'), CatalogAdminController.reviewMaster);
 router.post('/masters/:id/deprecate', validate(idParamSchema, 'params'), CatalogAdminController.deprecateMaster);
 router.post('/masters/:id/variants', validate(idParamSchema, 'params'), validate(variantCreateSchema), CatalogAdminController.addVariant);
+router.patch('/masters/:id/variants/:variantId', validate(masterVariantParamSchema, 'params'), validate(variantUpdateSchema), CatalogAdminController.updateVariant);
+router.delete('/masters/:id/variants/:variantId', validate(masterVariantParamSchema, 'params'), CatalogAdminController.removeVariant);
+router.post('/masters/:id/variants/:variantId/images', validate(masterVariantParamSchema, 'params'), validate(variantImageCreateSchema), CatalogAdminController.addVariantImage);
 router.post('/masters/:id/images', validate(idParamSchema, 'params'), validate(imageCreateSchema), CatalogAdminController.addImage);
+router.delete('/masters/:id/images/:imageId', validate(masterImageParamSchema, 'params'), CatalogAdminController.removeImage);
+router.patch('/masters/:id/images/:imageId/primary', validate(masterImageParamSchema, 'params'), validate(imagePrimarySchema), CatalogAdminController.setImagePrimary);
 router.put('/masters/:id/attributes', validate(idParamSchema, 'params'), validate(attributeSetSchema), CatalogAdminController.setAttributes);
 
 // ---- review queue ----

@@ -302,18 +302,60 @@ class BillingService {
     return { markedOverdue: overdue.length };
   }
 
-  /** Mock payment via provider → paid. Idempotent (already-paid returns as-is). */
-  async payInvoice({ invoiceId, actorId = null, req = null }) {
-    const invoice = await Invoice.findById(invoiceId);
+  /**
+   * Pay an invoice via the billing provider. Idempotent (already-paid returns
+   * as-is). Two flows share this method:
+   *   - mock/console provider: synchronous — the invoice is marked paid here.
+   *   - razorpay: ASYNC — charge() creates a gateway order and returns
+   *     {pending:true}; the invoice stays open with paymentRef=<gateway order>
+   *     until the webhook confirms (confirmInvoicePayment()).
+   * `tenantId`, when given (store-owner path), scopes the lookup so an owner
+   * can only ever pay their OWN store's invoices.
+   */
+  async payInvoice({ invoiceId, tenantId = null, actorId = null, actorType = null, req = null }) {
+    const q = { _id: invoiceId };
+    if (tenantId) q.tenantId = tenantId;
+    const invoice = await Invoice.findOne(q);
     if (!invoice) throw notFound('Invoice not found', 'INVOICE_NOT_FOUND');
-    if (invoice.status === INVOICE_STATUS.PAID) return { invoice, alreadyPaid: true };
+    if (invoice.status === INVOICE_STATUS.PAID) return { invoice, alreadyPaid: true, pending: false };
     if (invoice.status === INVOICE_STATUS.VOID) throw conflict('Void invoice cannot be paid', 'INVOICE_VOID');
 
     const result = await billingProvider.charge({ invoiceId: invoice._id, amount: invoice.total, currency: 'INR' });
+    if (result.pending) {
+      // Async gateway: park the gateway order id and wait for the webhook.
+      // Re-pay while pending returns the SAME order (provider-keyed idempotency).
+      if (!invoice.paymentRef) {
+        invoice.paymentRef = result.gatewayOrderId;
+        await invoice.save();
+      }
+      return {
+        invoice, alreadyPaid: false, pending: true,
+        gateway: {
+          provider: result.provider || 'razorpay',
+          gatewayOrderId: invoice.paymentRef,
+          keyId: result.keyId || null,
+          amountPaise: result.amountPaise,
+          currency: result.currency || 'INR',
+        },
+      };
+    }
     if (!result.success) throw badRequest('Payment failed', 'PAYMENT_FAILED');
+    await this.confirmInvoicePayment({ invoice, paymentRef: result.ref || `pay_${generateOpaqueToken(8)}` });
+    await auditService.record({
+      action: 'invoice_paid', entityType: 'invoice', entityId: invoice._id,
+      tenantId: invoice.tenantId, actorId, actorType: actorType || (actorId ? 'admin' : 'system'),
+      after: { number: invoice.number, total: invoice.total, paymentRef: invoice.paymentRef }, req,
+    }).catch(() => {});
+    return { invoice, alreadyPaid: false, pending: false };
+  }
+
+  /** Mark an invoice paid (shared by sync charge + async webhook confirm). */
+  async confirmInvoicePayment({ invoice, paymentRef }) {
+    if (invoice.status === INVOICE_STATUS.PAID) return invoice;
+    if (invoice.status === INVOICE_STATUS.VOID) throw conflict('Void invoice cannot be paid', 'INVOICE_VOID');
     invoice.status = INVOICE_STATUS.PAID;
     invoice.paidAt = new Date();
-    invoice.paymentRef = result.ref || `pay_${generateOpaqueToken(8)}`;
+    invoice.paymentRef = paymentRef || invoice.paymentRef;
     await invoice.save();
 
     // paying clears past_due
@@ -321,13 +363,7 @@ class BillingService {
       { tenantId: invoice.tenantId, status: SUBSCRIPTION_STATUS.PAST_DUE },
       { $set: { status: SUBSCRIPTION_STATUS.ACTIVE, changedAt: new Date() } }
     );
-
-    await auditService.record({
-      action: 'invoice_paid', entityType: 'invoice', entityId: invoice._id,
-      tenantId: invoice.tenantId, actorId, actorType: actorId ? 'admin' : 'system',
-      after: { number: invoice.number, total: invoice.total, paymentRef: invoice.paymentRef }, req,
-    }).catch(() => {});
-    return { invoice, alreadyPaid: false };
+    return invoice;
   }
 
   async voidInvoice({ invoiceId, actorId = null, req = null }) {
@@ -342,6 +378,42 @@ class BillingService {
       after: { number: invoice.number }, req,
     }).catch(() => {});
     return invoice;
+  }
+
+  /**
+   * Async-gateway event pipeline (Razorpay `payment.captured` / `order.paid`,
+   * or the mock webhook). Mirrors paymentService.applyWebhookEvent discipline:
+   *   - idempotent: an already-paid invoice acks as already_paid (gateway
+   *     retries are normal traffic, not errors);
+   *   - amount-checked: captured paise must equal the invoice total, else the
+   *     event is recorded as mismatched and the invoice stays open for an
+   *     operator (never auto-confirm a wrong amount);
+   *   - failures ack without state change (the owner retries from the console).
+   */
+  async applyBillingWebhook({ provider, eventType, gatewayOrderId, gatewayPaymentId = null, amountPaise = null }) {
+    const invoice = gatewayOrderId
+      ? await Invoice.findOne({ paymentRef: gatewayOrderId })
+      : null;
+    if (!invoice) return { status: 'ignored', reason: 'no invoice parked for gateway order' };
+    if (invoice.status === INVOICE_STATUS.PAID) return { status: 'already_paid', invoiceId: invoice._id };
+    if (invoice.status === INVOICE_STATUS.VOID) return { status: 'ignored', reason: 'invoice void' };
+
+    const captured = String(eventType || '').includes('captured') || String(eventType || '').includes('paid');
+    if (!captured) return { status: 'ignored', reason: `event ${eventType} carries no capture` };
+
+    const expectedPaise = Math.round(Number(invoice.total || 0) * 100);
+    if (amountPaise != null && Number(amountPaise) !== expectedPaise) {
+      console.warn(`[billing:${provider}] amount mismatch on invoice ${invoice.number}: captured ${amountPaise}paise, expected ${expectedPaise}paise — held for operator`);
+      return { status: 'mismatched', invoiceId: invoice._id, expectedPaise, amountPaise: Number(amountPaise) };
+    }
+
+    await this.confirmInvoicePayment({ invoice, paymentRef: gatewayPaymentId || gatewayOrderId });
+    await auditService.record({
+      action: 'invoice_paid', entityType: 'invoice', entityId: invoice._id,
+      tenantId: invoice.tenantId, actorId: null, actorType: 'system',
+      after: { number: invoice.number, total: invoice.total, paymentRef: invoice.paymentRef, via: `webhook:${provider}` },
+    }).catch(() => {});
+    return { status: 'confirmed', invoiceId: invoice._id };
   }
 
   /** MRR: sum of live subscriptions' snapshot price. */

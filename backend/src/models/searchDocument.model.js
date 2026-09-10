@@ -26,6 +26,10 @@ const SearchDocumentSchema = new Schema(
     listingId: { type: Types.ObjectId, ref: 'TenantProduct', required: true },
     masterId: { type: Types.ObjectId, ref: 'ProductMaster', required: true },
     vendorId: { type: Types.ObjectId, ref: 'Vendor', default: null, index: true },
+    // ---- variant (null for master-level listings) ----
+    variantId: { type: Types.ObjectId, ref: 'ProductVariant', default: null, index: true },
+    variantLabel: { type: String, default: null, maxlength: 160 },
+    variantType: { type: String, default: null, maxlength: 40 },
 
     // ---- text ----
     title: { type: String, required: true, maxlength: 200 },

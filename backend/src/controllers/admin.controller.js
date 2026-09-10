@@ -165,12 +165,12 @@ class AdminController {
   });
 
   setUserStatus = asyncHandler(async (req, res) => {
-    const user = await adminUsersService.setStatus({ tenantId: req.tenantId, userId: req.params.id, status: req.body.status, actorId: req.auth.userId, req });
+    const user = await adminUsersService.setStatus({ tenantId: req.tenantId, userId: req.params.id, status: req.body.status, actorId: req.auth.userId, actorRole: req.auth.role, req });
     res.status(200).json(success(user, { message: `User status → ${req.body.status}` }));
   });
 
   setUserRole = asyncHandler(async (req, res) => {
-    const user = await adminUsersService.setRole({ tenantId: req.tenantId, userId: req.params.id, role: req.body.role, actorId: req.auth.userId, req });
+    const user = await adminUsersService.setRole({ tenantId: req.tenantId, userId: req.params.id, role: req.body.role, actorId: req.auth.userId, actorRole: req.auth.role, req });
     res.status(200).json(success(user, { message: `User role → ${req.body.role}` }));
   });
 

@@ -13,6 +13,7 @@ import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import { pick } from '../utils/catalog/diff.js';
 import { titleSimilarity, DUPLICATE_TITLE_THRESHOLD } from '../utils/catalog/similarity.js';
+import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { AppError } from '../utils/ApiError.js';
 import {
@@ -262,7 +263,25 @@ class ProductMasterService {
         isDefault: v.isDefault || false,
         status: ENTITY_STATUS.ACTIVE,
       }));
-      await ProductVariant.insertMany(docs);
+      const created = await ProductVariant.insertMany(docs);
+      // Nested per-variant galleries: variants[i].images[] -> scoped rows.
+      const nested = [];
+      payload.variants.forEach((v, i) => {
+        (v.images || []).forEach((img, j) => {
+          nested.push({
+            productMasterId: master.id,
+            variantId: created[i]._id,
+            url: img.url,
+            altText: img.altText || null,
+            isPrimary: img.isPrimary || false,
+            sortOrder: img.sortOrder ?? j,
+            uploadedBy: master.createdBy,
+            status: ENTITY_STATUS.ACTIVE,
+          });
+        });
+      });
+      if (nested.length) await ProductImage.insertMany(nested);
+      await this.ensureSingleVariantPrimary(master.id, created);
       const defaultIdx = payload.variants.findIndex((v) => v.isDefault);
       if (defaultIdx >= 0) {
         const def = await ProductVariant.findOne({ productMasterId: master.id, value: payload.variants[defaultIdx].value });
@@ -342,13 +361,52 @@ class ProductMasterService {
 
   // ---------------- sub-resources (variants / images / attributes) ----------------
 
+  /**
+   * Keep at most one `isPrimary` per variant gallery after a bulk insert.
+   * The FIRST flagged image wins; extras are demoted (never deleted).
+   */
+  async ensureSingleVariantPrimary(masterId, variants) {
+    const ids = (variants || []).map((v) => v._id).filter(Boolean);
+    if (!ids.length) return;
+    // One query across every gallery; the FIRST flagged image per variant wins.
+    const primaries = await ProductImage.find({
+      productMasterId: masterId, variantId: { $in: ids }, isPrimary: true, status: ENTITY_STATUS.ACTIVE,
+    }).sort({ sortOrder: 1 }).select('_id variantId').lean();
+    const seen = new Set();
+    const demote = [];
+    for (const p of primaries) {
+      const k = String(p.variantId);
+      if (seen.has(k)) demote.push(p._id);
+      else seen.add(k);
+    }
+    if (demote.length) {
+      await ProductImage.updateMany({ _id: { $in: demote } }, { $set: { isPrimary: false } });
+    }
+  }
+
   async addVariant({ id, payload, expectedVersion, actorId = null, viaRequest = false, req = null }) {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
     if (!viaRequest) await updateWithVersion(master, expectedVersion, {});
+    const { images: nestedImages, ...variantFields } = payload || {};
     const variant = await ProductVariant.create({
-      productMasterId: master.id, ...payload, status: ENTITY_STATUS.ACTIVE,
+      productMasterId: master.id, ...variantFields, status: ENTITY_STATUS.ACTIVE,
     });
+    if (Array.isArray(nestedImages) && nestedImages.length) {
+      await ProductImage.insertMany(
+        nestedImages.map((img, i) => ({
+          productMasterId: master.id,
+          variantId: variant._id,
+          url: img.url,
+          altText: img.altText || null,
+          isPrimary: img.isPrimary || false,
+          sortOrder: img.sortOrder ?? i,
+          uploadedBy: actorId,
+          status: ENTITY_STATUS.ACTIVE,
+        }))
+      );
+      await this.ensureSingleVariantPrimary(master.id, [variant]);
+    }
     if (payload.isDefault) {
       await ProductVariant.updateMany(
         { productMasterId: master.id, _id: { $ne: variant.id } },
@@ -358,7 +416,42 @@ class ProductMasterService {
     await auditService.record({
       action: 'create', entityType: 'product_variant', entityId: variant.id,
       actorId, actorType: viaRequest ? 'admin' : 'admin',
-      after: { masterId: master.id, value: variant.value }, meta: { via: viaRequest ? 'change_request' : 'direct' }, req,
+      after: { masterId: master.id, value: variant.value, images: nestedImages?.length || 0 },
+      meta: { via: viaRequest ? 'change_request' : 'direct' }, req,
+    });
+    await catalogEventService.publish({
+      eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
+      payload: { id: master.id, variantAdded: variant.id, version: master.version },
+    });
+    return variant;
+  }
+
+  /** Admin edits a variant's display fields (label, order, default, sku, status). */
+  async updateVariant({ masterId, variantId, patch, expectedVersion, actorId = null, req = null }) {
+    const master = await ProductMaster.findById(masterId);
+    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    await updateWithVersion(master, expectedVersion, {});
+    const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId });
+    if (!variant) throw notFound('Variant not found on this master', 'VARIANT_NOT_FOUND');
+    const allowed = ['displayLabel', 'sortOrder', 'isDefault', 'sku', 'status', 'value', 'variantType'];
+    const before = pick(variant.toObject(), Object.keys(patch).filter((k) => allowed.includes(k)));
+    for (const k of allowed) {
+      if (patch[k] !== undefined) variant[k] = patch[k];
+    }
+    await variant.save();
+    if (patch.isDefault === true) {
+      await ProductVariant.updateMany(
+        { productMasterId: master.id, _id: { $ne: variant.id } },
+        { $set: { isDefault: false } }
+      );
+    }
+    await auditService.record({
+      action: 'update', entityType: 'product_variant', entityId: variant.id,
+      actorId, actorType: 'admin', before, after: pick(variant.toObject(), Object.keys(before)), req,
+    });
+    await catalogEventService.publish({
+      eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
+      payload: { id: master.id, variantUpdated: variant.id, version: master.version },
     });
     return variant;
   }
@@ -367,45 +460,96 @@ class ProductMasterService {
     const master = await ProductMaster.findById(masterId);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
     await updateWithVersion(master, expectedVersion, {});
-    const variant = await ProductVariant.findById(variantId);
-    if (!variant) throw notFound('Variant not found', 'VARIANT_NOT_FOUND');
+    const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId });
+    if (!variant) throw notFound('Variant not found on this master', 'VARIANT_NOT_FOUND');
+    // A deleted variant's gallery must not dangle: soft-delete its scoped rows
+    // so fallback resolution never resurrects photos of a dead variant.
+    await ProductImage.updateMany(
+      { productMasterId: masterId, variantId: variant._id, isDeleted: { $ne: true } },
+      { $set: { isDeleted: true, deletedAt: new Date() } }
+    );
     await variant.softDelete();
     await auditService.record({
       action: 'delete', entityType: 'product_variant', entityId: variant.id,
       actorId, actorType: 'admin', before: { value: variant.value }, req,
     });
+    await catalogEventService.publish({
+      eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
+      payload: { id: master.id, variantRemoved: variant.id, version: master.version },
+    });
     return { deleted: true };
   }
 
+  /**
+   * Add an image to the master gallery OR to one variant's gallery.
+   * `payload.variantId` (optional) scopes the row; `isPrimary` clears only
+   * within the same scope, so a variant primary never demotes the master one.
+   */
   async addImage({ id, payload, expectedVersion, actorId = null, viaRequest = false, req = null }) {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
     if (!viaRequest) await updateWithVersion(master, expectedVersion, {});
+    const variantId = payload?.variantId || null;
+    if (variantId) {
+      const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: master.id });
+      if (!variant) throw badRequest('Variant does not belong to this master', 'VARIANT_MISMATCH');
+    }
     const image = await ProductImage.create({
-      productMasterId: master.id, ...payload, status: ENTITY_STATUS.ACTIVE, uploadedBy: actorId,
+      productMasterId: master.id,
+      variantId,
+      url: payload.url,
+      altText: payload.altText || null,
+      isPrimary: payload.isPrimary || false,
+      sortOrder: payload.sortOrder ?? 0,
+      status: ENTITY_STATUS.ACTIVE,
+      uploadedBy: actorId,
     });
     if (payload.isPrimary) {
       await ProductImage.updateMany(
-        { productMasterId: master.id, _id: { $ne: image.id } },
+        { productMasterId: master.id, variantId: variantId || null, _id: { $ne: image.id } },
         { $set: { isPrimary: false } }
       );
     }
     await auditService.record({
       action: 'create', entityType: 'product_image', entityId: image.id,
-      actorId, actorType: 'admin', after: { masterId: master.id, url: image.url }, req,
+      actorId, actorType: 'admin',
+      after: { masterId: master.id, variantId, url: image.url }, req,
+    });
+    await catalogEventService.publish({
+      eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
+      payload: { id: master.id, imageAdded: image.id, variantId, version: master.version },
     });
     return image;
+  }
+
+  /** Convenience: attach an image to one variant's gallery (validates scope). */
+  async addVariantImage({ masterId, variantId, payload, expectedVersion, actorId = null, req = null }) {
+    return this.addImage({
+      id: masterId,
+      payload: { ...payload, variantId },
+      expectedVersion,
+      actorId,
+      req,
+    });
   }
 
   async setImagePrimary({ masterId, imageId, expectedVersion, actorId = null, req = null }) {
     const master = await ProductMaster.findById(masterId);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
     await updateWithVersion(master, expectedVersion, {});
-    const image = await ProductImage.findById(imageId);
-    if (!image) throw notFound('Image not found', 'IMAGE_NOT_FOUND');
-    await ProductImage.updateMany({ productMasterId: masterId }, { $set: { isPrimary: false } });
+    const image = await ProductImage.findOne({ _id: imageId, productMasterId: masterId });
+    if (!image) throw notFound('Image not found on this master', 'IMAGE_NOT_FOUND');
+    // Scoped clear: a variant primary must never demote the master primary.
+    await ProductImage.updateMany(
+      { productMasterId: masterId, variantId: image.variantId || null },
+      { $set: { isPrimary: false } }
+    );
     image.isPrimary = true;
     await image.save();
+    await auditService.record({
+      action: 'update', entityType: 'product_image', entityId: image.id,
+      actorId, actorType: 'admin', after: { isPrimary: true, variantId: image.variantId || null }, req,
+    });
     return image;
   }
 
@@ -413,9 +557,17 @@ class ProductMasterService {
     const master = await ProductMaster.findById(masterId);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
     await updateWithVersion(master, expectedVersion, {});
-    const image = await ProductImage.findById(imageId);
-    if (!image) throw notFound('Image not found', 'IMAGE_NOT_FOUND');
+    const image = await ProductImage.findOne({ _id: imageId, productMasterId: masterId });
+    if (!image) throw notFound('Image not found on this master', 'IMAGE_NOT_FOUND');
     await image.softDelete();
+    await auditService.record({
+      action: 'delete', entityType: 'product_image', entityId: image.id,
+      actorId, actorType: 'admin', before: { url: image.url, variantId: image.variantId || null }, req,
+    });
+    await catalogEventService.publish({
+      eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
+      payload: { id: master.id, imageRemoved: image.id, version: master.version },
+    });
     return { deleted: true };
   }
 
@@ -451,19 +603,25 @@ class ProductMasterService {
 
   // ---------------- reads ----------------
 
-  async getMaster(id) {
+  async getMaster(id, { includeInactiveVariants = false } = {}) {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    const variantFilter = includeInactiveVariants
+      ? { productMasterId: id }
+      : { productMasterId: id, status: ENTITY_STATUS.ACTIVE };
     const [variants, images, attributes, category, brand] = await Promise.all([
-      ProductVariant.find({ productMasterId: id, status: ENTITY_STATUS.ACTIVE }).sort({ sortOrder: 1 }).lean(),
+      ProductVariant.find(variantFilter).sort({ sortOrder: 1 }).lean(),
       ProductImage.find({ productMasterId: id, status: ENTITY_STATUS.ACTIVE }).sort({ isPrimary: -1, sortOrder: 1 }).lean(),
       ProductAttributeValue.find({ productMasterId: id }).sort({ sortOrder: 1 }).lean(),
       master.categoryId ? Category.findById(master.categoryId).lean() : null,
       master.brandId ? Brand.findById(master.brandId).lean() : null,
     ]);
     const doc = master.toObject();
-    doc.variants = variants;
-    doc.images = images;
+    // Variant galleries resolve with master fallback (see variantImages.js), so
+    // every variant carries display-ready photos even before its own shoot.
+    doc.variants = attachVariantGalleries(variants, images);
+    // Master gallery only (variantId == null) — variant rows live on variants.
+    doc.images = sortGallery(groupImagesByVariant(images).master);
     doc.attributes = attributes.map((a) => ({ key: a.attributeKey, value: a.value, unit: a.unit }));
     doc.category = category ? { id: category._id, name: category.name, slug: category.slug } : null;
     doc.brand = brand ? { id: brand._id, name: brand.name, slug: brand.slug } : null;

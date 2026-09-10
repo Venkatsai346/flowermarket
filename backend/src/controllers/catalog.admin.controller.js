@@ -116,12 +116,54 @@ class CatalogAdminController {
     res.status(201).json(created(variant, { message: 'Variant added' }));
   });
 
+  updateVariant = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...patch } = req.body;
+    const variant = await productMasterService.updateVariant({
+      masterId: req.params.id, variantId: req.params.variantId, patch, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(variant, { message: 'Variant updated' }));
+  });
+
+  removeVariant = asyncHandler(async (req, res) => {
+    const result = await productMasterService.removeVariant({
+      masterId: req.params.id, variantId: req.params.variantId,
+      expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Variant removed' }));
+  });
+
+  addVariantImage = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...payload } = req.body;
+    const image = await productMasterService.addVariantImage({
+      masterId: req.params.id, variantId: req.params.variantId, payload, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(201).json(created(image, { message: 'Variant image added' }));
+  });
+
   addImage = asyncHandler(async (req, res) => {
     const { expectedVersion, ...payload } = req.body;
     const image = await productMasterService.addImage({
       id: req.params.id, payload, expectedVersion, actorId: req.auth.userId, req,
     });
     res.status(201).json(created(image, { message: 'Image added' }));
+  });
+
+  removeImage = asyncHandler(async (req, res) => {
+    const result = await productMasterService.removeImage({
+      masterId: req.params.id, imageId: req.params.imageId,
+      expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Image removed' }));
+  });
+
+  setImagePrimary = asyncHandler(async (req, res) => {
+    const image = await productMasterService.setImagePrimary({
+      masterId: req.params.id, imageId: req.params.imageId,
+      expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(image, { message: 'Primary image set' }));
   });
 
   setAttributes = asyncHandler(async (req, res) => {

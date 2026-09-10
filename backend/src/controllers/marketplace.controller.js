@@ -7,15 +7,21 @@
  *  - Store owner (tenant admin): branding, plan, invoices, vendor sync
  *  - Platform operator (super_admin): applications, vendors, plans, billing,
  *    cross-tenant analytics, nightly
+ *  - Billing webhooks (raw-body, signature-verified, no login): async gateway
+ *    capture confirmations
  */
 
+import crypto from 'node:crypto';
 import storeService from '../services/store.service.js';
 import planService from '../services/plan.service.js';
 import vendorService from '../services/vendor.service.js';
 import billingService from '../services/billing.service.js';
+import billingProvider from '../services/billingProvider.service.js';
+import entitlementService from '../services/entitlement.service.js';
 import marketplaceAnalyticsService from '../services/marketplaceAnalytics.service.js';
 import maintenanceService from '../services/maintenance.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
+import { badRequest, unauthorized } from '../utils/ApiError.js';
 import { success, created } from '../utils/ApiResponse.js';
 
 class MarketplaceController {
@@ -43,6 +49,12 @@ class MarketplaceController {
   applyVendor = asyncHandler(async (req, res) => {
     const result = await vendorService.apply({ userId: req.auth.userId, payload: req.body, req });
     res.status(result.reSubmitted ? 200 : 201).json(success(result, { message: result.reSubmitted ? 'Application updated' : 'Application submitted — pending platform review' }));
+  });
+
+  /** Any logged-in user's own application + vendor state (nulls when none). */
+  myApplication = asyncHandler(async (req, res) => {
+    const data = await vendorService.myApplication({ userId: req.auth.userId });
+    res.status(200).json(success(data, { message: 'Application status fetched' }));
   });
 
   vendorMe = asyncHandler(async (req, res) => {
@@ -253,6 +265,59 @@ class MarketplaceController {
   marketplaceNightly = asyncHandler(async (req, res) => {
     const result = await maintenanceService.marketplaceNightly({ actorId: req.auth.userId, actorType: 'admin', req, opts: req.body || {} });
     res.status(200).json(success(result, { message: 'Marketplace nightly pass complete (idempotent)' }));
+  });
+
+  // ================= billing webhooks (raw body, no login) =================
+  /**
+   * Razorpay billing webhook. Verify-before-parse, then route through the
+   * single billing event pipeline (idempotent + amount-checked). Always acks
+   * 200 except on a bad signature — 4xx on operator-fixable states would make
+   * the gateway storm retries.
+   */
+  webhookBillingRazorpay = asyncHandler(async (req, res) => {
+    const rawBody = req.body; // Buffer (express.raw)
+    const signature = req.headers['x-razorpay-signature'] || '';
+    const verified = billingProvider.verifyWebhook('razorpay', rawBody, signature);
+    if (!verified.ok) {
+      throw unauthorized('Webhook signature verification failed', 'WEBHOOK_SIGNATURE_INVALID');
+    }
+    const event = JSON.parse(rawBody.toString('utf8') || '{}');
+    const { event: eventName } = event;
+    const entity = event.payload?.payment?.entity || event.payload?.order?.entity || {};
+    const result = await billingService.applyBillingWebhook({
+      provider: 'razorpay',
+      eventType: eventName,
+      gatewayOrderId: entity.order_id || entity.receipt || null,
+      gatewayPaymentId: entity.id || null,
+      amountPaise: entity.amount ?? null,
+    });
+    return res.status(200).json(success({ result: result.status }, { message: `Webhook ${result.status}` }));
+  });
+
+  /**
+   * Mock billing webhook — exercises the async capture path without real
+   * gateway keys: POST { gatewayOrderId, amountPaise? } with an HMAC signature.
+   */
+  webhookBillingMock = asyncHandler(async (req, res) => {
+    const rawBody = req.body;
+    const signature = req.headers['x-mock-signature'] || '';
+    const verified = billingProvider.verifyWebhook('mock', rawBody, signature);
+    if (!verified.ok) {
+      throw unauthorized('Webhook signature verification failed', 'WEBHOOK_SIGNATURE_INVALID');
+    }
+    const parsed = JSON.parse(rawBody.toString('utf8') || '{}');
+    const { gatewayOrderId, gatewayPaymentId, amountPaise } = parsed;
+    if (!gatewayOrderId) {
+      throw badRequest('gatewayOrderId is required', 'GATEWAY_ORDER_REQUIRED');
+    }
+    const result = await billingService.applyBillingWebhook({
+      provider: 'mock',
+      eventType: 'payment.captured',
+      gatewayOrderId,
+      gatewayPaymentId: gatewayPaymentId || `mock_${crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 16)}`,
+      amountPaise: amountPaise ?? null,
+    });
+    return res.status(200).json(success({ result: result.status }, { message: `Mock webhook ${result.status}` }));
   });
 }
 

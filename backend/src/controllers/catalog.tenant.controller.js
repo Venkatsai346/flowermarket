@@ -29,6 +29,29 @@ class CatalogTenantController {
     res.status(201).json(created(listing, { message: 'Listing created' }));
   });
 
+  bulkCreateListings = asyncHandler(async (req, res) => {
+    const result = await tenantProductService.bulkCreateListings({
+      tenantId: req.tenantId,
+      productMasterId: req.body.productMasterId,
+      selections: req.body.selections || [],
+      selectAll: req.body.selectAll === true,
+      defaults: req.body.defaults || {},
+      onConflict: req.body.onConflict || 'skip',
+      actorId: req.auth.userId,
+      req,
+    });
+    res.status(201).json(created(result, {
+      message: `Listed ${result.created.length} variant(s), skipped ${result.skipped.length}`,
+    }));
+  });
+
+  masterVariants = asyncHandler(async (req, res) => {
+    const result = await tenantProductService.masterListingStatus({
+      tenantId: req.tenantId, masterId: req.params.id,
+    });
+    res.status(200).json(success(result, { message: 'Master variants fetched' }));
+  });
+
   listListings = asyncHandler(async (req, res) => {
     const result = await tenantProductService.listListings({ tenantId: req.tenantId, query: req.query });
     res.status(200).json(success(result.items, { message: 'Listings fetched', meta: result.meta }));

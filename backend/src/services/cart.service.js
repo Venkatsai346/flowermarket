@@ -2,11 +2,14 @@ import Cart from '../models/cart.model.js';
 import CartItem from '../models/cartItem.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
+import ProductVariant from '../models/productVariant.model.js';
+import ProductImage from '../models/productImage.model.js';
 import inventoryService from './inventory.service.js';
 import pricingPolicyService from './pricingPolicy.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import { roundMoney, moneySum, toPaise } from '../utils/money.js';
+import { primaryImageUrlFor, variantDisplayLabel } from '../utils/catalog/variantImages.js';
 import config from '../config/index.js';
 import {
   CART_STATUS,
@@ -186,9 +189,29 @@ class CartService {
     };
     const lineTotal = roundMoney(snapshot.sellingPrice * nextQty);
 
+    // Variant-aware snapshots: the cart line shows the VARIANT's photo and
+    // "Polo T-Shirt — Red" so a 3-variant basket is distinguishable. Fail-open:
+    // a snapshot miss must never block adding to cart.
+    let titleSnapshot = master.title;
+    let imageUrlSnapshot = null;
+    try {
+      const [variant, flat] = await Promise.all([
+        listing.variantId ? ProductVariant.findById(listing.variantId).lean() : null,
+        ProductImage.find({ productMasterId: master._id, status: 'active' })
+          .sort({ isPrimary: -1, sortOrder: 1 }).lean(),
+      ]);
+      if (variant) {
+        const label = variantDisplayLabel(variant);
+        if (label) titleSnapshot = `${master.title} — ${label}`;
+      }
+      imageUrlSnapshot = primaryImageUrlFor(flat, listing.variantId || null);
+    } catch { /* snapshots are best-effort; checkout revalidates everything */ }
+
     if (existing) {
       existing.qty = nextQty;
       existing.lineTotal = lineTotal;
+      existing.titleSnapshot = titleSnapshot;
+      existing.imageUrlSnapshot = imageUrlSnapshot;
       existing.updatedAt = new Date();
       await existing.save();
     } else {
@@ -201,8 +224,8 @@ class CartService {
         qty: nextQty,
         priceSnapshot: snapshot,
         stockSnapshot: { availableQty: available, checkedAt: new Date() },
-        titleSnapshot: master.title,
-        imageUrlSnapshot: null,
+        titleSnapshot,
+        imageUrlSnapshot,
         unitSnapshot: master.defaultSellingUnit || null,
         lineTotal,
         isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),

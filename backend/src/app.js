@@ -9,6 +9,7 @@ import apiRouter from './routes/index.js';
 import opsRoutes from './routes/ops.routes.js';
 import PaymentController from './controllers/payment.controller.js';
 import PayoutController from './controllers/payout.controller.js';
+import MarketplaceController from './controllers/marketplace.controller.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import notificationService from './services/notification.service.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';

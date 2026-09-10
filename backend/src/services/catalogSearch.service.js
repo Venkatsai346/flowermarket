@@ -2,9 +2,11 @@ import mongoose from 'mongoose';
 import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
 import ProductImage from '../models/productImage.model.js';
+import ProductVariant from '../models/productVariant.model.js';
 import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
 import inventoryService from './inventory.service.js';
+import { groupImagesByVariant, resolveImagesForVariant, variantDisplayLabel, pickDefaultVariant } from '../utils/catalog/variantImages.js';
 import { TENANT_LISTING_STATUS, PRODUCT_MASTER_STATUS } from '../constants/enums.js';
 
 /** Aggregation pipelines do NOT auto-cast ids — always normalize to ObjectId. */
@@ -82,7 +84,9 @@ class CatalogSearchService {
       popularity: { 'master.soldCount': -1 },
       relevance: { 'master.searchText': -1 },
     };
-    pipeline.push({ $sort: sortMap[query.sort] || { _id: 1 } });
+    // Secondary master ordering keeps one product's variant listings ADJACENT,
+    // so page-level variant grouping rarely splits a family across pages.
+    pipeline.push({ $sort: { ...(sortMap[query.sort] || { _id: 1 }), 'master._id': 1 } });
 
     const totalAgg = await TenantProduct.aggregate([...pipeline, { $count: 'total' }]);
     const total = totalAgg[0]?.total ?? 0;
@@ -93,12 +97,39 @@ class CatalogSearchService {
     const rows = await TenantProduct.aggregate([
       ...pipeline,
       {
+        $lookup: {
+          from: 'productvariants',
+          localField: 'variantId',
+          foreignField: '_id',
+          as: 'variant',
+        },
+      },
+      { $unwind: { path: '$variant', preserveNullAndEmptyArrays: true } },
+      {
         $project: {
           _id: 0,
           listingId: { $toString: '$_id' },
+          variantId: {
+            $cond: [{ $ifNull: ['$variant._id', false] }, { $toString: '$variant._id' }, null],
+          },
           price: 1,
           stockQty: 1,
           availability: 1,
+          variant: {
+            $cond: [
+              { $ifNull: ['$variant._id', false] },
+              {
+                id: { $toString: '$variant._id' },
+                variantType: '$variant.variantType',
+                value: '$variant.value',
+                displayLabel: '$variant.displayLabel',
+                sku: '$variant.sku',
+                sortOrder: '$variant.sortOrder',
+                isDefault: '$variant.isDefault',
+              },
+              null,
+            ],
+          },
           product: {
             id: { $toString: '$master._id' },
             title: '$master.title',
@@ -133,7 +164,7 @@ class CatalogSearchService {
       }
     }
 
-    await this.attachPrimaryImages(rows);
+    await this.attachVariantAwareImages(rows);
 
     return {
       items: rows,
@@ -187,8 +218,14 @@ class CatalogSearchService {
     }
   }
 
-  async attachPrimaryImages(rows) {
-    const ids = [...new Set(rows.map((r) => r.product?.id).filter(Boolean))];
+  /**
+   * Variant-aware thumbnails for flat rows: each row's variant gallery wins,
+   * else the master gallery (see variantImages.js). Two bounded queries for the
+   * whole page regardless of row count. Rows gain `product.imageUrl`,
+   * `product.imageSource` and `variant.label`.
+   */
+  async attachVariantAwareImages(rows) {
+    const ids = [...new Set((rows || []).map((r) => r.product?.id).filter(Boolean))];
     if (!ids.length) return rows;
     const images = await ProductImage.find({
       productMasterId: { $in: ids },
@@ -198,13 +235,126 @@ class CatalogSearchService {
     const byMaster = new Map();
     for (const img of images) {
       const k = String(img.productMasterId);
-      if (!byMaster.has(k)) byMaster.set(k, img.url);
+      if (!byMaster.has(k)) byMaster.set(k, []);
+      byMaster.get(k).push(img);
     }
     for (const r of rows) {
-      const url = byMaster.get(String(r.product?.id));
-      if (url) r.product.imageUrl = url;
+      const flat = byMaster.get(String(r.product?.id)) || [];
+      const { images: gallery, source } = resolveImagesForVariant(flat, r.variantId || null);
+      if (gallery[0]?.url) {
+        r.product.imageUrl = gallery[0].url;
+        r.product.imageSource = source;
+      }
+      if (r.variant) r.variant.label = variantDisplayLabel(r.variant);
     }
     return rows;
+  }
+
+  /** Backward-compat alias (older callers attach master primaries only). */
+  async attachPrimaryImages(rows) {
+    return this.attachVariantAwareImages(rows);
+  }
+
+  /**
+   * Group a page of flat listing rows into ONE card per master — the PLP
+   * contract behind `?groupBy=master` (storefront dropdown cards).
+   *
+   * Each card carries the FULL listed-variant family (not just the variants on
+   * this page), fetched in one bounded query, so the dropdown is complete and
+   * the price range is honest. Card order follows first appearance, so ranked
+   * order survives grouping. Pagination stays listing-based (see meta.total);
+   * the secondary master sort in `search()` keeps families adjacent so a card
+   * rarely straddles a page boundary.
+   */
+  async groupListingRows({ tenantId, rows }) {
+    const list = rows || [];
+    if (!list.length) return [];
+    const masterIds = [...new Set(list.map((r) => String(r.product?.id)).filter(Boolean))];
+    if (!masterIds.length) return [];
+
+    const [family, variants, images] = await Promise.all([
+      TenantProduct.find({
+        tenantId, productMasterId: { $in: masterIds }, status: TENANT_LISTING_STATUS.ACTIVE,
+      }).select('_id productMasterId variantId price stockQty availability').lean(),
+      ProductVariant.find({ productMasterId: { $in: masterIds }, status: 'active' }).lean(),
+      ProductImage.find({ productMasterId: { $in: masterIds }, status: 'active' }).sort({ isPrimary: -1, sortOrder: 1 }).lean(),
+    ]);
+    const variantById = new Map(variants.map((v) => [String(v._id), v]));
+    const imagesByMaster = new Map();
+    for (const img of images) {
+      const k = String(img.productMasterId);
+      if (!imagesByMaster.has(k)) imagesByMaster.set(k, []);
+      imagesByMaster.get(k).push(img);
+    }
+    const familyByMaster = new Map();
+    for (const l of family) {
+      const k = String(l.productMasterId);
+      if (!familyByMaster.has(k)) familyByMaster.set(k, []);
+      familyByMaster.get(k).push(l);
+    }
+
+    const seen = new Set();
+    const cards = [];
+    for (const row of list) {
+      const mid = String(row.product?.id);
+      if (!mid || seen.has(mid)) continue;
+      seen.add(mid);
+      const members = familyByMaster.get(mid) || [];
+      const flat = imagesByMaster.get(mid) || [];
+      const variantsOut = members
+        .map((l) => {
+          const v = l.variantId ? variantById.get(String(l.variantId)) : null;
+          // A listing whose variant was deactivated still exists — skip it so
+          // the card never offers a dead SKU (the flat row stays for compat).
+          if (l.variantId && !v) return null;
+          const { images: gallery, source } = resolveImagesForVariant(flat, l.variantId || null);
+          return {
+            listingId: String(l._id),
+            variantId: l.variantId ? String(l.variantId) : null,
+            variantType: v?.variantType || null,
+            value: v?.value || null,
+            label: v ? variantDisplayLabel(v) : null,
+            sku: v?.sku || null,
+            sortOrder: v?.sortOrder ?? 0,
+            isDefault: Boolean(v?.isDefault),
+            price: l.price,
+            stockQty: l.stockQty ?? 0,
+            availability: l.availability,
+            imageUrl: gallery[0]?.url || null,
+            imageSource: source,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => (a.sortOrder - b.sortOrder) || String(a.label || '').localeCompare(String(b.label || '')));
+      if (!variantsOut.length) continue;
+
+      const prices = variantsOut.map((v) => Number(v.price?.sellingPrice ?? 0)).filter((n) => Number.isFinite(n));
+      const def = pickDefaultVariant(variantsOut.map((v) => ({
+        variant: { isDefault: v.isDefault, sortOrder: v.sortOrder, value: v.value },
+        stockQty: v.stockQty,
+      })));
+      // pickDefaultVariant returns the wrapper; map back to the variant row.
+      const defRow = def
+        ? variantsOut.find((v) => (v.isDefault === def.variant?.isDefault && v.sortOrder === def.variant?.sortOrder && v.value === def.variant?.value))
+        : null;
+      const fallback = defRow || variantsOut.find((v) => v.isDefault) || variantsOut.find((v) => v.stockQty > 0) || variantsOut[0];
+      const { images: masterGallery } = groupImagesByVariant(flat);
+
+      cards.push({
+        masterId: mid,
+        product: {
+          ...row.product,
+          imageUrl: fallback.imageUrl || masterGallery[0]?.url || row.product?.imageUrl || null,
+          imageSource: fallback.imageSource || 'master',
+        },
+        priceRange: prices.length ? { min: Math.min(...prices), max: Math.max(...prices) } : null,
+        variantCount: variantsOut.length,
+        inStockCount: variantsOut.filter((v) => v.stockQty > 0).length,
+        defaultListingId: String(fallback.listingId),
+        variants: variantsOut,
+      });
+    }
+    return cards;
   }
 
   /** Search across GLOBAL masters (admin/taxonomy view). */

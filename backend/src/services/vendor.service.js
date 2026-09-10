@@ -72,6 +72,18 @@ class VendorService {
     return { application, reSubmitted: false };
   }
 
+  /** The caller's own application (if any) + vendor profile (if approved). */
+  async myApplication({ userId }) {
+    const [application, vendor] = await Promise.all([
+      VendorApplication.findOne({ userId }).lean(),
+      Vendor.findOne({ userId }).select('businessName slug status commissionRateBps joinedAt').lean(),
+    ]);
+    return {
+      application: application ? { ...application, id: application._id } : null,
+      vendor: vendor ? { ...vendor, id: vendor._id } : null,
+    };
+  }
+
   async listApplications({ query = {} }) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));

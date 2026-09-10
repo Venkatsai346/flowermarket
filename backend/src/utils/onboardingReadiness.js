@@ -31,6 +31,7 @@
 
 /** Stable ids — the API contract, the admin UI and the tests all key off these. */
 export const ONBOARDING_ITEM = Object.freeze({
+  OWNER_EMAIL: 'ownerEmail',
   HUB: 'hub',
   PINCODES: 'pincodes',
   SLOTS: 'slots',
@@ -60,6 +61,8 @@ export const ITEM_STATE = Object.freeze({
  * @property {number}  categoriesMissingTaxPolicy  of those, how many have no active TaxPolicy
  * @property {string|null} tagline
  * @property {string|null} gstin
+ * @property {boolean} [ownerEmailVerified] absent in legacy fact pictures,
+ *   which the evaluator treats as verified (old stores stay published)
  */
 
 const asCount = (v) => {
@@ -114,6 +117,16 @@ export function evaluateOnboarding(facts = {}, options = {}) {
    * is whether checkout would fail, not whether the store looks finished.
    */
   const items = [
+    {
+      id: ONBOARDING_ITEM.OWNER_EMAIL,
+      label: 'Verify your email address',
+      hint: 'We send order alerts, invoices, and password resets to the owner '
+        + 'email. Prove it is yours (a code by email) before the store goes live, '
+        + 'so a typo cannot lock you out of your own shop.',
+      done: ownerEmailVerified,
+      blocking: true,
+      count: null,
+    },
     {
       id: ONBOARDING_ITEM.HUB,
       label: 'Add a delivery hub',

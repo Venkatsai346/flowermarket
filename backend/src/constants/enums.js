@@ -22,10 +22,15 @@ export const ENTITY_STATUS = Object.freeze({
 });
 
 // ---------------- Tenancy ----------------
+/**
+ * Canonical DEFAULT plan codes (seeded by planService.ensureDefaults).
+ * `tenant.plan` is NOT constrained to these — plans are data and operators
+ * create new codes at runtime; the tenant field just references `plans.code`.
+ */
 export const TENANT_PLAN = Object.freeze({
   FREE: 'free',
   PRO: 'pro',
-  ENTERPRISE: 'enterprise',
+  BUSINESS: 'business',
 });
 
 /** Store lifecycle. Host resolution only serves `active`. */

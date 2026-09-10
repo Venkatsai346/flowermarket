@@ -40,6 +40,8 @@ import {
   storeUpdateSchema,
   planChangeSchema,
   invoiceListQuerySchema,
+  invoicePaySchema,
+  emailVerifyConfirmSchema,
   applicationReviewSchema,
   vendorAdminUpdateSchema,
   planCreateSchema,
@@ -90,6 +92,10 @@ router.get('/store/subscription', MarketplaceController.mySubscription);
 router.patch('/store/plan', validate(planChangeSchema), MarketplaceController.changeMyPlan);
 router.get('/store/invoices', validate(invoiceListQuerySchema, 'query'), MarketplaceController.myInvoices);
 router.get('/store/invoices/:id', MarketplaceController.myInvoiceDetail);
+router.post('/store/invoices/:id/pay', validate(invoicePaySchema), MarketplaceController.payMyInvoice);
+router.get('/store/usage', MarketplaceController.myUsage);
+router.post('/store/verify-email/request', MarketplaceController.requestEmailVerify);
+router.post('/store/verify-email/confirm', validate(emailVerifyConfirmSchema), MarketplaceController.confirmEmailVerify);
 router.get('/store/vendors', MarketplaceController.storeVendors);
 router.post('/store/vendors/:vendorId/sync', MarketplaceController.syncVendorProducts);
 

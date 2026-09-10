@@ -118,6 +118,14 @@ export const invoiceListQuerySchema = Joi.object({
   status: Joi.string().valid('draft', 'open', 'paid', 'overdue', 'void').allow('').optional(),
 });
 
+export const invoicePaySchema = Joi.object({
+  provider: Joi.string().valid('mock', 'razorpay').optional(),
+});
+
+export const emailVerifyConfirmSchema = Joi.object({
+  code: Joi.string().trim().min(4).max(10).required(),
+});
+
 // ---------------- platform admin ----------------
 export const applicationReviewSchema = Joi.object({
   decision: Joi.string().valid('approve', 'reject').required(),
