@@ -37,28 +37,52 @@ function addMonths(d, n = 1) {
 }
 
 /**
+ * Schema-shape probe for the tenant-billing model. Returns every sub-check
+ * (not just the verdict) so a failure is instantly diagnosable from the
+ * error details alone — a guard that convicts on hidden evidence is worse
+ * than no guard.
+ *
+ * PROBE RULE (Mongoose): single-nested subdocuments are NOT in `schema.paths`
+ * (probing an intermediate returns undefined even on the correct schema —
+ * intermediates live in `schema.nested`). Presence of a nested block MUST be
+ * probed through its LEAF paths. This exact mistake false-positived on every
+ * registration once; the unit suite locks the semantics.
+ */
+export function checkTenantBillingShape(schema) {
+  const statusValues = schema?.path('status')?.enumValues || [];
+  const checks = {
+    schemaRegistered: Boolean(schema),
+    hasPlanCode: Boolean(schema?.path('planCode')),
+    hasTenantId: Boolean(schema?.path('tenantId')),
+    hasPlanSnapshot: Boolean(schema?.path('planSnapshot.name')) && Boolean(schema?.path('planSnapshot.priceMonthly')),
+    statusIsEnum: Array.isArray(statusValues) && statusValues.length > 0,
+    statusHasTrial: statusValues.includes(TENANT_SUBSCRIPTION_STATUS.TRIAL),
+  };
+  return { ok: Object.values(checks).every(Boolean), checks };
+}
+
+/**
  * Schema-identity guard. Tenant billing writes go to the TenantSubscription
  * model — never to Subscription, which is the CUSTOMER recurring-order schema
  * (userId/frequency/nextDeliveryAt). A past incident wrote billing rows through
  * the bare `Subscription` name and failed cryptically AFTER the tenant existed;
  * the vocabulary split makes that unrepresentable, and this guard fails LOUD
- * (500, before any write) if the wiring ever regresses.
+ * (500, before any write, with every sub-check attached) if the wiring ever
+ * regresses.
  */
 export function assertTenantSubscriptionSchema() {
-  const schema = TenantSubscription?.schema;
-  const statusValues = schema?.path('status')?.enumValues || [];
-  const ok = Boolean(
-    schema
-    && schema.path('planCode')
-    && schema.path('tenantId')
-    && schema.path('planSnapshot')
-    && statusValues.includes(TENANT_SUBSCRIPTION_STATUS.TRIAL)
-  );
+  const { ok, checks } = checkTenantBillingShape(TenantSubscription?.schema);
   if (!ok) {
     throw internal(
-      'TenantSubscription schema mismatch: the registered \'TenantSubscription\' model is not the tenant-billing schema (expected planCode/tenantId/planSnapshot + a status enum containing \'trial\'). Refusing to write billing state against the wrong schema.',
+      'TenantSubscription schema mismatch: the registered \'TenantSubscription\' model is not the tenant-billing schema — see details for the exact failing check(s). Refusing to write billing state against the wrong schema.',
       'BILLING_SCHEMA_MISMATCH',
-      { statusEnum: statusValues, hasPlanCode: Boolean(schema?.path('planCode')), hasTenantId: Boolean(schema?.path('tenantId')) }
+      {
+        ...checks,
+        statusEnum: TenantSubscription?.schema?.path('status')?.enumValues || [],
+        expectedTrial: TENANT_SUBSCRIPTION_STATUS.TRIAL,
+        modelName: TenantSubscription?.modelName || null,
+        collection: TenantSubscription?.collection?.name || null,
+      }
     );
   }
 }

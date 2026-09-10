@@ -194,6 +194,21 @@ async function main() {
   assert.equal(r.status, 201, JSON.stringify(r.body));
   ok('registration is atomic: mid-flow failure leaves zero rows, slug reusable');
 
+  // ---- 1c. tenants follow EXISTING plans: inactive codes are not joinable ----
+  const businessPlan = await M.Plan.findOne({ code: 'business' });
+  r = await call(`/marketplace/admin/plans/${businessPlan.id}`, { method: 'PATCH', token: platTok, body: { isActive: false } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  r = await call('/marketplace/tenants/register', {
+    method: 'POST',
+    body: { name: 'Dead Plan Store', slug: 'dead-plan-store', plan: 'business', owner: { firstName: 'Zed', email: 'zed@dead.in', password: 'Store@12345' } },
+  });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'PLAN_INACTIVE');
+  assert.equal(await M.Tenant.countDocuments({ slug: 'dead-plan-store' }), 0, 'rejected plan leaves no tenant');
+  r = await call(`/marketplace/admin/plans/${businessPlan.id}`, { method: 'PATCH', token: platTok, body: { isActive: true } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  ok('registration refuses inactive plans (409 PLAN_INACTIVE), nothing persisted');
+
   // discovery: nothing published yet
   r = await call('/marketplace/stores');
   assert.equal(r.body.data.length, 0, 'unpublished stores hidden from discovery');
@@ -459,7 +474,12 @@ async function main() {
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.data.application.status, 'approved');
   assert.ok(r.body.data.vendor?.id, 'approved applicant has a vendor profile');
-  ok('billing: owner self-pay (scoped, idempotent), usage meters, vendor status');
+  // deactivating a plan with live subscribers is refused — move them first
+  const bizPlan = await M.Plan.findOne({ code: 'business' });
+  r = await call(`/marketplace/admin/plans/${bizPlan.id}`, { method: 'PATCH', token: platTok, body: { isActive: false } });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'PLAN_HAS_SUBSCRIBERS');
+  ok('billing: owner self-pay (scoped, idempotent), usage meters, vendor status, plan deactivation guarded');
 
   // ================= 6. cross-tenant analytics =================
   r = await call(`/marketplace/admin/analytics/dashboard?from=${from30}&to=${today}`, { token: platTok });
