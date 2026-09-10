@@ -3,6 +3,7 @@ import UserController from '../controllers/user.controller.js';
 import AddressController from '../controllers/address.controller.js';
 import NotificationController from '../controllers/notification.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
+import { tokenTenant } from '../middleware/tokenTenant.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -22,7 +23,13 @@ const router = Router();
 /**
  * /users — all routes require authentication.
  * Self-service under /me; administration under /admin.
+ *
+ * /me is subject-keyed (controllers read req.auth.userId, never the header),
+ * so a headerless-but-authed call can only mean "myself": tokenTenant lets
+ * the token carry the tenant instead of 401ing against the default. An
+ * explicit header naming another tenant still 401s (see smoke §17).
  */
+router.use('/me', tokenTenant);
 router.use(authenticate);
 
 // ---------------- self-service ----------------

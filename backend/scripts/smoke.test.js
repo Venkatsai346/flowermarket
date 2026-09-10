@@ -220,7 +220,19 @@ async function main() {
   assert.equal(r.status, 401, 'tenant-scope guard must reject cross-tenant tokens');
   assert.equal(r.body.code, 'TENANT_MISMATCH');
 
-  console.log('✅ ALL SMOKE TESTS PASSED (17 scenarios)');
+  // ---- 18. /users/me resolves the token tenant when the header is absent ----
+  // A headerless call can only mean "myself" — default-resolving it 401s every
+  // non-default session (a fresh store owner's console spun "loading" forever
+  // behind a 401→refresh storm). tenantC is created LAST, so the default/first
+  // resolution provably differs from its token: only the fallback passes this.
+  const tenantC = await Tenant.create({ name: 'Tenant C', slug: 'tenant-c', status: 'active' });
+  const cUser = await User.create({ tenantId: tenantC.id, phone: { number: '8000000001', verified: true }, status: 'active' });
+  const cTokens = await AuthService.issueTokens(cUser);
+  r = await call('/users/me', { token: cTokens.accessToken });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.id, String(cUser._id));
+
+  console.log('✅ ALL SMOKE TESTS PASSED (18 scenarios)');
 
   server.close();
   await mongoose.disconnect();

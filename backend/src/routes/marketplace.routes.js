@@ -3,31 +3,7 @@ import MarketplaceController from '../controllers/marketplace.controller.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
-import TokenService from '../utils/jwt.js';
-import config from '../config/index.js';
-
-/**
- * Store-owner routes: the owner's access token IS their store's tenant.
- * When no x-tenant-id header is present, resolve req.tenantId from the token
- * BEFORE authenticate runs (authenticate would otherwise reject a token whose
- * tenant differs from the header/default-resolved tenant). Explicit headers
- * still win for multi-tenant platform clients.
- */
-function tokenTenant(req, res, next) {
-  const header = req.headers[config.tenant.tenantHeader?.toLowerCase()] || null;
-  if (header) return next(); // explicit tenant wins
-  const authz = req.headers.authorization || '';
-  const [scheme, token] = authz.split(' ');
-  if (scheme === 'Bearer' && token) {
-    try {
-      const payload = TokenService.verifyAccessToken(token);
-      if (payload?.tenant) req.tenantId = payload.tenant;
-    } catch {
-      // let authenticate produce the proper 401
-    }
-  }
-  next();
-}
+import { tokenTenant } from '../middleware/tokenTenant.js';
 import {
   storeRegisterSchema,
   storeListQuerySchema,

@@ -67,7 +67,7 @@ export default function RegisterStorePage() {
           password: form.password,
         },
       });
-      setSession(r.data);
+      setSession({ user: r.data.owner, tokens: r.data.tokens });
       toast.success(`Store “${form.name}” created — you're the owner! 🎉`);
       navigate('/', { replace: true });
     } catch (err) {
