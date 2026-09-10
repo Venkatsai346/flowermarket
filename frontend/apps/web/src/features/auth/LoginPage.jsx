@@ -19,11 +19,13 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(null);
+  const [noPassword, setNoPassword] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
     setError(null);
+    setNoPassword(false);
     setBusy(true);
     // No tenant input: email addresses are globally unique, so the server
     // resolves the account by email alone. (A "tenant id" field used to live
@@ -36,7 +38,13 @@ export default function LoginPage() {
       const from = location.state?.from;
       navigate(from && from !== '/login' ? from : homeFor(r.data.user?.role), { replace: true });
     } catch (err) {
-      setError(errMsg(err));
+      // An account that was created OTP-first has no password at all — telling
+      // the owner so, with a recovery link, beats a misleading "wrong password".
+      if (err?.code === 'PASSWORD_NOT_SET') {
+        setNoPassword(true);
+      } else {
+        setError(errMsg(err));
+      }
     } finally {
       setBusy(false);
     }
@@ -59,6 +67,17 @@ export default function LoginPage() {
           {error && (
             <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700">
               {error}
+            </div>
+          )}
+          {noPassword && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800">
+              <p className="font-semibold">This account has no password yet.</p>
+              <p className="mt-1">
+                It was created with a one-time code. Set a password to sign in with your email:{' '}
+                <Link to="/forgot-password" className="font-semibold text-rose-600 underline hover:text-rose-700">
+                  Reset password
+                </Link>
+              </p>
             </div>
           )}
           <Field label="Email">
@@ -92,6 +111,11 @@ export default function LoginPage() {
           <Button type="submit" loading={busy} className="w-full">
             Sign in
           </Button>
+          <p className="text-center text-sm">
+            <Link to="/forgot-password" className="font-medium text-slate-500 hover:text-rose-600">
+              Forgot password?
+            </Link>
+          </p>
 
           <details className="group rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
             <summary className="flex cursor-pointer items-center gap-1.5 font-medium text-slate-600">

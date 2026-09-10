@@ -67,12 +67,15 @@ Errors: `400 OTP_INVALID`, `400 OTP_EXPIRED`, `400 OTP_ALREADY_USED`, `429 OTP_M
 ```jsonc
 { "email": "ravi@example.com", "password": "…", "device": {…} }
 ```
-`200 { data: { user, tokens } }` · `401 INVALID_CREDENTIALS`
+`200 { data: { user, tokens } }` · `401 INVALID_CREDENTIALS` · `401 PASSWORD_NOT_SET`
 
-No tenant header needed: emails are globally unique, so a login without an
-explicit tenant resolves the account by email alone (the tenant is an output
-of login, not an input). Send `x-tenant-id` only to SCOPE the lookup — with an
-explicit header naming another tenant, even the right password 401s.
+Emails are globally unique, so the lookup is global and the account's tenant is
+an output of login, never an input — no tenant header is needed (or consulted)
+for password login. Wrong passwords and unknown emails return the same opaque
+`INVALID_CREDENTIALS` (no account enumeration); an account created OTP-first
+(no password set) returns `PASSWORD_NOT_SET` with a message pointing to OTP
+sign-in / password reset. A correct password always yields a token bound to the
+account's OWN tenant, whatever the request's header claimed.
 
 ### `POST /auth/refresh` — rotate refresh token
 ```jsonc
@@ -98,7 +101,15 @@ Revokes **all** sessions. `200` · `400 WRONG_PASSWORD`
 ```jsonc
 { "channel": "phone", "phone": { "number": "9876543210" },
   "otpCode": "123456", "newPassword": "…" }
+
+// or by email (globally resolved, mirroring login):
+{ "channel": "email", "email": "ravi@example.com",
+  "otpCode": "123456", "newPassword": "…" }
 ```
+Request the code with `POST /auth/otp/request` (`purpose: "password_reset"`).
+Email targets resolve globally — a store owner resets from the console without
+naming a tenant; phone targets stay tenant-scoped. Errors: `400 OTP_INVALID`,
+`400 OTP_EXPIRED`, `404 USER_NOT_FOUND`, `400 VALIDATION_ERROR`.
 
 ---
 

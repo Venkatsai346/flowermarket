@@ -81,7 +81,11 @@ class AuthController {
   async mergeGuestOnLogin(req, res, result) {
     const guestKey = parseGuestKey(req);
     const userId = result?.user?.id || result?.user?._id || result?.userId;
-    const tenantId = req.tenantId;
+    // Merge into the ACCOUNT's tenant, not the request's. Email+password login
+    // resolves the account globally, so req.tenantId may be a wrong guess or a
+    // stale header; folding the guest cart into that tenant would write a cart
+    // the user (in their own tenant) can never see.
+    const tenantId = result?.user?.tenantId || req.tenantId;
     if (!guestKey || !userId || !tenantId) return;
     try {
       await cartService.mergeGuestCart({ tenantId, userId, guestKey });

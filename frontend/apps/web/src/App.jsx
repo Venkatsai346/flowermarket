@@ -5,6 +5,7 @@ import { api } from './api.js';
 import AppShell from './components/layout/AppShell.jsx';
 import { LoadingBlock } from './components/ui/Spinner.jsx';
 import LoginPage from './features/auth/LoginPage.jsx';
+import ResetPasswordPage from './features/auth/ResetPasswordPage.jsx';
 import RegisterStorePage from './features/auth/RegisterStorePage.jsx';
 import StoreDashboard from './features/dashboard/StoreDashboard.jsx';
 import CatalogPage from './features/catalog/CatalogPage.jsx';
@@ -133,6 +134,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/forgot-password" element={<ResetPasswordPage />} />
       <Route path="/register" element={<RegisterStorePage />} />
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
