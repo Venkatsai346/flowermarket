@@ -69,6 +69,11 @@ Errors: `400 OTP_INVALID`, `400 OTP_EXPIRED`, `400 OTP_ALREADY_USED`, `429 OTP_M
 ```
 `200 { data: { user, tokens } }` · `401 INVALID_CREDENTIALS`
 
+No tenant header needed: emails are globally unique, so a login without an
+explicit tenant resolves the account by email alone (the tenant is an output
+of login, not an input). Send `x-tenant-id` only to SCOPE the lookup — with an
+explicit header naming another tenant, even the right password 401s.
+
 ### `POST /auth/refresh` — rotate refresh token
 ```jsonc
 { "refreshToken": "…", "device": {…} }

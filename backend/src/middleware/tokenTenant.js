@@ -1,5 +1,6 @@
 import TokenService from '../utils/jwt.js';
 import config from '../config/index.js';
+import { TENANT_RESOLUTION_SOURCE } from '../constants/enums.js';
 
 /**
  * tokenTenant — resolve req.tenantId from the access token when the client
@@ -22,7 +23,10 @@ export function tokenTenant(req, res, next) {
   if (scheme === 'Bearer' && token) {
     try {
       const payload = TokenService.verifyAccessToken(token);
-      if (payload?.tenant) req.tenantId = payload.tenant;
+      if (payload?.tenant) {
+        req.tenantId = payload.tenant;
+        req.tenantSource = TENANT_RESOLUTION_SOURCE.TOKEN;
+      }
     } catch {
       // let authenticate produce the proper 401
     }

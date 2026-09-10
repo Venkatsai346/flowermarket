@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Flower2, HelpCircle, Lock, Mail } from 'lucide-react';
 import { useAuthStore } from '@flower-market/shared';
-import { api, setLoginTenantId } from '../../api.js';
+import { api } from '../../api.js';
 import { errMsg } from '../../lib/utils.js';
 import { toast } from '../../lib/toasts.js';
 import Button from '../../components/ui/Button.jsx';
@@ -18,7 +18,6 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [tenantId, setTenantId] = useState(() => useAuthStore.getState().lastTenantId || '');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -26,8 +25,10 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setBusy(true);
-    // scope the login lookup to a non-default tenant when provided (store owners)
-    setLoginTenantId(tenantId);
+    // No tenant input: email addresses are globally unique, so the server
+    // resolves the account by email alone. (A "tenant id" field used to live
+    // here — unfillable by design, since the topbar shows a truncated id to
+    // logged-IN users only, and a stale prefill actively broke logins.)
     try {
       const r = await api.auth.login({ email, password });
       setSession(r.data);
@@ -37,7 +38,6 @@ export default function LoginPage() {
     } catch (err) {
       setError(errMsg(err));
     } finally {
-      setLoginTenantId('');
       setBusy(false);
     }
   };
@@ -74,19 +74,6 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-          </Field>
-          <Field
-            label="Tenant id (optional)"
-            hint="For store-owner logins — your store's id, shown in the console topbar."
-          >
-            <Input
-              type="text"
-              autoComplete="off"
-              placeholder="6a96f449… (platform admin: leave empty)"
-              className="font-mono text-xs"
-              value={tenantId}
-              onChange={(e) => setTenantId(e.target.value)}
-            />
           </Field>
           <Field label="Password">
             <div className="relative">

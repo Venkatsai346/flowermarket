@@ -5,6 +5,7 @@
  *   tenant bootstrap -> OTP request -> register -> login (OTP-first auto-create)
  *   -> profile update -> address create/update/default -> ownership guard
  *   -> refresh-token rotation -> logout -> RBAC -> tenant-scope guard
+ *   -> token-tenant self fallback -> password login (global email resolution)
  *
  * Run: npm run smoke   (downloads the MongoDB binary once on first run)
  */
@@ -63,10 +64,13 @@ async function main() {
   const port = server.address().port;
   const base = `http://127.0.0.1:${port}/api/v1`;
 
-  const call = async (path, { method = 'GET', body, token, headers = {} } = {}) => {
+  // tenantless: omit the default test header entirely (a truly headerless call —
+  // required for the token-tenant and global-login fallbacks, which only kick
+  // in when the client named NO tenant).
+  const call = async (path, { method = 'GET', body, token, headers = {}, tenantless = false } = {}) => {
     const res = await fetch(base + path, {
       method,
-      headers: { 'content-type': 'application/json', 'x-tenant-id': tenant.id, ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers },
+      headers: { 'content-type': 'application/json', ...(tenantless ? {} : { 'x-tenant-id': tenant.id }), ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers },
       body: body ? JSON.stringify(body) : undefined,
     });
     return { status: res.status, body: await res.json() };
@@ -228,11 +232,44 @@ async function main() {
   const tenantC = await Tenant.create({ name: 'Tenant C', slug: 'tenant-c', status: 'active' });
   const cUser = await User.create({ tenantId: tenantC.id, phone: { number: '8000000001', verified: true }, status: 'active' });
   const cTokens = await AuthService.issueTokens(cUser);
-  r = await call('/users/me', { token: cTokens.accessToken });
+  r = await call('/users/me', { token: cTokens.accessToken, tenantless: true });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.data.id, String(cUser._id));
 
-  console.log('✅ ALL SMOKE TESTS PASSED (18 scenarios)');
+  // ---- 19. password login resolves the account by email when no tenant is named ----
+  // Emails are globally unique: a logged-out store owner cannot be asked for a
+  // tenant id they were never shown, so a headerless login must find their
+  // account anywhere. An EXPLICIT wrong header stays scoped (a choice, not a
+  // guess → INVALID_CREDENTIALS), and wrong passwords stay opaque either way.
+  const dUser = await User.create({
+    tenantId: tenantC.id,
+    email: { address: 'owner@tenantc.in', verified: true },
+    role: 'admin',
+    status: 'active',
+  });
+  await dUser.setPassword('Store@12345');
+  await dUser.save();
+  // headerless + correct → 200, session bound to the OWNER's tenant, not the guess
+  r = await call('/auth/login', { method: 'POST', tenantless: true, body: { email: 'owner@tenantc.in', password: 'Store@12345' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(String(r.body.data.user.tenantId), String(tenantC._id));
+  assert.equal(r.body.data.user.passwordHash, undefined, 'login must never serialize the hash');
+  // headerless + wrong password → opaque 401, identical to an unknown email (no enumeration)
+  r = await call('/auth/login', { method: 'POST', tenantless: true, body: { email: 'owner@tenantc.in', password: 'Wrong@12345' } });
+  assert.equal(r.status, 401, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'INVALID_CREDENTIALS');
+  r = await call('/auth/login', { method: 'POST', tenantless: true, body: { email: 'nobody@nowhere.in', password: 'Wrong@12345' } });
+  assert.equal(r.status, 401, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'INVALID_CREDENTIALS');
+  // explicit WRONG header → still scoped to the named tenant
+  r = await call('/auth/login', { method: 'POST', headers: { 'x-tenant-id': tenant.id }, body: { email: 'owner@tenantc.in', password: 'Store@12345' } });
+  assert.equal(r.status, 401, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'INVALID_CREDENTIALS');
+  // explicit RIGHT header → 200 (the old path keeps working)
+  r = await call('/auth/login', { method: 'POST', headers: { 'x-tenant-id': tenantC.id }, body: { email: 'owner@tenantc.in', password: 'Store@12345' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+
+  console.log('✅ ALL SMOKE TESTS PASSED (19 scenarios)');
 
   server.close();
   await mongoose.disconnect();

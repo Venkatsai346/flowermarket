@@ -6,7 +6,7 @@ import TokenService from '../utils/jwt.js';
 import { generateOpaqueToken, sha256 } from '../utils/hash.js';
 import { badRequest, unauthorized, notFound, conflict, forbidden } from '../utils/ApiError.js';
 import config from '../config/index.js';
-import { USER_ROLES, USER_STATUS, LOGIN_METHOD } from '../constants/enums.js';
+import { USER_ROLES, USER_STATUS, LOGIN_METHOD, TENANT_RESOLUTION_SOURCE } from '../constants/enums.js';
 
 /**
  * AuthService — orchestration of all authentication flows.
@@ -140,10 +140,30 @@ class AuthService {
     return { user, tokens };
   }
 
-  /** Email + password login (available once a user sets a password). */
-  async loginWithPassword({ tenantId, email, password, deviceInfo = {}, ip = null }) {
+  /**
+   * Email + password login (available once a user sets a password).
+   *
+   * Email addresses are GLOBALLY unique (the unique index is not
+   * tenant-scoped), so one email identifies one account in one tenant — the
+   * tenant is an output of login, not an input the human must supply. When the
+   * caller named a tenant EXPLICITLY (header/host), the lookup stays scoped to
+   * it and a miss is INVALID_CREDENTIALS exactly as before. But when the
+   * tenant was merely GUESSED (configured default / first-active fallback),
+   * scoping the lookup to the guess rejects every correct password that lives
+   * anywhere else — every logged-out store owner. So on a scoped miss with a
+   * guessed tenant, resolve the account by email alone and let the password —
+   * never the guess — decide.
+   */
+  async loginWithPassword({ tenantId, tenantSource = null, email, password, deviceInfo = {}, ip = null }) {
     if (!email || !password) throw badRequest('Email and password are required', 'CREDENTIALS_REQUIRED');
-    const user = await User.findOne({ tenantId, 'email.address': email.toLowerCase() }).select('+passwordHash');
+    const address = String(email).trim().toLowerCase();
+    let user = await User.findOne({ tenantId, 'email.address': address }).select('+passwordHash');
+    const tenantWasGuessed = tenantSource === TENANT_RESOLUTION_SOURCE.DEFAULT
+      || tenantSource === TENANT_RESOLUTION_SOURCE.FALLBACK
+      || !tenantSource;
+    if (!user && tenantWasGuessed) {
+      user = await User.findOne({ 'email.address': address }).select('+passwordHash');
+    }
     if (!user) throw unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
     const ok = await user.isValidPassword(password);
     if (!ok) throw unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
