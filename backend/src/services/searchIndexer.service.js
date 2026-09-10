@@ -1,11 +1,14 @@
 import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
+import ProductVariant from '../models/productVariant.model.js';
+import ProductImage from '../models/productImage.model.js';
 import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
 import SearchDocument from '../models/searchDocument.model.js';
 import searchProvider from './searchProvider.service.js';
 import { registerCatalogEventHandler } from './catalogEvent.service.js';
 import { toPaise } from '../utils/money.js';
+import { primaryImageUrlFor, variantDisplayLabel } from '../utils/catalog/variantImages.js';
 import { TENANT_LISTING_STATUS, PRODUCT_MASTER_STATUS } from '../constants/enums.js';
 
 /**
@@ -66,7 +69,7 @@ class SearchIndexerService {
   };
 
   /** Build the denormalized row for one listing. */
-  async buildDocument({ listing, master, categoryById, brandById }) {
+  async buildDocument({ listing, master, categoryById, brandById, variantById = null, imagesByMaster = null }) {
     const category = master.categoryId ? categoryById.get(String(master.categoryId)) : null;
     const brand = master.brandId ? brandById.get(String(master.brandId)) : null;
 
@@ -75,9 +78,24 @@ class SearchIndexerService {
     const title = master.title;
     const brandName = brand?.name || null;
 
+    // Variant context: preloaded maps in batch paths, single fetch otherwise.
+    // (indexListing is called per event — one extra indexed read is fine there.)
+    let variant = variantById ? variantById.get(String(listing.variantId || '')) || null : null;
+    if (!variantById && listing.variantId) {
+      variant = await ProductVariant.findById(listing.variantId).lean().catch(() => null);
+    }
+    const variantLabel = variant ? variantDisplayLabel(variant) : null;
+    let flat = imagesByMaster ? (imagesByMaster.get(String(master._id)) || []) : null;
+    if (!flat) {
+      flat = await ProductImage.find({ productMasterId: master._id, status: 'active' })
+        .sort({ isPrimary: -1, sortOrder: 1 }).lean().catch(() => []);
+    }
+    const imageUrl = primaryImageUrlFor(flat, listing.variantId || null);
+
     const searchText = [
       title, master.shortDescription, master.description,
       brandName, ...categoryPath, ...tags,
+      variantLabel, variant?.value, variant?.sku,
     ].filter(Boolean).join(' ').toLowerCase().slice(0, 2000);
 
     const stockQty = listing.stockQty ?? 0;
@@ -88,6 +106,9 @@ class SearchIndexerService {
       listingId: listing._id,
       masterId: master._id,
       vendorId: master.vendorId || null,
+      variantId: listing.variantId || null,
+      variantLabel,
+      variantType: variant?.variantType || null,
 
       title,
       slug: master.slug || null,
@@ -104,7 +125,7 @@ class SearchIndexerService {
       stockQty,
       inStock: stockQty > 0,
       unit: master.defaultSellingUnit || null,
-      imageUrl: listing.imageUrl || null,
+      imageUrl,
 
       soldCount30d: master.soldCount || 0,
       isPerishable: Boolean(master.isPerishable),
@@ -138,18 +159,38 @@ class SearchIndexerService {
     return searchProvider.remove([`${tenantId}:${listingId}`]);
   }
 
+  /** Preload variant + image context for a batch of listings (no N+1). */
+  async variantImageMaps(listings) {
+    const masterIds = [...new Set(listings.map((l) => String(l.productMasterId)).filter(Boolean))];
+    if (!masterIds.length) return { variantById: new Map(), imagesByMaster: new Map() };
+    const [variants, images] = await Promise.all([
+      ProductVariant.find({ productMasterId: { $in: masterIds } }).lean(),
+      ProductImage.find({ productMasterId: { $in: masterIds }, status: 'active' })
+        .sort({ isPrimary: -1, sortOrder: 1 }).lean(),
+    ]);
+    const variantById = new Map(variants.map((v) => [String(v._id), v]));
+    const imagesByMaster = new Map();
+    for (const img of images) {
+      const k = String(img.productMasterId);
+      if (!imagesByMaster.has(k)) imagesByMaster.set(k, []);
+      imagesByMaster.get(k).push(img);
+    }
+    return { variantById, imagesByMaster };
+  }
+
   /** A global product changed — refresh it in every store that lists it. */
   async reindexMaster(masterId) {
     const listings = await TenantProduct.find({ productMasterId: masterId }).limit(500).lean();
     if (!listings.length) return { indexed: 0 };
     const master = await ProductMaster.findById(masterId).lean();
     if (!master) return { indexed: 0 };
-    const [categoryById, brandById] = await Promise.all([
+    const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
       this.categoryMap([master.categoryId]),
       this.brandMap([master.brandId]),
+      this.variantImageMaps(listings),
     ]);
     const docs = await Promise.all(
-      listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById }))
+      listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }))
     );
     return searchProvider.index(docs);
   }
@@ -193,9 +234,10 @@ class SearchIndexerService {
       const masters = await ProductMaster.find({ _id: { $in: masterIds } }).lean();
       const masterById = new Map(masters.map((m) => [String(m._id), m]));
       // eslint-disable-next-line no-await-in-loop
-      const [categoryById, brandById] = await Promise.all([
+      const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
         this.categoryMap(masters.map((m) => m.categoryId)),
         this.brandMap(masters.map((m) => m.brandId)),
+        this.variantImageMaps(listings),
       ]);
 
       const docs = [];
@@ -203,7 +245,7 @@ class SearchIndexerService {
         const master = masterById.get(String(listing.productMasterId));
         if (!master) continue;
         // eslint-disable-next-line no-await-in-loop
-        docs.push(await this.buildDocument({ listing, master, categoryById, brandById }));
+        docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }));
       }
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);

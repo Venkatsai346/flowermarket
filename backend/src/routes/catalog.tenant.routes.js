@@ -7,6 +7,7 @@ import { USER_ROLES } from '../constants/enums.js';
 import {
   masterProposeSchema,
   listingCreateSchema,
+  listingBulkSchema,
   listingQuerySchema,
   listingUpdatePriceSchema,
   listingUpdateStatusSchema,
@@ -32,6 +33,10 @@ router.post('/masters/propose', validate(masterProposeSchema), CatalogTenantCont
 
 // ---- listings (tenant-scoped writes, optimistic-locked) ----
 router.post('/listings', validate(listingCreateSchema), CatalogTenantController.createListing);
+// NOTE: declared BEFORE /listings/:id reads so 'bulk' never matches :id.
+router.post('/listings/bulk', validate(listingBulkSchema), CatalogTenantController.bulkCreateListings);
+// Variant-selection grid for one master (variants + existing listings).
+router.get('/masters/:id/variants', validate(idParamSchema, 'params'), CatalogTenantController.masterVariants);
 router.get('/listings', validate(listingQuerySchema, 'query'), CatalogTenantController.listListings);
 router.get('/listings/:id', validate(idParamSchema, 'params'), CatalogTenantController.getListing);
 router.patch('/listings/:id/price', validate(idParamSchema, 'params'), validate(listingUpdatePriceSchema), CatalogTenantController.updatePrice);

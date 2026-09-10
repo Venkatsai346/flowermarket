@@ -96,6 +96,15 @@ const masterAttributesInput = Joi.array().items(
   })
 ).max(40);
 
+const variantImagesInput = Joi.array().items(
+  Joi.object({
+    url: Joi.string().uri({ allowRelative: true }).required(),
+    altText: Joi.string().max(200),
+    isPrimary: Joi.boolean(),
+    sortOrder: Joi.number().integer().min(0),
+  })
+).max(20);
+
 const masterVariantsInput = Joi.array().items(
   Joi.object({
     variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)).required(),
@@ -104,6 +113,8 @@ const masterVariantsInput = Joi.array().items(
     sku: Joi.string().max(80),
     sortOrder: Joi.number().integer().min(0),
     isDefault: Joi.boolean(),
+    // Nested per-variant gallery (each variant's own photos at creation time).
+    images: variantImagesInput,
   })
 ).max(20);
 
@@ -195,14 +206,41 @@ export const variantCreateSchema = Joi.object({
   sku: Joi.string().max(80).allow(null, ''),
   sortOrder: Joi.number().integer().min(0),
   isDefault: Joi.boolean(),
+  images: variantImagesInput,
   expectedVersion: Joi.number().integer().min(1).required(),
 });
+
+export const variantUpdateSchema = Joi.object({
+  variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)),
+  value: Joi.string().max(80),
+  displayLabel: Joi.string().max(120).allow(null, ''),
+  sku: Joi.string().max(80).allow(null, ''),
+  sortOrder: Joi.number().integer().min(0),
+  isDefault: Joi.boolean(),
+  status: Joi.string().valid('active', 'inactive', 'archived'),
+  expectedVersion: Joi.number().integer().min(1).required(),
+}).min(1);
 
 export const imageCreateSchema = Joi.object({
   url: Joi.string().uri({ allowRelative: true }).required(),
   altText: Joi.string().max(200).allow(null, ''),
   isPrimary: Joi.boolean(),
   sortOrder: Joi.number().integer().min(0),
+  // Optional scope: null/absent = master gallery, set = one variant's gallery.
+  variantId: optionalObjectId,
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
+/** POST /masters/:id/variants/:variantId/images — scope comes from the path. */
+export const variantImageCreateSchema = Joi.object({
+  url: Joi.string().uri({ allowRelative: true }).required(),
+  altText: Joi.string().max(200).allow(null, ''),
+  isPrimary: Joi.boolean(),
+  sortOrder: Joi.number().integer().min(0),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
+export const imagePrimarySchema = Joi.object({
   expectedVersion: Joi.number().integer().min(1).required(),
 });
 
@@ -246,9 +284,44 @@ export const listingQuerySchema = Joi.object({
   search: Joi.string().max(120).allow('', null),
   categoryId: optionalObjectId,
   brandId: optionalObjectId,
+  productMasterId: optionalObjectId,
   minPrice: Joi.number().min(0),
   maxPrice: Joi.number().min(0),
   ...pagination,
+});
+
+/**
+ * POST /catalog/tenant/listings/bulk — list many variants of ONE master at
+ * once, each with its own price/stock/status (the case-1/2/3 wizard payload).
+ * Either `selections` (explicit per-variant rows) or `selectAll` (every active
+ * variant with shared `defaults`) is required.
+ */
+const bulkSelectionRow = Joi.object({
+  variantId: optionalObjectId,
+  price: priceInput,
+  stockQty: Joi.number().integer().min(0).default(0),
+  status: Joi.string().valid(...Object.values(TENANT_LISTING_STATUS)).default(TENANT_LISTING_STATUS.DRAFT),
+  orderLimits: Joi.object({
+    minOrderQty: Joi.number().integer().min(1),
+    maxOrderQty: Joi.number().integer().min(1),
+  }),
+});
+
+export const listingBulkSchema = Joi.object({
+  productMasterId: objectId.required(),
+  selections: Joi.array().items(bulkSelectionRow).max(100),
+  selectAll: Joi.boolean().default(false),
+  defaults: Joi.object({
+    price: priceInput,
+    stockQty: Joi.number().integer().min(0).default(0),
+    status: Joi.string().valid(...Object.values(TENANT_LISTING_STATUS)).default(TENANT_LISTING_STATUS.DRAFT),
+  }),
+  onConflict: Joi.string().valid('skip', 'error').default('skip'),
+}).custom((v, helpers) => {
+  if (!v.selectAll && !(v.selections?.length)) {
+    return helpers.error('any.custom', { message: 'selections or selectAll is required' });
+  }
+  return v;
 });
 
 // ---------------- Change requests ----------------
@@ -299,7 +372,14 @@ export const catalogQuerySchema = Joi.object({
   maxPrice: Joi.number().min(0),
   inStock: Joi.boolean(),
   sort: Joi.string().valid('relevance', 'price_asc', 'price_desc', 'newest', 'popularity').default('relevance'),
+  // groupBy=master -> one card per master with the full variant family.
+  groupBy: Joi.string().valid('master'),
   ...pagination,
+});
+
+/** PDP / stock-check variant selection (?variantId=). */
+export const productDetailQuerySchema = Joi.object({
+  variantId: optionalObjectId,
 });
 
 // ---------------- Audit ----------------
@@ -320,6 +400,17 @@ export const bulkQuerySchema = Joi.object({
 
 export const idParamSchema = Joi.object({
   id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+});
+
+/** Nested master sub-resources: /masters/:id/variants/:variantId etc. */
+export const masterVariantParamSchema = Joi.object({
+  id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+  variantId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+});
+
+export const masterImageParamSchema = Joi.object({
+  id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+  imageId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
 });
 
 export const slugParamSchema = Joi.object({

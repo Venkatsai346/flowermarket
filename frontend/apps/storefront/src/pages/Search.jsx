@@ -48,6 +48,7 @@ export default function Search() {
       categoryId: categoryId || undefined,
       sort: sort || undefined,
       inStock: inStock || undefined,
+      groupBy: 'master',
       page,
       limit: 24,
     }),
@@ -151,12 +152,12 @@ export default function Search() {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {items.map((l) => (
                   <ProductCard
-                    key={l.listingId}
+                    key={l.masterId || l.listingId}
                     listing={l}
-                    qty={qtyByListing.get(String(l.listingId))?.qty || 0}
-                    busy={busyId === l.listingId}
+                    qtyByListing={qtyByListing}
+                    busyId={busyId}
                     onAdd={add}
-                    onQty={(n) => changeQty(l, n)}
+                    onQty={changeQty}
                   />
                 ))}
               </div>

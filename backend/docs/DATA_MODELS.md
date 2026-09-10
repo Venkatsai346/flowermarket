@@ -224,7 +224,8 @@ SKU into 50 different products. So the **write path branches by field ownership*
 | `brands` | Global brand registry | `verification.isVerified` lets verified brands skip approval steps |
 | `productmasters` | Global product identity | unique `skuGlobal`/`slug`/`barcode`; `version`; status machine; `searchText` precomputed |
 | `productvariants` | master → variant (10 stems, 1 kg...) | unique (master, variantType, value); partial-unique sku |
-| `productimages` | master images | one primary per master |
+| `productimages` | master AND variant galleries in one collection | nullable `variantId` scopes the row: null = master gallery, set = one variant's; one primary per scope; no mixed galleries |
+| `searchdocuments` | ranked-index rows per listing | carry `variantId/variantLabel/variantType` + variant-aware `imageUrl` so ranked search stays variant-correct |
 | `productattributevalues` | EAV attributes per master | unique (master, key); validated vs category attributeSchema |
 | `tenantproducts` | Sellable listing per tenant | unique (tenant, master, variant); price/stock/status owned by tenant; `version` |
 | `pricehistories` | Append-only price audit | immutable by convention |
@@ -252,6 +253,15 @@ SKU into 50 different products. So the **write path branches by field ownership*
    invalid transitions → 400.
 10. **Bulk import** (CSV price/stock) runs as an async job (in-memory registry;
     queue-backed in prod) with per-row error reporting + `dryRun` validation.
+11. **Variant galleries fall back, never break**: a variant with its own photos
+    shows them (`imageSource: "variant"`); otherwise the master gallery
+    (`imageSource: "master"`). Resolution is pure (`utils/catalog/variantImages.js`).
+12. **One listing row per (tenant, master, variant)**: a tenant lists one, some
+    or all variants of a master (bulk endpoint), each with its own price/stock.
+    The storefront only ever offers variants THAT tenant listed.
+13. **Dead SKUs are never offered**: listings whose variant was deactivated are
+    filtered from PLP groups, PDP families and the selection grid; a stale
+    `?variantId=` falls back to the default variant instead of 404ing.
 
 ### Why no 16MB blowup here
 Attributes → EAV rows; images → rows; variants → rows; price history → rows;

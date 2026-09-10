@@ -41,6 +41,7 @@ export default function Home() {
       categoryId: categoryId || undefined,
       sort: sort || undefined,
       inStock: inStock || undefined,
+      groupBy: 'master',
       limit: 24,
     }),
     [categoryId, sort, inStock]
@@ -173,12 +174,12 @@ export default function Home() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             {items.map((l) => (
               <ProductCard
-                key={l.listingId}
+                key={l.masterId || l.listingId}
                 listing={l}
-                qty={qtyByListing.get(String(l.listingId))?.qty || 0}
-                busy={busyId === l.listingId}
+                qtyByListing={qtyByListing}
+                busyId={busyId}
                 onAdd={add}
-                onQty={(n) => changeQty(l, n)}
+                onQty={changeQty}
               />
             ))}
           </div>
