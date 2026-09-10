@@ -18,7 +18,7 @@ import planService from './plan.service.js';
 import billingProvider from './billingProvider.service.js';
 import auditService from './audit.service.js';
 import { serializeList } from '../utils/serialize.js';
-import { notFound, badRequest, conflict } from '../utils/ApiError.js';
+import { notFound, badRequest, conflict, internal } from '../utils/ApiError.js';
 import { roundMoney, moneySum } from '../utils/money.js';
 import { generateOpaqueToken } from '../utils/hash.js';
 import config from '../config/index.js';
@@ -36,6 +36,33 @@ function addMonths(d, n = 1) {
   return nd;
 }
 
+/**
+ * Schema-identity guard. Mongoose resolves models by NAME, so if anything in
+ * the runtime ever registers a different schema under 'Subscription' (a shopper
+ * recurring-delivery schema has exactly that name in some codebases), every
+ * billing write fails with a cryptic VALIDATION_ERROR — while the tenant it was
+ * written for already exists. That incident is why this guard exists: it turns
+ * "mystery 400 + orphan tenant" into a loud, actionable 500 BEFORE any write.
+ */
+export function assertBillingSubscriptionSchema() {
+  const schema = Subscription?.schema;
+  const statusValues = schema?.path('status')?.enumValues || [];
+  const ok = Boolean(
+    schema
+    && schema.path('planCode')
+    && schema.path('tenantId')
+    && schema.path('planSnapshot')
+    && statusValues.includes(SUBSCRIPTION_STATUS.TRIAL)
+  );
+  if (!ok) {
+    throw internal(
+      'Billing Subscription schema mismatch: the registered \'Subscription\' model is not the tenant-billing schema (expected planCode/tenantId/planSnapshot + a status enum containing \'trial\'). Refusing to write billing state against the wrong schema.',
+      'BILLING_SCHEMA_MISMATCH',
+      { statusEnum: statusValues, hasPlanCode: Boolean(schema?.path('planCode')), hasTenantId: Boolean(schema?.path('tenantId')) }
+    );
+  }
+}
+
 /** Atomic per-platform invoice number: INV-{YYMM}-{seq}. */
 async function nextInvoiceNumber() {
   const { default: Counter } = await import('../models/counter.model.js');
@@ -49,14 +76,20 @@ async function nextInvoiceNumber() {
 
 class BillingService {
   // ---------------- subscriptions ----------------
-  async ensureSubscription({ tenantId, planCode, commissionRateBps = null, trialDays = 0, actorId = null }) {
+  async ensureSubscription({ tenantId, planCode, commissionRateBps = null, trialDays = 0, actorId = null, session = null }) {
+    assertBillingSubscriptionSchema();
     const plan = await planService.getByCode(planCode);
-    const existing = await Subscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
+    const lookup = Subscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
+    if (session) lookup.session(session);
+    const existing = await lookup;
     if (existing) return { subscription: existing, created: false };
 
     const now = new Date();
     const periodEnd = addMonths(now, 1);
-    const subscription = await Subscription.create({
+    // `new + save` (not create-with-options): Model.create(doc, opts) has a
+    // notorious doc-vs-options ambiguity for the single-doc form, while
+    // save(options) is unambiguous — and identical otherwise.
+    const subscription = new Subscription({
       tenantId,
       planCode: plan.code,
       planSnapshot: { name: plan.name, priceMonthly: plan.priceMonthly },
@@ -70,6 +103,7 @@ class BillingService {
       pendingAdjustment: { amount: 0, label: null },
       changedAt: now,
     });
+    await subscription.save(session ? { session } : undefined);
     return { subscription, created: true };
   }
 

@@ -586,7 +586,7 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 | `GET /marketplace/plans` | active plan catalog (free/pro/business, price + commission bps + marketplace flag) |
 | `GET /marketplace/stores?search=&page=&limit=` | store discovery (published stores only) |
 | `GET /marketplace/stores/:slug` | storefront: branding + theme + vendor products (only when marketplace mode) + vendors |
-| `POST /marketplace/tenants/register` `{name, slug, plan?, contactEmail?, owner{firstName, lastName, email, password}}` | create store → tenant + owner admin (never super_admin) + trial subscription + owner auto-login tokens; slug unique/reserved → 409; owner email starts UNVERIFIED (see verify-email) |
+| `POST /marketplace/tenants/register` `{name, slug, plan?, contactEmail?, owner{firstName, lastName, email, password}}` | create store → tenant + owner admin (never super_admin) + trial subscription + owner auto-login tokens; slug unique/reserved → 409; owner email starts UNVERIFIED (see verify-email); ALL-OR-NOTHING (one transaction on replica sets, compensating cleanup on standalone mongod — a failed attempt never orphans a tenant or wedges the slug) |
 
 ### Vendor (auth; role `vendor` — granted ONLY by an approved application)
 

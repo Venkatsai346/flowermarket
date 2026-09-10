@@ -71,6 +71,14 @@
  *     every customer while isPublished could still be switched on. The seeding,
  *     the publish gate, the removal of the hardcoded ₹49, and the deliberate
  *     decision NOT to guess pincodes are all asserted here.
+ *
+ * 15. ONE SUBSCRIPTION SCHEMA, AND ATOMIC REGISTRATION — Mongoose resolves
+ *     models by name, so a shopper recurring-delivery schema registered under
+ *     'Subscription' made every billing write fail with a cryptic
+ *     VALIDATION_ERROR — after the tenant already existed, orphaning it and
+ *     wedging the slug (retry → 409 on a store that never completed).
+ *     Exactly one billing-shaped registration is asserted, a runtime guard
+ *     fails LOUD before writing, and registration commits all-or-nothing.
  */
 
 import fs from 'node:fs';
@@ -740,9 +748,16 @@ section('13. a newly registered store is told what it cannot yet do');
   if (fs.existsSync(uiPath)) {
     const ui = fs.readFileSync(uiPath, 'utf8');
     check('the checklist calls the endpoint', /api\.marketplace\.myOnboarding\(\)/.test(ui));
+    // Most items link to the page that fixes them — but an item can ALSO be
+    // fixed inline (ownerEmail's code entry), which is strictly better UX than
+    // a route. The allowlist is explicit and tiny: anything else without a
+    // route is a dead end, exactly what this check was written to catch.
+    const INLINE_HANDLED = new Set(['ownerEmail']);
+    const hasFix = (id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)
+      || (INLINE_HANDLED.has(id) && new RegExp(`item\\.id === '${id}'`).test(ui));
     check('every item id the API can return has somewhere to go',
-      Object.values(readiness.ONBOARDING_ITEM).every((id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)),
-      Object.values(readiness.ONBOARDING_ITEM).filter((id) => !new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)).join(', '));
+      Object.values(readiness.ONBOARDING_ITEM).every(hasFix),
+      Object.values(readiness.ONBOARDING_ITEM).filter((id) => !hasFix(id)).join(', '));
     check('the publish control is disabled while blocked',
       /disabled=\{!canPublish\}/.test(ui));
     const dash = fs.readFileSync(
@@ -804,6 +819,51 @@ section('14. tax document numbers are unique per supplier, not per platform');
   const longest = `${prefix}/26-27/${'0'.repeat(width)}`;
   check(`the default number "${longest}" fits GST's 16-character cap`,
     longest.length > 0 && longest.length <= 16, `${longest.length} characters`);
+}
+
+// ---------------------------------------------------------------------------
+section('15. the billing Subscription model is one schema, and it is the billing one');
+// ---------------------------------------------------------------------------
+{
+  // Mongoose resolves models BY NAME. If any runtime ever registers a different
+  // schema under 'Subscription' (a shopper recurring-delivery schema has exactly
+  // that name in some codebases), billing writes fail with a cryptic
+  // VALIDATION_ERROR — while the tenant they belong to already exists. That is
+  // precisely the incident this section exists to prevent: one registration,
+  // billing-shaped, guarded at runtime before the first write.
+  const MODELS = path.join(BACKEND, 'src/models');
+  const registrations = jsFiles(MODELS)
+    .map((f) => ({ file: rel(f), src: fs.readFileSync(f, 'utf8') }))
+    .filter(({ src }) => /mongoose\.model\(\s*['"]Subscription['"]/.test(src));
+  check('exactly one file registers mongoose.model(\'Subscription\')',
+    registrations.length === 1, registrations.map((r) => r.file).join(', '));
+
+  const subSrc = fs.readFileSync(path.join(MODELS, 'subscription.model.js'), 'utf8');
+  check('the registered schema is the tenant-billing one (planCode/tenantId/planSnapshot)',
+    /planCode:\s*\{/.test(subSrc) && /tenantId:\s*\{/.test(subSrc) && /planSnapshot:\s*\{/.test(subSrc));
+  check('its status enum can express a trial',
+    /SUBSCRIPTION_STATUS/.test(subSrc) && /TRIAL:\s*'trial'/.test(
+      fs.readFileSync(path.join(BACKEND, 'src/constants/enums.js'), 'utf8')));
+  check('no shopper-subscription fields hide in the billing schema',
+    !/nextDeliveryAt/.test(subSrc) && !/\bfrequency\b/.test(subSrc));
+
+  // The runtime guard must actually be wired: fail LOUD before writing, both at
+  // registration (before the tenant exists) and at every subscription write.
+  const billingSrc = fs.readFileSync(path.join(BACKEND, 'src/services/billing.service.js'), 'utf8');
+  check('ensureSubscription asserts the billing schema before writing',
+    /async ensureSubscription\([\s\S]*?assertBillingSubscriptionSchema\(\)/.test(
+      billingSrc.match(/async ensureSubscription\([\s\S]*?\n  \}/)?.[0] || ''));
+  const storeSvc = fs.readFileSync(path.join(BACKEND, 'src/services/store.service.js'), 'utf8');
+  check('registerStore asserts it before the first write',
+    /assertBillingSubscriptionSchema\(\)/.test(
+      storeSvc.match(/async registerStore\([\s\S]*?\n  \}/)?.[0] || ''));
+
+  // And the atomicity the incident proved missing: a mid-flow failure must undo
+  // the partial graph, never orphan a tenant that wedges the slug.
+  check('registration commits through one core behind transaction-or-compensation',
+    /createRegistrationCore\(/.test(
+      storeSvc.match(/async registerStore\([\s\S]*?\n  \}/)?.[0] || '')
+    && /withTransaction/.test(storeSvc) && /compensateRegistration\(/.test(storeSvc));
 }
 
 // Printed LAST, only after every section has run. This line used to sit above

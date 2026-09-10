@@ -3,13 +3,18 @@
  *
  * registerStore(): public self-service — creates Tenant + owner admin user +
  * auth config + trial subscription, returns owner tokens (smooth onboarding).
- * Branding/discovery/publish are store-owner ops; syncVendorProducts routes
+ * ALL-OR-NOTHING: the identity core commits atomically (one transaction where
+ * the topology supports it, compensating cleanup where not), so a mid-flow
+ * failure can never orphan a tenant that wedges the slug. Branding/discovery/
+ * publish are store-owner ops; syncVendorProducts routes
  * an approved vendor's products into a marketplace-enabled store (idempotent
  * on productMasterId, reusing the Phase-2 TenantProduct listing mechanics).
  */
 
+import mongoose from 'mongoose';
 import Tenant from '../models/tenant.model.js';
 import TenantAuthConfig from '../models/tenantAuthConfig.model.js';
+import Subscription from '../models/subscription.model.js';
 import User from '../models/user.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
 import Hub from '../models/hub.model.js';
@@ -21,8 +26,9 @@ import TaxRegistration from '../models/taxRegistration.model.js';
 import ProductMaster from '../models/productMaster.model.js';
 import Vendor from '../models/vendor.model.js';
 import planService from './plan.service.js';
-import billingService from './billing.service.js';
+import billingService, { assertBillingSubscriptionSchema } from './billing.service.js';
 import auditService from './audit.service.js';
+import { transactionsSupported } from '../utils/transactions.js';
 import { serializeList } from '../utils/serialize.js';
 import { badRequest, conflict, notFound, forbidden } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
@@ -37,64 +43,20 @@ import { TAX_OWNER_TYPE } from '../constants/enums.js';
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 class StoreService {
-  /** Create a store (public). Idempotent-ish: slug unique → 409 on retry. */
+  /**
+   * Create a store (public). Idempotent-ish: slug unique → 409 on retry.
+   * All-or-nothing: pre-checks fail BEFORE the first write, the identity core
+   * (Tenant + auth config + owner + subscription) commits atomically, and only
+   * then do the best-effort post-commit steps (skeleton, audit, tokens) run.
+   */
   async registerStore({ name, slug, plan = 'free', planCode = null, contactEmail = null, owner = {}, req = null }) {
     if (!SLUG_RE.test(slug)) throw badRequest('Slug must be lowercase letters, numbers, hyphens', 'BAD_SLUG');
     if (config.marketplace.reservedSlugs.includes(slug)) throw conflict('This slug is reserved', 'SLUG_RESERVED');
-
-    const existing = await Tenant.findOne({ slug });
-    if (existing) throw conflict('Tenant slug already exists', 'TENANT_SLUG_EXISTS');
-
+    const slugTaken = await Tenant.findOne({ slug }).select('_id').lean();
+    if (slugTaken) throw conflict('Tenant slug already exists', 'TENANT_SLUG_EXISTS');
     const planDoc = await planService.getByCode(planCode || plan);
-    const tenant = await Tenant.create({
-      name: name.trim(),
-      slug,
-      type: 'business',
-      contactEmail: (contactEmail || '').toLowerCase() || null,
-      plan: planDoc.code,
-      planExpiresAt: null,
-      features: {
-        slotsEnabled: true,
-        paymentsEnabled: true,
-        subscriptionsEnabled: Boolean(planDoc.features?.marketplaceEnabled),
-        marketplaceEnabled: Boolean(planDoc.features?.marketplaceEnabled),
-      },
-      status: 'active',
-      store: { isPublished: false, onboardingStatus: 'registered' },
-    });
-
-    // ---- auth config ----
-    await TenantAuthConfig.create({ tenantId: tenant.id });
-
-    // ---- owner admin (NEVER super_admin; token tenant = this new store) ----
-    // Identity is UNVERIFIED at registration: claiming an email must never mark
-    // it verified (typo/hijack risk). The owner proves it via the verify-email
-    // OTP flow, and publishing is blocked until they do (onboarding item).
-    const { default: AuthService } = await import('./auth.service.js');
-    const ownerUser = await User.create({
-      tenantId: tenant.id,
-      email: owner.email ? { address: String(owner.email).toLowerCase(), verified: false } : { verified: false },
-      phone: owner.phone ? { countryCode: '+91', number: owner.phone, verified: false } : { verified: false },
-      role: USER_ROLES.ADMIN,
-      status: 'active',
-      profile: { firstName: owner.firstName || 'Store', lastName: owner.lastName || 'Owner' },
-      loginMethods: owner.email ? ['email_password'] : ['phone_otp'],
-      defaultTenantId: tenant.id,
-    });
-    if (owner.password) {
-      await ownerUser.setPassword(owner.password);
-      await ownerUser.save();
-    }
-    tenant.ownerUserId = ownerUser._id;
-    await tenant.save();
-
-    // ---- trial subscription (plan pricing snapshot) ----
-    await billingService.ensureSubscription({
-      tenantId: tenant._id,
-      planCode: planDoc.code,
-      commissionRateBps: planDoc.commissionRateBps,
-      trialDays: planDoc.trialDays,
-    });
+    assertBillingSubscriptionSchema();
+    const { tenant, ownerUser } = await this.createRegistrationCore({ name, slug, contactEmail, owner, planDoc });
 
     // ---- operational skeleton (F5) ----
     // A Tenant, an auth config, an owner and a subscription are not a shop: with
@@ -112,11 +74,140 @@ class StoreService {
       after: { slug: tenant.slug, name: tenant.name, plan: planDoc.code, seeded }, req,
     }).catch(() => {});
 
+    const { default: AuthService } = await import('./auth.service.js');
     const tokens = await AuthService.issueTokens(ownerUser);
     // `onboarding` ships with the registration response so the console can render
     // the checklist on the very first screen instead of letting the merchant
     // discover the gap by watching a customer fail to check out.
     return { tenant, owner: ownerUser, tokens, seeded, onboarding: await this.getOnboardingStatus({ tenantId: tenant.id }).catch(() => null) };
+  }
+
+  /**
+   * Registration identity core, all-or-nothing. Replica set / mongos → one ACID
+   * transaction; standalone mongod (local dev, hermetic suites) → ordered writes
+   * with reverse-order compensating deletes. Callers cannot tell the difference:
+   * success returns the graph, failure leaves NOTHING behind (no orphan tenant
+   * wedging the slug, no owner without a store).
+   */
+  async createRegistrationCore({ name, slug, contactEmail, owner, planDoc }) {
+    if (await transactionsSupported()) {
+      const session = await mongoose.startSession();
+      try {
+        let committed = null;
+        await session.withTransaction(async () => {
+          committed = await this.writeRegistrationCore({ name, slug, contactEmail, owner, planDoc, session, created: null });
+        });
+        return committed;
+      } finally {
+        await session.endSession();
+      }
+    }
+    const created = {};
+    try {
+      return await this.writeRegistrationCore({ name, slug, contactEmail, owner, planDoc, session: null, created });
+    } catch (err) {
+      await this.compensateRegistration(created);
+      throw err;
+    }
+  }
+
+  /** The core writes, identical on both atomicity paths. Tracks ids for compensation. */
+  async writeRegistrationCore({ name, slug, contactEmail, owner, planDoc, session, created = null }) {
+    const saveOpts = session ? { session } : undefined;
+    const track = (key, id) => { if (created) created[key] = id; };
+
+    let tenant = null;
+    try {
+      tenant = new Tenant({
+        name: name.trim(),
+        slug,
+        type: 'business',
+        contactEmail: (contactEmail || '').toLowerCase() || null,
+        plan: planDoc.code,
+        planExpiresAt: null,
+        features: {
+          slotsEnabled: true,
+          paymentsEnabled: true,
+          subscriptionsEnabled: Boolean(planDoc.features?.marketplaceEnabled),
+          marketplaceEnabled: Boolean(planDoc.features?.marketplaceEnabled),
+        },
+        status: 'active',
+        store: { isPublished: false, onboardingStatus: 'registered' },
+      });
+      await tenant.save(saveOpts);
+    } catch (err) {
+      // Pre-check passed but the write collided (concurrent double submit): the
+      // unique index is the real guard, and it reports the SAME code as the
+      // pre-check so clients handle one 409 either way.
+      if (err?.code === 11000) throw conflict('Tenant slug already exists', 'TENANT_SLUG_EXISTS');
+      throw err;
+    }
+    track('tenantId', tenant._id);
+
+    // ---- auth config ----
+    const authConfig = new TenantAuthConfig({ tenantId: tenant.id });
+    await authConfig.save(saveOpts);
+    track('authConfigId', authConfig._id);
+
+    // ---- owner admin (NEVER super_admin; token tenant = this new store) ----
+    // Identity is UNVERIFIED at registration: claiming an email must never mark
+    // it verified (typo/hijack risk). The owner proves it via the verify-email
+    // OTP flow, and publishing is blocked until they do (onboarding item).
+    const ownerUser = new User({
+      tenantId: tenant.id,
+      email: owner.email ? { address: String(owner.email).toLowerCase(), verified: false } : { verified: false },
+      phone: owner.phone ? { countryCode: '+91', number: owner.phone, verified: false } : { verified: false },
+      role: USER_ROLES.ADMIN,
+      status: 'active',
+      profile: { firstName: (owner.firstName || '').trim() || 'Store', lastName: (owner.lastName || '').trim() || 'Owner' },
+      loginMethods: owner.email ? ['email_password'] : ['phone_otp'],
+      defaultTenantId: tenant.id,
+    });
+    await ownerUser.save(saveOpts);
+    track('userId', ownerUser._id);
+    if (owner.password) {
+      await ownerUser.setPassword(owner.password);
+      await ownerUser.save(saveOpts);
+    }
+    tenant.ownerUserId = ownerUser._id;
+    await tenant.save(saveOpts);
+
+    // ---- trial subscription (plan pricing snapshot) ----
+    const { subscription } = await billingService.ensureSubscription({
+      tenantId: tenant._id,
+      planCode: planDoc.code,
+      commissionRateBps: planDoc.commissionRateBps,
+      trialDays: planDoc.trialDays,
+      session,
+    });
+    track('subscriptionId', subscription._id);
+
+    return { tenant, ownerUser, subscription };
+  }
+
+  /**
+   * Standalone-mongod compensation: delete what the failed core created, in
+   * reverse-creation order. Best-effort per row and NEVER throws — compensation
+   * must not mask the original error, and one failed delete must not stop the
+   * rest. Rows are independent (no FKs), so the deletes run concurrently.
+   */
+  async compensateRegistration(created) {
+    const steps = [
+      ['subscription', Subscription, created.subscriptionId],
+      ['owner user', User, created.userId],
+      ['auth config', TenantAuthConfig, created.authConfigId],
+      ['tenant', Tenant, created.tenantId],
+    ].filter(([, , id]) => id);
+    const settled = await Promise.allSettled(
+      steps.map(([label, model, id]) => model.deleteOne({ _id: id }).then(() => label))
+    );
+    for (const [i, result] of settled.entries()) {
+      if (result.status === 'rejected') {
+        // A failed compensation is an ops incident (orphan row): loud, with the id.
+        // eslint-disable-next-line no-console
+        console.warn(`[register] compensation failed for ${steps[i][0]} ${steps[i][2]}: ${result.reason?.message || result.reason}`);
+      }
+    }
   }
 
   // ---------------- onboarding (F5) ----------------

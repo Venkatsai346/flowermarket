@@ -166,6 +166,34 @@ async function main() {
   assert.equal(r.body.code, 'TENANT_SLUG_EXISTS');
   ok('public: register store (owner admin + tokens), duplicate slug → 409');
 
+  // ---- 1a. registration is atomic: a mid-flow failure leaves nothing behind ----
+  // A duplicate owner email passes every pre-check, then dies INSIDE the core at
+  // the unique email index — after Tenant + auth config were written. The
+  // compensation must remove them: no orphan tenant, no wedged slug.
+  const rowsBefore = {
+    tenants: await M.Tenant.countDocuments({}),
+    authConfigs: await M.TenantAuthConfig.countDocuments({}),
+    users: await M.User.countDocuments({}),
+    subscriptions: await M.Subscription.countDocuments({}),
+  };
+  r = await call('/marketplace/tenants/register', {
+    method: 'POST',
+    body: { name: 'Ghost Store', slug: 'ghost-store', plan: 'free', owner: { firstName: 'Ghost', email: 'ravi@kakatiya.in', password: 'Store@12345' } },
+  });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'DUPLICATE_KEY');
+  assert.equal(await M.Tenant.countDocuments({}), rowsBefore.tenants, 'no orphan tenant');
+  assert.equal(await M.TenantAuthConfig.countDocuments({}), rowsBefore.authConfigs, 'no orphan auth config');
+  assert.equal(await M.User.countDocuments({}), rowsBefore.users, 'no orphan owner');
+  assert.equal(await M.Subscription.countDocuments({}), rowsBefore.subscriptions, 'no orphan subscription');
+  // and the slug is immediately reusable
+  r = await call('/marketplace/tenants/register', {
+    method: 'POST',
+    body: { name: 'Ghost Store', slug: 'ghost-store', plan: 'free', owner: { firstName: 'Ghost', email: 'ghost@stores.in', password: 'Store@12345' } },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  ok('registration is atomic: mid-flow failure leaves zero rows, slug reusable');
+
   // discovery: nothing published yet
   r = await call('/marketplace/stores');
   assert.equal(r.body.data.length, 0, 'unpublished stores hidden from discovery');
