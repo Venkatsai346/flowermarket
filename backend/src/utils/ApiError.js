@@ -31,3 +31,6 @@ export const tooMany = (message = 'Too many requests', code = 'RATE_LIMITED') =>
 /** 402 — billing gates (past-due subscription, plan limit exceeded). */
 export const paymentRequired = (message = 'Payment required', code = 'PAYMENT_REQUIRED', details) =>
   new AppError(message, { status: 402, code, details });
+/** 500 — server-side invariant broken (misconfig, schema mismatch). Never a client bug. */
+export const internal = (message = 'Internal error', code = 'INTERNAL_ERROR', details) =>
+  new AppError(message, { status: 500, code, details });

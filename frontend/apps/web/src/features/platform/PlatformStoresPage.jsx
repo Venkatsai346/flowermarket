@@ -5,7 +5,7 @@ import {
   fmtDate,
   periodLabel,
   pickMeta,
-  SUBSCRIPTION_STATUS_META,
+  TENANT_SUBSCRIPTION_STATUS_META,
   titleCase,
 } from '@flower-market/shared';
 import { api } from '../../api.js';
@@ -88,7 +88,7 @@ export default function PlatformStoresPage() {
             { key: 'subscription', header: 'Subscription', render: (r) => {
               const s = r.subscription;
               if (!s) return <span className="text-xs text-slate-400">none</span>;
-              const m = pickMeta(SUBSCRIPTION_STATUS_META, s.status);
+              const m = pickMeta(TENANT_SUBSCRIPTION_STATUS_META, s.status);
               return <Badge tone={m.tone} dot>{m.label}</Badge>;
             } },
             { key: 'onboarding', header: 'Storefront', render: (r) => (
@@ -144,8 +144,8 @@ export default function PlatformStoresPage() {
               <div className="rounded-xl border border-slate-200 p-4 text-sm">
                 <div className="flex items-center justify-between">
                   <p className="font-semibold text-slate-800">{selectedTenant.subscription.planSnapshot?.name} plan</p>
-                  <Badge tone={pickMeta(SUBSCRIPTION_STATUS_META, selectedTenant.subscription.status).tone}>
-                    {pickMeta(SUBSCRIPTION_STATUS_META, selectedTenant.subscription.status).label}
+                  <Badge tone={pickMeta(TENANT_SUBSCRIPTION_STATUS_META, selectedTenant.subscription.status).tone}>
+                    {pickMeta(TENANT_SUBSCRIPTION_STATUS_META, selectedTenant.subscription.status).label}
                   </Badge>
                 </div>
                 <dl className="mt-3 space-y-1.5 text-xs text-slate-500">

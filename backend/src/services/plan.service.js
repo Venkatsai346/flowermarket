@@ -68,6 +68,19 @@ class PlanService {
     return plan;
   }
 
+  /**
+   * Owner-facing lookup: tenants follow the EXISTING plans created by the super
+   * admin, and a deactivated plan is not joinable — registration and plan
+   * change go through here so a dead code can never seat a new subscriber.
+   * (Live subscribers are protected the other way: `update` refuses to
+   * deactivate a plan that still seats stores.)
+   */
+  async getActiveByCode(code) {
+    const plan = await this.getByCode(code);
+    if (plan.isActive === false) throw conflict(`Plan "${plan.code}" is no longer available`, 'PLAN_INACTIVE');
+    return plan;
+  }
+
   // ---- platform admin CRUD ----
   async listAll() {
     return serializeList(await Plan.find().sort({ sortOrder: 1 }).lean());
@@ -99,8 +112,8 @@ class PlanService {
     // stores on a dead code (entitlements fail-safe to free limits, but the
     // operator should move subscribers FIRST — deliberately, not by accident).
     if (payload.isActive === false && plan.isActive !== false) {
-      const { default: Subscription } = await import('../models/subscription.model.js');
-      const live = await Subscription.countDocuments({
+      const { default: TenantSubscription } = await import('../models/tenantSubscription.model.js');
+      const live = await TenantSubscription.countDocuments({
         planCode: plan.code, status: { $in: ['trial', 'active', 'past_due'] },
       });
       if (live > 0) {

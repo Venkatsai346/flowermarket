@@ -14,8 +14,8 @@ import { paymentRequired } from '../utils/ApiError.js';
 export async function requireBillingCurrent(req, res, next) {
   try {
     if (!req.tenantId) return next();
-    const { default: Subscription } = await import('../models/subscription.model.js');
-    const sub = await Subscription.findOne({
+    const { default: TenantSubscription } = await import('../models/tenantSubscription.model.js');
+    const sub = await TenantSubscription.findOne({
       tenantId: req.tenantId,
       status: { $in: ['trial', 'active', 'past_due'] },
     }).select('status periodEnd').lean();

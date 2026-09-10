@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Building2, RefreshCw, ShieldAlert, ShieldCheck, Store, Truck } from 'lucide-react';
-import { bpsToPct, fmtDate, pickMeta, SUBSCRIPTION_STATUS_META, titleCase } from '@flower-market/shared';
+import { bpsToPct, fmtDate, pickMeta, TENANT_SUBSCRIPTION_STATUS_META, titleCase } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
 import { errMsg } from '../../lib/utils.js';
@@ -113,7 +113,7 @@ export default function LifecyclePanel() {
                 { key: 'plan', header: 'Plan', render: (r) => <Badge tone={r.plan === 'business' ? 'violet' : r.plan === 'pro' ? 'sky' : 'slate'}>{titleCase(r.plan)}</Badge> },
                 { key: 'sub', header: 'Subscription', render: (r) => {
                   const s = r.subscription;
-                  const m = pickMeta(SUBSCRIPTION_STATUS_META, s?.status);
+                  const m = pickMeta(TENANT_SUBSCRIPTION_STATUS_META, s?.status);
                   return <Badge tone={s ? m.tone : 'slate'} dot>{s ? m.label : 'None'}</Badge>;
                 } },
                 { key: 'storefront', header: 'Storefront', render: (r) => <Badge tone={r.store?.isPublished ? 'emerald' : 'slate'}>{r.store ? (r.store.isPublished ? 'Published' : 'Draft') : '—'}</Badge> },

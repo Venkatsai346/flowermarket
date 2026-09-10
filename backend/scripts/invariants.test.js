@@ -71,6 +71,15 @@
  *     every customer while isPublished could still be switched on. The seeding,
  *     the publish gate, the removal of the hardcoded ₹49, and the deliberate
  *     decision NOT to guess pincodes are all asserted here.
+ *
+ * 15. TWO SUBSCRIPTIONS, TWO MODELS, ATOMIC REGISTRATION — Phase-5 billing
+ *     squatted on the bare `Subscription` name, so the customer
+ *     recurring-order schema made every billing write fail with a cryptic
+ *     VALIDATION_ERROR — after the tenant already existed, orphaning it and
+ *     wedging the slug (retry → 409 on a store that never completed). Now
+ *     Subscription (customer) and TenantSubscription (store billing) are
+ *     asserted separately shaped and never cross-wired, a runtime guard fails
+ *     LOUD before writing, and registration commits all-or-nothing.
  */
 
 import fs from 'node:fs';
@@ -746,9 +755,16 @@ section('13. a newly registered store is told what it cannot yet do');
   if (fs.existsSync(uiPath)) {
     const ui = fs.readFileSync(uiPath, 'utf8');
     check('the checklist calls the endpoint', /api\.marketplace\.myOnboarding\(\)/.test(ui));
+    // Most items link to the page that fixes them — but an item can ALSO be
+    // fixed inline (ownerEmail's code entry), which is strictly better UX than
+    // a route. The allowlist is explicit and tiny: anything else without a
+    // route is a dead end, exactly what this check was written to catch.
+    const INLINE_HANDLED = new Set(['ownerEmail']);
+    const hasFix = (id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)
+      || (INLINE_HANDLED.has(id) && new RegExp(`item\\.id === '${id}'`).test(ui));
     check('every item id the API can return has somewhere to go',
-      Object.values(readiness.ONBOARDING_ITEM).every((id) => new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)),
-      Object.values(readiness.ONBOARDING_ITEM).filter((id) => !new RegExp(`${id}:\\s*\\{\\s*to:`).test(ui)).join(', '));
+      Object.values(readiness.ONBOARDING_ITEM).every(hasFix),
+      Object.values(readiness.ONBOARDING_ITEM).filter((id) => !hasFix(id)).join(', '));
     check('the publish control is disabled while blocked',
       /disabled=\{!canPublish\}/.test(ui));
     const dash = fs.readFileSync(
@@ -810,6 +826,72 @@ section('14. tax document numbers are unique per supplier, not per platform');
   const longest = `${prefix}/26-27/${'0'.repeat(width)}`;
   check(`the default number "${longest}" fits GST's 16-character cap`,
     longest.length > 0 && longest.length <= 16, `${longest.length} characters`);
+}
+
+// ---------------------------------------------------------------------------
+section('15. two subscription concepts, two models, zero cross-wiring');
+// ---------------------------------------------------------------------------
+{
+  // `Subscription` is the CUSTOMER recurring-order schema (Phase 7.8.1) and
+  // `TenantSubscription` the STORE plan-billing schema (Phase 5). Phase-5 code
+  // once squatted on the bare name, so a same-named customer schema made every
+  // billing write fail cryptically AFTER the tenant existed — orphaning it and
+  // wedging the slug. The split vocabulary makes that unrepresentable; these
+  // checks nail both halves down: one registration each, each shaped like its
+  // own concept, neither leaking the other's fields.
+  const MODELS = path.join(BACKEND, 'src/models');
+  const modelFiles = jsFiles(MODELS)
+    .map((f) => ({ file: rel(f), src: fs.readFileSync(f, 'utf8') }));
+  const registering = (name) => modelFiles.filter(({ src }) =>
+    new RegExp(`mongoose\\.model\\(\\s*['"]${name}['"]`).test(src));
+  const customerRegs = registering('Subscription');
+  const tenantRegs = registering('TenantSubscription');
+  check('exactly one file registers mongoose.model(\'Subscription\')',
+    customerRegs.length === 1, customerRegs.map((r) => r.file).join(', '));
+  check('exactly one file registers mongoose.model(\'TenantSubscription\')',
+    tenantRegs.length === 1, tenantRegs.map((r) => r.file).join(', '));
+
+  const subSrc = fs.readFileSync(path.join(MODELS, 'subscription.model.js'), 'utf8');
+  check('Subscription is the customer schema (userId/frequency/nextDeliveryAt)',
+    /userId:\s*\{/.test(subSrc) && /frequency:\s*\{/.test(subSrc) && /nextDeliveryAt:\s*\{/.test(subSrc));
+  check('no billing fields hide in the customer schema',
+    !/planCode/.test(subSrc) && !/planSnapshot/.test(subSrc));
+
+  const tenantSubSrc = fs.readFileSync(path.join(MODELS, 'tenantSubscription.model.js'), 'utf8');
+  check('TenantSubscription is the billing schema (planCode/tenantId/planSnapshot)',
+    /planCode:\s*\{/.test(tenantSubSrc) && /tenantId:\s*\{/.test(tenantSubSrc) && /planSnapshot:\s*\{/.test(tenantSubSrc));
+  check('no customer-subscription fields hide in the billing schema',
+    !/nextDeliveryAt/.test(tenantSubSrc) && !/\bfrequency\b/.test(tenantSubSrc) && !/userId/.test(tenantSubSrc));
+  check('the two models live in different collections',
+    /collection:\s*'subscriptions'/.test(subSrc) && /collection:\s*'tenant_subscriptions'/.test(tenantSubSrc));
+
+  const enumsSrc = fs.readFileSync(path.join(BACKEND, 'src/constants/enums.js'), 'utf8');
+  check('the customer enum can pause, the billing enum can trial',
+    /SUBSCRIPTION_STATUS = Object\.freeze\(\{[\s\S]*?PAUSED:/.test(enumsSrc)
+    && /TENANT_SUBSCRIPTION_STATUS = Object\.freeze\(\{[\s\S]*?TRIAL:\s*'trial'/.test(enumsSrc));
+
+  // Billing must import the billing model — nowhere may it touch Subscription.
+  const billingSrc = fs.readFileSync(path.join(BACKEND, 'src/services/billing.service.js'), 'utf8');
+  check('billing.service imports TenantSubscription, never Subscription',
+    /from '\.\.\/models\/tenantSubscription\.model\.js'/.test(billingSrc)
+    && !/from '\.\.\/models\/subscription\.model\.js'/.test(billingSrc));
+
+  // The runtime guard must actually be wired: fail LOUD before writing, both at
+  // registration (before the tenant exists) and at every subscription write.
+  check('ensureSubscription asserts the tenant-billing schema before writing',
+    /async ensureSubscription\([\s\S]*?assertTenantSubscriptionSchema\(\)/.test(
+      billingSrc.match(/async ensureSubscription\([\s\S]*?\n  \}/)?.[0] || ''));
+  const storeSvc = fs.readFileSync(path.join(BACKEND, 'src/services/store.service.js'), 'utf8');
+  check('registerStore asserts it before the first write',
+    /assertTenantSubscriptionSchema\(\)/.test(
+      storeSvc.match(/async registerStore\([\s\S]*?\n  \}/)?.[0] || ''));
+
+  // And the atomicity the incident proved missing: a mid-flow failure must undo
+  // the partial graph, never orphan a tenant that wedges the slug.
+  check('registration commits through one core behind transaction-or-compensation',
+    /createRegistrationCore\(/.test(
+      storeSvc.match(/async registerStore\([\s\S]*?\n  \}/)?.[0] || '')
+    && /withTransaction/.test(storeSvc) && /compensateRegistration\(/.test(storeSvc));
 }
 
 // Printed LAST, only after every section has run. This line used to sit above

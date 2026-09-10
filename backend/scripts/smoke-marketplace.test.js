@@ -47,7 +47,7 @@ async function main() {
     'inventoryAdjustment.model.js', 'analyticsDaily.model.js',
     'device.model.js', 'notificationTemplate.model.js', 'notification.model.js', 'exportJob.model.js', 'exportArtifact.model.js',
     // ---- Phase 5 ----
-    'plan.model.js', 'subscription.model.js', 'invoice.model.js', 'vendorApplication.model.js', 'vendor.model.js',
+    'plan.model.js', 'subscription.model.js', 'tenantSubscription.model.js', 'invoice.model.js', 'vendorApplication.model.js', 'vendor.model.js',
     'platformDaily.model.js', 'counter.model.js',
   ];
   const models = await Promise.all(modelFiles.map((f) => import(`../src/models/${f}`)));
@@ -165,6 +165,34 @@ async function main() {
   assert.equal(r.status, 409, 'duplicate slug must 409');
   assert.equal(r.body.code, 'TENANT_SLUG_EXISTS');
   ok('public: register store (owner admin + tokens), duplicate slug → 409');
+
+  // ---- 1a. registration is atomic: a mid-flow failure leaves nothing behind ----
+  // A duplicate owner email passes every pre-check, then dies INSIDE the core at
+  // the unique email index — after Tenant + auth config were written. The
+  // compensation must remove them: no orphan tenant, no wedged slug.
+  const rowsBefore = {
+    tenants: await M.Tenant.countDocuments({}),
+    authConfigs: await M.TenantAuthConfig.countDocuments({}),
+    users: await M.User.countDocuments({}),
+    subscriptions: await M.TenantSubscription.countDocuments({}),
+  };
+  r = await call('/marketplace/tenants/register', {
+    method: 'POST',
+    body: { name: 'Ghost Store', slug: 'ghost-store', plan: 'free', owner: { firstName: 'Ghost', email: 'ravi@kakatiya.in', password: 'Store@12345' } },
+  });
+  assert.equal(r.status, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'DUPLICATE_KEY');
+  assert.equal(await M.Tenant.countDocuments({}), rowsBefore.tenants, 'no orphan tenant');
+  assert.equal(await M.TenantAuthConfig.countDocuments({}), rowsBefore.authConfigs, 'no orphan auth config');
+  assert.equal(await M.User.countDocuments({}), rowsBefore.users, 'no orphan owner');
+  assert.equal(await M.TenantSubscription.countDocuments({}), rowsBefore.subscriptions, 'no orphan subscription');
+  // and the slug is immediately reusable
+  r = await call('/marketplace/tenants/register', {
+    method: 'POST',
+    body: { name: 'Ghost Store', slug: 'ghost-store', plan: 'free', owner: { firstName: 'Ghost', email: 'ghost@stores.in', password: 'Store@12345' } },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  ok('registration is atomic: mid-flow failure leaves zero rows, slug reusable');
 
   // discovery: nothing published yet
   r = await call('/marketplace/stores');
@@ -333,7 +361,7 @@ async function main() {
   assert.equal(r.status, 200, JSON.stringify(r.body));
   // backdate store A subscription period to [today-30, today] so the cycle is due;
   // expire the trial so the fee is actually billed (trial waives the fee)
-  const subA = await M.Subscription.findOne({ tenantId: tenantA.id, status: 'trial' });
+  const subA = await M.TenantSubscription.findOne({ tenantId: tenantA.id, status: 'trial' });
   subA.periodStart = new Date(Date.now() - 30 * 86400000);
   subA.periodEnd = new Date();
   subA.trialEndsAt = new Date(Date.now() - 86400000); // trial over → cycle rolls it to active
@@ -368,7 +396,7 @@ async function main() {
   // plan change mid-period → prorated adjustment on the NEXT invoice
   r = await call('/marketplace/store/plan', { method: 'PATCH', token: ownerATok, body: { planCode: 'business' } });
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const subAFresh = await M.Subscription.findOne({ tenantId: tenantA.id, status: { $in: ["trial", "active", "past_due"] } });
+  const subAFresh = await M.TenantSubscription.findOne({ tenantId: tenantA.id, status: { $in: ["trial", "active", "past_due"] } });
   assert.equal(subAFresh.planSnapshot.priceMonthly, 2999);
   assert.ok(subAFresh.pendingAdjustment.amount > 0, `prorated adjustment ${subAFresh.pendingAdjustment.amount}`);
   // force a NEW period (different from the first invoice's key) due and generate →
@@ -384,7 +412,7 @@ async function main() {
   assert.ok(invNext, 'next invoice generated');
   const adjLine = invNext.lineItems.find((l) => l.type === 'adjustment');
   assert.ok(adjLine, 'proration adjustment line present');
-  const subA2 = await M.Subscription.findById(subAFresh.id);
+  const subA2 = await M.TenantSubscription.findById(subAFresh.id);
   assert.equal(subA2.pendingAdjustment.amount, 0, 'adjustment applied and cleared');
   ok('billing: mid-period plan change → prorated adjustment on next invoice, then cleared');
 
@@ -402,7 +430,7 @@ async function main() {
   r = await call('/marketplace/admin/billing/overdue-sweep', { method: 'POST', token: platTok });
   assert.equal(r.status, 200);
   assert.ok(r.body.data.markedOverdue >= 1);
-  const subA3 = await M.Subscription.findById(subAFresh.id);
+  const subA3 = await M.TenantSubscription.findById(subAFresh.id);
   assert.equal(subA3.status, 'past_due', 'overdue invoice → subscription past_due');
   ok('billing: pay (mock, idempotent), overdue sweep → past_due');
 

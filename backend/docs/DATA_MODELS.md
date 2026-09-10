@@ -486,12 +486,16 @@ to active). Existing `slug` (unique = store URL), `theme`, `logoUrl`, `plan`,
 marketplaceEnabled}`, `trialDays`, `isActive`, `sortOrder`, `version`. Pricing is
 SNAPSHOTTED onto subscriptions/invoices — editing a plan never rewrites history.
 
-### 10.3 `subscriptions` (NEW — one live per tenant)
+### 10.3 `tenant_subscriptions` (NEW — one live per tenant)
 Partial unique `(tenantId, status ∈ trial|active|past_due)`. Fields: `planCode`,
 `planSnapshot {name, priceMonthly}`, `commissionRateBps`, `currency`,
 `status trial|active|past_due|cancelled`, `periodStart/periodEnd`, `trialEndsAt`,
 `cancelAtPeriodEnd`, `pendingAdjustment {amount, label}` (mid-period plan-change
 proration, applied to the next invoice then cleared), `changedAt`.
+NOT customer recurring orders — those are `subscriptions` (Phase 7.8.1:
+`userId`, `frequency weekly|biweekly|monthly`, `nextDeliveryAt`,
+`status active|paused|cancelled|expired`). The two concepts share nothing but
+an English word; see the vocabulary header in `constants/enums.js`.
 
 ### 10.4 `vendors` (NEW — the Phase-1 placeholder, now real)
 Created ONLY from an approved `vendorapplications` row (which also grants `user.role =

@@ -61,8 +61,10 @@ export const ITEM_STATE = Object.freeze({
  * @property {number}  categoriesMissingTaxPolicy  of those, how many have no active TaxPolicy
  * @property {string|null} tagline
  * @property {string|null} gstin
- * @property {boolean} [ownerEmailVerified] absent in legacy fact pictures,
- *   which the evaluator treats as verified (old stores stay published)
+ * @property {boolean} [ownerEmailVerified] absent counts as UNVERIFIED: the
+ *   module fails closed on every fact it cannot see (an absent fee policy
+ *   blocks too). Legacy tenants without a recorded owner are grandfathered
+ *   in getOnboardingFacts — with DB context — never here in the pure decision.
  */
 
 const asCount = (v) => {
@@ -107,9 +109,7 @@ export function evaluateOnboarding(facts = {}, options = {}) {
   const categoriesMissingTaxPolicy = asCount(f.categoriesMissingTaxPolicy);
   const tagline = asText(f.tagline);
   const gstin = asText(f.gstin);
-  // Missing/legacy fact pictures predate email verification: treat an absent
-  // flag as done (old stores stay published), an explicit false as blocking.
-  const ownerEmailVerified = f.ownerEmailVerified == null ? true : asBool(f.ownerEmailVerified);
+  const ownerEmailVerified = asBool(f.ownerEmailVerified);
 
   const days = Number.isFinite(Number(slotDaysAhead)) && Number(slotDaysAhead) > 0
     ? Math.floor(Number(slotDaysAhead)) : 3;

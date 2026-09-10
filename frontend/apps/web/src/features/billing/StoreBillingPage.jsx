@@ -8,7 +8,7 @@ import {
   periodLabel,
   pickMeta,
   signedInr,
-  SUBSCRIPTION_STATUS_META,
+  TENANT_SUBSCRIPTION_STATUS_META,
 } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi, useAction } from '../../lib/useApi.js';
@@ -110,7 +110,7 @@ export default function StoreBillingPage() {
   const [planCode, setPlanCode] = useState('');
 
   const sub = store.data?.subscription || null;
-  const subMeta = sub ? pickMeta(SUBSCRIPTION_STATUS_META, sub.status) : null;
+  const subMeta = sub ? pickMeta(TENANT_SUBSCRIPTION_STATUS_META, sub.status) : null;
   const trialLeft = sub?.trialEndsAt ? daysUntil(sub.trialEndsAt) : null;
 
   const changePlan = async (code) => {

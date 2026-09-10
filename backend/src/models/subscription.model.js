@@ -1,19 +1,25 @@
 /**
  * Subscription — recurring order model (Phase 7.8.1).
  *
- * Supports:
- *   - Weekly / bi-weekly / monthly delivery cadence
- *   - Auto-generates orders on schedule
- *   - Pause / resume / cancel lifecycle
- *   - Per-subscription pricing (locked at subscribe time)
- *   - Skip next delivery
+ * A CUSTOMER's frequency ordering: weekly / bi-weekly / monthly delivery
+ * cadence. The scheduler (subscription.service.js) runs daily and creates
+ * orders for subscriptions whose nextDeliveryAt has come due. Pause / resume /
+ * cancel lifecycle, per-subscription pricing locked at subscribe time, skip
+ * next delivery.
  *
- * The scheduler (subscription.service.js) runs daily and creates orders
- * for subscriptions whose nextDeliveryAt has come due.
+ * NOT tenant plan billing — that is TenantSubscription (`tenant_subscriptions`
+ * collection, TENANT_SUBSCRIPTION_STATUS). See the vocabulary header in
+ * constants/enums.js before touching either file.
  */
 
 import mongoose from 'mongoose';
 import { softDeletePlugin, auditPlugin, toJSONPlugin } from './plugins/index.js';
+import { SUBSCRIPTION_STATUS, SUBSCRIPTION_FREQUENCY } from '../constants/enums.js';
+
+// Re-exported so Phase 7.8.1 consumers keep importing from the model file;
+// the canonical home is constants/enums.js (single vocabulary, like every
+// other model).
+export { SUBSCRIPTION_STATUS, SUBSCRIPTION_FREQUENCY };
 
 const { Schema, Types } = mongoose;
 

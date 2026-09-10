@@ -586,7 +586,7 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 | `GET /marketplace/plans` | active plan catalog (free/pro/business, price + commission bps + marketplace flag) |
 | `GET /marketplace/stores?search=&page=&limit=` | store discovery (published stores only) |
 | `GET /marketplace/stores/:slug` | storefront: branding + theme + vendor products (only when marketplace mode) + vendors |
-| `POST /marketplace/tenants/register` `{name, slug, plan?, contactEmail?, owner{firstName, lastName, email, password}}` | create store → tenant + owner admin (never super_admin) + trial subscription + owner auto-login tokens; slug unique/reserved → 409; owner email starts UNVERIFIED (see verify-email) |
+| `POST /marketplace/tenants/register` `{name, slug, plan?, contactEmail?, owner{firstName, lastName, email, password}}` | create store → tenant + owner admin (never super_admin) + trial subscription + owner auto-login tokens; slug unique/reserved → 409; owner email starts UNVERIFIED (see verify-email); ALL-OR-NOTHING (one transaction on replica sets, compensating cleanup on standalone mongod — a failed attempt never orphans a tenant or wedges the slug) |
 
 ### Vendor (auth; role `vendor` — granted ONLY by an approved application)
 
@@ -604,10 +604,10 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /marketplace/store` | my store: branding + plan + subscription |
+| `GET /marketplace/store` | my store: branding + plan + tenant subscription |
 | `PATCH /marketplace/store` `{name?, logoUrl?, theme?, tagline?, description?, bannerUrl?, socialLinks?, isPublished?}` | update branding; publish flips onboarding → active, refused with `STORE_NOT_READY` while blockers (incl. unverified owner email) remain |
-| `GET /marketplace/store/subscription` | live subscription (trial/active/past_due) |
-| `PATCH /marketplace/store/plan` `{planCode}` | change plan (creates subscription for existing stores); mid-period change → pro-rata `pendingAdjustment` on next invoice |
+| `GET /marketplace/store/subscription` | live tenant subscription (trial/active/past_due) — the store's seat on its plan, NOT customer recurring orders |
+| `PATCH /marketplace/store/plan` `{planCode}` | change plan (creates a tenant subscription for existing stores; inactive codes → 409 `PLAN_INACTIVE`); mid-period change → pro-rata `pendingAdjustment` on next invoice |
 | `GET /marketplace/store/invoices?status=` · `GET /marketplace/store/invoices/:id` | my invoices (frozen line items) |
 | `POST /marketplace/store/invoices/:id/pay` | owner self-pay (tenant-scoped: other stores' invoices 404); sync rail → `paid`, async rail → `pending` + gateway order, confirmed by webhook |
 | `GET /marketplace/store/usage` | plan limits + live usage (hubs/listings/staff) for the billing-page meters |
