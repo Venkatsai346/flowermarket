@@ -21,6 +21,7 @@ import { mountOpenAPI } from './middleware/openapi.js';
 import { deduplicate } from './middleware/deduplicate.js';
 import { responseCache } from './middleware/responseCache.js';
 import connectionPoolService from './services/connectionPool.service.js';
+import  SitemapController from './controllers/sitemap.controller.js';
 
 /**
  * App factory — keeps server.js free of middleware wiring and lets tests
