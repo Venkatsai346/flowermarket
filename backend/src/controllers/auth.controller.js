@@ -68,6 +68,9 @@ class AuthController {
     const { email, password } = req.body;
     const result = await AuthService.loginWithPassword({
       tenantId: req.tenantId,
+      // Tells login whether the tenant was NAMED (header/host: stay scoped)
+      // or GUESSED (default/fallback: resolve the account by email alone).
+      tenantSource: req.tenantSource || null,
       email,
       password,
       deviceInfo: req.body.device || {},

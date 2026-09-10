@@ -4,15 +4,6 @@
  */
 import { createApiClient, createEndpoints, useAuthStore } from '@flower-market/shared';
 
-/**
- * Login-only tenant scoping: store-owner accounts belong to their own tenant,
- * so the auth call needs `x-tenant-id` to find the user. The header is set
- * ONLY around the login call — tokens carry the tenant claim for everything
- * else (sending a mismatched header would 401 TENANT_MISMATCH).
- */
-let loginTenantId = '';
-export const setLoginTenantId = (v) => { loginTenantId = String(v || '').trim(); };
-
 const client = createApiClient({
   baseURL: '/api/v1',
   getAccessToken: () => useAuthStore.getState().accessToken,
@@ -26,7 +17,9 @@ const client = createApiClient({
    * the token's tenant, so sending it always is both safe and correct.
    */
   extraHeaders: () => {
-    if (loginTenantId) return { 'x-tenant-id': loginTenantId }; // login-time scoping
+    // Login sends no tenant header: emails are globally unique, so the server
+    // resolves the account by email alone (a stale or missing id here used to
+    // fail correct passwords with INVALID_CREDENTIALS).
     const tenantId = useAuthStore.getState().user?.tenantId;
     return tenantId ? { 'x-tenant-id': tenantId } : {};
   },
