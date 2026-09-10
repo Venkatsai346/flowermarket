@@ -872,9 +872,13 @@ section('15. two subscription concepts, two models, zero cross-wiring');
 
   // The runtime guard must actually be wired: fail LOUD before writing, both at
   // registration (before the tenant exists) and at every subscription write.
+  // And it must probe LEAF paths: single-nested intermediates are not in
+  // Mongoose's schema.paths, and probing one false-positived every registration.
   check('ensureSubscription asserts the tenant-billing schema before writing',
     /async ensureSubscription\([\s\S]*?assertTenantSubscriptionSchema\(\)/.test(
       billingSrc.match(/async ensureSubscription\([\s\S]*?\n  \}/)?.[0] || ''));
+  check('the guard probes nested leaves, never intermediates',
+    /planSnapshot\.priceMonthly/.test(billingSrc) && !/path\('planSnapshot'\)/.test(billingSrc));
   const storeSvc = fs.readFileSync(path.join(BACKEND, 'src/services/store.service.js'), 'utf8');
   check('registerStore asserts it before the first write',
     /assertTenantSubscriptionSchema\(\)/.test(
