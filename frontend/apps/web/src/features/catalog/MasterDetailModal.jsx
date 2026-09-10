@@ -3,10 +3,14 @@ import {
   AlertTriangle,
   BadgeCheck,
   Check,
+  ChevronDown,
   Image as ImageIcon,
   Layers,
   PackageX,
+  Pencil,
   Plus,
+  Star,
+  Trash2,
   UploadCloud,
   X,
 } from 'lucide-react';
@@ -127,6 +131,26 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
       await run(() => api.catalogAdmin.addImage(m.id, { ...imageForm, expectedVersion: m.version }));
       toast.success('Image added');
       setImageForm({ url: '', altText: '', isPrimary: false });
+      load(true); onChanged?.();
+    } catch (err) {
+      if (!guard(err)) toast.error(errMsg(err));
+    }
+  };
+
+  const removeImage = async (imageId) => {
+    try {
+      await run(() => api.catalogAdmin.removeImage(m.id, imageId, { expectedVersion: m.version }));
+      toast.success('Image removed');
+      load(true); onChanged?.();
+    } catch (err) {
+      if (!guard(err)) toast.error(errMsg(err));
+    }
+  };
+
+  const starImage = async (imageId) => {
+    try {
+      await run(() => api.catalogAdmin.setImagePrimary(m.id, imageId, { expectedVersion: m.version }));
+      toast.success('Primary image set');
       load(true); onChanged?.();
     } catch (err) {
       if (!guard(err)) toast.error(errMsg(err));
@@ -259,20 +283,23 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
         <section className="rounded-xl border border-slate-200">
           <header className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
             <p className="flex items-center gap-1.5 text-sm font-semibold text-slate-800"><Layers className="h-4 w-4" /> Variants</p>
+            {variants.length > 0 && (
+              <p className="text-[11px] text-slate-400">expand a row to edit, photograph or retire it</p>
+            )}
           </header>
           {variants.length ? (
-            <table className="w-full text-sm">
-              <tbody className="divide-y divide-slate-100">
-                {variants.map((v, i) => (
-                  <tr key={i}>
-                    <td className="px-4 py-2 text-xs font-medium text-slate-500">{VARIANT_TYPE_LABEL[v.variantType] || v.variantType}</td>
-                    <td className="px-4 py-2 text-slate-800">{v.displayLabel || v.value}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-400">{v.sku || '—'}</td>
-                    <td className="px-4 py-2 text-right">{v.isDefault && <Badge tone="rose">default</Badge>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="divide-y divide-slate-100">
+              {variants.map((v) => (
+                <VariantRow
+                  key={v.id || v._id}
+                  v={v}
+                  masterId={m.id}
+                  version={m.version}
+                  onMutated={() => { load(true); onChanged?.(); }}
+                  onConflict={() => load(true)}
+                />
+              ))}
+            </div>
           ) : <p className="px-4 py-4 text-center text-xs text-slate-400">No variants.</p>}
           <form onSubmit={addVariant} className="flex flex-wrap items-center gap-2 border-t border-slate-100 bg-slate-50/60 p-3">
             <Select className="!w-32" value={variantForm.variantType} onChange={(e) => setVariantForm({ ...variantForm, variantType: e.target.value })}>
@@ -296,9 +323,31 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
           {images.length ? (
             <div className="flex flex-wrap gap-3 p-3">
               {images.map((img, i) => (
-                <div key={i} className="relative">
+                <div key={img.id || img._id || i} className="group/img relative">
                   <img src={img.url} alt={img.altText || m.title} className={cn('h-20 w-20 rounded-lg border border-slate-200 object-cover', img.isPrimary && 'ring-2 ring-rose-400')} />
                   {img.isPrimary && <span className="absolute -top-2 -right-2 grid h-5 w-5 place-items-center rounded-full bg-rose-600 text-white"><BadgeCheck className="h-3 w-3" /></span>}
+                  <span className="absolute inset-x-1 bottom-1 hidden justify-center gap-1 group-hover/img:flex">
+                    {!img.isPrimary && (
+                      <button
+                        type="button"
+                        title="Make primary"
+                        disabled={busy}
+                        onClick={() => starImage(img.id || img._id)}
+                        className="grid h-6 w-6 place-items-center rounded-md bg-white/95 text-amber-500 shadow hover:bg-amber-50"
+                      >
+                        <Star className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      title="Remove image"
+                      disabled={busy}
+                      onClick={() => removeImage(img.id || img._id)}
+                      className="grid h-6 w-6 place-items-center rounded-md bg-white/95 text-rose-500 shadow hover:bg-rose-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
                 </div>
               ))}
             </div>
@@ -352,6 +401,229 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
         </div>
       </Modal>
     </Modal>
+  );
+}
+
+/**
+ * One variant row: thumbnail, identity, photo source — expanding into a full
+ * editor (label/SKU/status/default), a per-variant photo manager with upload,
+ * and a two-click retire that also retires the variant's gallery.
+ */
+function VariantRow({ v, masterId, version, onMutated, onConflict }) {
+  const { busy, run } = useAction();
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState(null);
+  const [photoUrl, setPhotoUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const inputRef = useRef(null);
+
+  const vid = v.id || v._id;
+  const label = v.displayLabel || v.value;
+  const ownPhotos = v.imageSource === 'variant';
+  const gallery = v.images || [];
+
+  const fail = (e) => {
+    if (e?.code === 'VERSION_CONFLICT') {
+      toast.error('Changed by someone else — refreshed, retry your change');
+      onConflict?.();
+    } else {
+      toast.error(errMsg(e));
+    }
+  };
+  const done = (msg) => { toast.success(msg); onMutated(); };
+
+  const startEdit = () => {
+    setForm({
+      displayLabel: v.displayLabel || '',
+      sku: v.sku || '',
+      sortOrder: v.sortOrder ?? 0,
+      status: v.status || 'active',
+      isDefault: Boolean(v.isDefault),
+    });
+    setEditing(true);
+  };
+
+  const save = async (e) => {
+    e?.preventDefault();
+    try {
+      await run(() => api.catalogAdmin.updateVariant(masterId, vid, {
+        displayLabel: form.displayLabel || null,
+        sku: form.sku || null,
+        sortOrder: Math.max(0, Math.trunc(Number(form.sortOrder) || 0)),
+        status: form.status,
+        isDefault: form.isDefault,
+        expectedVersion: version,
+      }));
+      setEditing(false);
+      done('Variant updated');
+    } catch (err) { fail(err); }
+  };
+
+  const remove = async () => {
+    try {
+      await run(() => api.catalogAdmin.removeVariant(masterId, vid, { expectedVersion: version }));
+      done(`“${label}” retired — its photos went with it`);
+    } catch (err) { setConfirmingRemove(false); fail(err); }
+  };
+
+  const upload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      const asset = await uploadFile({ file, purpose: MEDIA_PURPOSE.productImage });
+      await run(() => api.catalogAdmin.addVariantImage(masterId, vid, { url: asset.url, expectedVersion: version }));
+      done(`Photo added to “${label}”`);
+    } catch (err) { fail(err); }
+    finally { setUploading(false); }
+  };
+
+  const attachUrl = async (e) => {
+    e.preventDefault();
+    if (!photoUrl.trim()) return;
+    try {
+      await run(() => api.catalogAdmin.addVariantImage(masterId, vid, { url: photoUrl.trim(), expectedVersion: version }));
+      setPhotoUrl('');
+      done('Photo added');
+    } catch (err) { fail(err); }
+  };
+
+  const star = async (imageId) => {
+    try {
+      await run(() => api.catalogAdmin.setImagePrimary(masterId, imageId, { expectedVersion: version }));
+      done('Primary photo set');
+    } catch (err) { fail(err); }
+  };
+
+  const delPhoto = async (imageId) => {
+    try {
+      await run(() => api.catalogAdmin.removeImage(masterId, imageId, { expectedVersion: version }));
+      done('Photo removed');
+    } catch (err) { fail(err); }
+  };
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-slate-50"
+      >
+        {v.primaryImageUrl ? (
+          <img src={v.primaryImageUrl} alt="" className="h-9 w-9 shrink-0 rounded-lg border border-slate-200 object-cover" />
+        ) : (
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-400">
+            <ImageIcon className="h-4 w-4" />
+          </span>
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-slate-800">{label}</span>
+          <span className="block text-[11px] text-slate-400">
+            {VARIANT_TYPE_LABEL[v.variantType] || v.variantType}
+            {v.sku ? ` · ${v.sku}` : ''}
+          </span>
+        </span>
+        {v.isDefault && <Badge tone="rose">default</Badge>}
+        {v.status && v.status !== 'active' && <Badge tone="slate">{v.status}</Badge>}
+        <Badge tone={ownPhotos ? 'emerald' : 'slate'}>
+          {ownPhotos ? `${gallery.length} photo${gallery.length === 1 ? '' : 's'}` : 'master photos'}
+        </Badge>
+        <ChevronDown className={cn('h-4 w-4 shrink-0 text-slate-400 transition', open && 'rotate-180')} />
+      </button>
+
+      {open && (
+        <div className="space-y-3 border-t border-slate-100 bg-slate-50/60 px-4 py-3">
+          {/* edit */}
+          {editing ? (
+            <form onSubmit={save} className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-white p-3">
+              <Field label="Label"><Input className="!w-40" value={form.displayLabel} onChange={(e) => setForm({ ...form, displayLabel: e.target.value })} /></Field>
+              <Field label="Value"><Input className="!w-32" value={v.value} disabled title="The value is immutable — it anchors listings and history" /></Field>
+              <Field label="SKU"><Input className="!w-32" value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} /></Field>
+              <Field label="Order"><Input className="!w-20" type="number" min="0" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} /></Field>
+              <Field label="Status">
+                <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                  <option value="active">active</option>
+                  <option value="inactive">inactive</option>
+                  <option value="archived">archived</option>
+                </Select>
+              </Field>
+              <label className="flex items-center gap-1.5 pb-2.5 text-xs text-slate-600">
+                <input type="checkbox" className="accent-rose-600" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })} /> default
+              </label>
+              <span className="flex gap-2 pb-1.5">
+                <Button type="submit" size="sm" loading={busy}>Save</Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+              </span>
+            </form>
+          ) : (
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-slate-500">
+                value <span className="font-mono text-slate-700">{v.value}</span> · order {v.sortOrder ?? 0}
+              </p>
+              <Button size="sm" variant="ghost" icon={Pencil} onClick={startEdit}>Edit</Button>
+            </div>
+          )}
+
+          {/* photos */}
+          <div>
+            <p className="mb-1.5 text-xs font-semibold text-slate-600">
+              Photos {ownPhotos ? '— this variant’s own shoot' : '— falling back to the master gallery'}
+            </p>
+            {gallery.length ? (
+              <div className="flex flex-wrap gap-2">
+                {gallery.map((img, i) => (
+                  <span key={img.id || img._id || i} className="group/img relative">
+                    <img src={img.url} alt={img.altText || label} className={cn('h-16 w-16 rounded-lg border border-slate-200 object-cover', img.isPrimary && 'ring-2 ring-rose-400')} />
+                    {ownPhotos && (
+                      <span className="absolute inset-x-1 bottom-1 hidden justify-center gap-1 group-hover/img:flex">
+                        {!img.isPrimary && (
+                          <button type="button" title="Make primary" disabled={busy} onClick={() => star(img.id || img._id)} className="grid h-5 w-5 place-items-center rounded bg-white/95 text-amber-500 shadow">
+                            <Star className="h-3 w-3" />
+                          </button>
+                        )}
+                        <button type="button" title="Remove photo" disabled={busy} onClick={() => delPhoto(img.id || img._id)} className="grid h-5 w-5 place-items-center rounded bg-white/95 text-rose-500 shadow">
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400">No photos anywhere yet — not even on the master.</p>
+            )}
+            {!ownPhotos && gallery.length > 0 && (
+              <p className="mt-1.5 text-[11px] text-slate-400">Upload below to give “{label}” its own photos; the master gallery stays as fallback.</p>
+            )}
+            <form onSubmit={attachUrl} className="mt-2 flex flex-wrap items-center gap-2">
+              <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={upload} />
+              <Button type="button" size="sm" variant="secondary" icon={UploadCloud} loading={uploading} onClick={() => inputRef.current?.click()}>
+                Upload
+              </Button>
+              <Input className="!w-56 flex-1" placeholder="or paste an image URL…" value={photoUrl} onChange={(e) => setPhotoUrl(e.target.value)} />
+              <Button type="submit" size="sm" variant="secondary" loading={busy} disabled={!photoUrl.trim()}>Attach</Button>
+            </form>
+          </div>
+
+          {/* retire */}
+          <div className="flex items-center justify-between border-t border-slate-200/70 pt-2.5">
+            <p className="text-[11px] text-slate-400">Retiring hides it everywhere and retires its photos. Listings stay historical.</p>
+            {confirmingRemove ? (
+              <span className="flex gap-2">
+                <Button size="sm" variant="ghost" onClick={() => setConfirmingRemove(false)}>Keep</Button>
+                <Button size="sm" variant="danger" loading={busy} onClick={remove}>Confirm retire</Button>
+              </span>
+            ) : (
+              <Button size="sm" variant="ghost" icon={Trash2} onClick={() => setConfirmingRemove(true)}>Retire variant</Button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

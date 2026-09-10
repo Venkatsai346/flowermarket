@@ -5,9 +5,11 @@ import productMasterService from '../services/productMaster.service.js';
 import inventoryService from '../services/inventory.service.js';
 import slotService from '../services/slot.service.js';
 import ProductMaster from '../models/productMaster.model.js';
+import TenantProduct from '../models/tenantProduct.model.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
+import { pickDefaultVariant, variantDisplayLabel } from '../utils/catalog/variantImages.js';
 import { PRODUCT_MASTER_STATUS } from '../constants/enums.js';
 
 const OBJECT_ID_RX = /^[0-9a-fA-F]{24}$/;
@@ -27,12 +29,22 @@ class CatalogPublicController {
    *
    * If the ranked path throws for any reason we fall back to the legacy scan
    * rather than failing the request: a degraded catalogue beats no catalogue.
+   *
+   * `?groupBy=master` collapses the page into ONE card per master with the full
+   * listed-variant family (storefront dropdown cards). Grouping is order-
+   * preserving, so ranked relevance survives it; pagination stays listing-based.
    */
   search = asyncHandler(async (req, res) => {
     const resolvedTenantId = req.tenantId || req.headers['x-tenant-id'];
     const query = {
       ...req.query,
       search: req.query.search || req.query.q || undefined,
+    };
+    const grouped = query.groupBy === 'master';
+    const maybeGroup = async (items, meta) => {
+      if (!grouped) return { items, meta };
+      const cards = await catalogSearchService.groupListingRows({ tenantId: resolvedTenantId, rows: items });
+      return { items: cards, meta: { ...meta, grouped: true, groupedCount: cards.length } };
     };
     if (config.search.rankedCatalog) {
       try {
@@ -51,13 +63,15 @@ class CatalogPublicController {
         if (legacyProbe.meta.total > (ranked.meta?.total ?? 0)) {
           // eslint-disable-next-line no-console
           console.warn(`[search] index stale — ranked ${ranked.meta?.total} < live ${legacyProbe.meta.total} listings; serving legacy scan`);
-          return res.status(200).json(success(legacyProbe.items, {
+          const g = await maybeGroup(legacyProbe.items, legacyProbe.meta);
+          return res.status(200).json(success(g.items, {
             message: 'Catalog fetched',
-            meta: { ...legacyProbe.meta, indexState: 'stale_fallback' },
+            meta: { ...g.meta, indexState: 'stale_fallback' },
           }));
         }
-        return res.status(200).json(success(ranked.items, {
-          meta: { ...ranked.meta, query: ranked.query, facets: ranked.facets, profile: ranked.profile },
+        const g = await maybeGroup(ranked.items, ranked.meta);
+        return res.status(200).json(success(g.items, {
+          meta: { ...g.meta, query: ranked.query, facets: ranked.facets, profile: ranked.profile },
           message: 'Catalog fetched',
         }));
       } catch (err) {
@@ -66,7 +80,8 @@ class CatalogPublicController {
       }
     }
     const result = await catalogSearchService.search({ tenantId: resolvedTenantId, query });
-    res.status(200).json(success(result.items, { message: 'Catalog fetched', meta: result.meta }));
+    const g = await maybeGroup(result.items, result.meta);
+    res.status(200).json(success(g.items, { message: 'Catalog fetched', meta: g.meta }));
   });
 
   /** GET /catalog/categories — active category tree for navigation. */
@@ -83,18 +98,75 @@ class CatalogPublicController {
 
   /**
    * Assemble the shareable PDP payload: master (images + EAV) + this store's
-   * listing + related listings in the same category.
+   * listing + the FULL listed-variant family + related listings.
+   *
+   * `variantId` (from `?variantId=`) selects the variant; an unknown, unlisted
+   * or inactive variant falls back to the default (isDefault-listed, then
+   * first in-stock, then first) — a stale deep link never 404s when the
+   * product itself is sellable. The gallery resolves per selected variant with
+   * master fallback, and `imageSource` says which one served.
    */
-  async assembleProductPage({ tenantId, masterId }) {
-    const TenantProduct = (await import('../models/tenantProduct.model.js')).default;
-    const [master, listing] = await Promise.all([
+  async assembleProductPage({ tenantId, masterId, variantId = null }) {
+    const [master, listings] = await Promise.all([
       productMasterService.getMaster(masterId),
-      TenantProduct.findOne({ tenantId, productMasterId: masterId, status: 'active' }).lean(),
+      TenantProduct.find({ tenantId, productMasterId: masterId, status: 'active' }).lean(),
     ]);
-    if (!listing) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
+    if (!listings?.length) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
 
-    const stockMap = await inventoryService.getStock({ tenantId, listingId: listing._id });
-    const stockQty = stockMap?.qtyAvailable ?? listing.stockQty ?? 0;
+    const variantById = new Map((master.variants || []).map((v) => [String(v._id ?? v.id), v]));
+    // Drop listings whose variant was deactivated after listing (never offer dead SKUs).
+    const live = listings.filter((l) => !l.variantId || variantById.has(String(l.variantId)));
+    if (!live.length) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
+
+    // Variant rows win over a legacy master-level row when both exist.
+    const variantRows = live.filter((l) => l.variantId);
+    const family = variantRows.length ? variantRows : live;
+
+    const stockByListing = {};
+    await Promise.all(family.map(async (l) => {
+      try {
+        const s = await inventoryService.getStock({ tenantId, listingId: l._id });
+        stockByListing[String(l._id)] = s?.qtyAvailable ?? l.stockQty ?? 0;
+      } catch {
+        stockByListing[String(l._id)] = l.stockQty ?? 0;
+      }
+    }));
+
+    const variants = family.map((l) => {
+      const v = l.variantId ? variantById.get(String(l.variantId)) : null;
+      const gallery = v?.images?.length ? v.images : (master.images || []).map((img) => ({
+        id: img._id ?? img.id, url: img.url, altText: img.altText || master.title,
+        isPrimary: Boolean(img.isPrimary), sortOrder: img.sortOrder ?? 0,
+      }));
+      const stockQty = stockByListing[String(l._id)] ?? 0;
+      return {
+        listingId: String(l._id),
+        variantId: l.variantId ? String(l.variantId) : null,
+        variantType: v?.variantType || null,
+        value: v?.value || null,
+        label: v ? variantDisplayLabel(v) : null,
+        sku: v?.sku || null,
+        sortOrder: v?.sortOrder ?? 0,
+        isDefault: Boolean(v?.isDefault),
+        price: l.price,
+        orderLimits: l.orderLimits,
+        stockQty,
+        availability: { status: stockQty > 0 ? 'in_stock' : 'out_of_stock', qtyAvailable: stockQty },
+        imageUrl: gallery[0]?.url || null,
+        imageSource: v?.images?.length ? 'variant' : 'master',
+        images: gallery,
+      };
+    }).sort((a, b) => (a.sortOrder - b.sortOrder) || String(a.label || '').localeCompare(String(b.label || '')));
+
+    let selected = variantId ? variants.find((v) => v.variantId === String(variantId)) : null;
+    if (!selected) {
+      const def = pickDefaultVariant(variants.map((v) => ({
+        variant: { isDefault: v.isDefault, sortOrder: v.sortOrder, value: v.value },
+        stockQty: v.stockQty,
+      })));
+      selected = (def && variants.find((v) => v.isDefault === def.variant?.isDefault && v.sortOrder === def.variant?.sortOrder && v.value === def.variant?.value))
+        || variants.find((v) => v.isDefault) || variants.find((v) => v.stockQty > 0) || variants[0];
+    }
 
     const relatedRaw = await catalogSearchService.search({
       tenantId,
@@ -103,11 +175,12 @@ class CatalogPublicController {
         limit: 9,
       },
     });
+    const familyIds = new Set(family.map((l) => String(l._id)));
     const related = (relatedRaw.items || [])
-      .filter((r) => String(r.listingId) !== String(listing._id))
+      .filter((r) => !familyIds.has(String(r.listingId)))
       .slice(0, 8);
 
-    const images = (master.images || []).map((img) => ({
+    const images = (selected.images || []).map((img) => ({
       url: img.url,
       altText: img.altText || master.title,
       isPrimary: Boolean(img.isPrimary),
@@ -119,26 +192,27 @@ class CatalogPublicController {
         ...master,
         imageUrl,
         images,
+        imageSource: selected.imageSource,
       },
       listing: {
-        id: listing._id,
-        listingId: String(listing._id),
-        price: listing.price,
-        status: listing.status,
-        orderLimits: listing.orderLimits,
-        stockQty,
-        availability: {
-          status: stockQty > 0 ? 'in_stock' : 'out_of_stock',
-          qtyAvailable: stockQty,
-        },
+        id: selected.listingId,
+        listingId: selected.listingId,
+        variantId: selected.variantId,
+        price: selected.price,
+        status: 'active',
+        orderLimits: selected.orderLimits,
+        stockQty: selected.stockQty,
+        availability: selected.availability,
       },
+      selectedVariantId: selected.variantId,
+      variants,
       related,
     };
   }
 
   /** GET /catalog/products/:id — one merged product (tenant context). */
   productDetail = asyncHandler(async (req, res) => {
-    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: req.params.id });
+    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: req.params.id, variantId: req.query.variantId || null });
     res.status(200).json(success(page, { message: 'Product fetched' }));
   });
 
@@ -165,7 +239,7 @@ class CatalogPublicController {
       }).lean();
     }
     if (!master) throw notFound('Product not found', 'PRODUCT_NOT_FOUND');
-    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: master._id });
+    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: master._id, variantId: req.query.variantId || null });
     res.status(200).json(success(page, { message: 'Product fetched' }));
   });
 
@@ -188,13 +262,14 @@ class CatalogPublicController {
     }
   });
 
-  /** GET /catalog/products/:id/stock — quick availability check (RN app polling). */
+  /** GET /catalog/products/:id/stock[?variantId=] — quick availability check (RN app polling). */
   stockCheck = asyncHandler(async (req, res) => {
-    const TenantProduct = (await import('../models/tenantProduct.model.js')).default;
-    const listing = await TenantProduct.findOne({ tenantId: req.tenantId, productMasterId: req.params.id, status: 'active' }).lean();
+    const q = { tenantId: req.tenantId, productMasterId: req.params.id, status: 'active' };
+    if (req.query.variantId) q.variantId = req.query.variantId;
+    const listing = await TenantProduct.findOne(q).lean();
     if (!listing) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     const stock = await inventoryService.getStock({ tenantId: req.tenantId, listingId: listing._id });
-    res.status(200).json(success(stock, { message: 'Stock fetched' }));
+    res.status(200).json(success({ ...stock, listingId: String(listing._id), variantId: listing.variantId ? String(listing.variantId) : null }, { message: 'Stock fetched' }));
   });
 }
 

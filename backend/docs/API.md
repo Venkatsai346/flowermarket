@@ -163,20 +163,37 @@ Non-admin → `403 FORBIDDEN`; missing/invalid token → `401`; cross-tenant tok
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| GET | `/catalog?search=&categoryId=&brandId=&type=&minPrice=&maxPrice=&inStock=&sort=relevance\|price_asc\|price_desc\|newest\|popularity&page=&limit=` | merged view, ACTIVE only |
+| GET | `/catalog?search=&categoryId=&brandId=&type=&minPrice=&maxPrice=&inStock=&sort=relevance\|price_asc\|price_desc\|newest\|popularity&groupBy=master&page=&limit=` | merged view, ACTIVE only; `groupBy=master` returns one card per master with the full variant family |
 | GET | `/catalog/categories` | active category tree |
 | GET | `/catalog/brands` | verified brands |
-| GET | `/catalog/products/:id` | product + listing + stock |
-| GET | `/catalog/products/:id/stock` | quick availability |
+| GET | `/catalog/products/:id?variantId=` | product + listing + stock + variant family; `?variantId=` preselects, unknown ids fall back to the default |
+| GET | `/catalog/p/:slug?variantId=` | same by slug (PDP) |
+| GET | `/catalog/products/:id/stock?variantId=` | quick availability, optionally per variant |
 
 ```jsonc
 // GET /catalog?search=rose
 { "success": true, "data": [
-    { "listingId": "…", "price": { "mrp": 349, "sellingPrice": 299, "currency": "INR" },
+    { "listingId": "…", "variantId": "…",
+      "variant": { "id": "…", "label": "Red", "value": "red", "variantType": "color" },
+      "price": { "mrp": 349, "sellingPrice": 299, "currency": "INR" },
       "stockQty": 120, "availability": { "status": "in_stock" },
       "product": { "id": "…", "title": "Red Roses (Bunch of 20)", "slug": "ros-red-bunch",
-                   "skuGlobal": "ROS-RED-BUNCH", "type": "fresh_flower", … } } ],
+                   "skuGlobal": "ROS-RED-BUNCH", "type": "fresh_flower",
+                   "imageUrl": "…", "imageSource": "variant|master", … } } ],
   "meta": { "page": 1, "limit": 20, "total": 3, "hasMore": false } }
+
+// GET /catalog?search=polo&groupBy=master — one card per master
+{ "success": true, "data": [
+    { "masterId": "…", "product": { "id": "…", "title": "Classic Polo", … },
+      "priceRange": { "min": 799, "max": 999 }, "variantCount": 5, "inStockCount": 4,
+      "defaultListingId": "…",
+      "variants": [
+        { "listingId": "…", "variantId": "…", "label": "Red", "value": "red",
+          "price": { "sellingPrice": 899, "mrp": 1099 }, "stockQty": 7,
+          "imageUrl": "…", "imageSource": "variant", "isDefault": false },
+        // … one entry per variant THIS tenant listed
+      ] } ],
+  "meta": { "page": 1, "limit": 20, "total": 1, "hasMore": false, "grouped": true } }
 ```
 
 ### Tenant portal (`/catalog/tenant` — authenticated)
@@ -184,8 +201,10 @@ Non-admin → `403 FORBIDDEN`; missing/invalid token → `401`; cross-tenant tok
 | Method | Path | Notes |
 | --- | --- | --- |
 | POST | `/masters/propose` | propose new global SKU → PENDING_REVIEW + change request |
+| GET | `/masters/:id/variants` | selection grid: every variant + this tenant's listing (or null) + resolved gallery |
 | POST | `/listings` | create listing for an ACTIVE master (`{productMasterId, variantId?, price, stockQty, status}`) |
-| GET | `/listings?status=&search=&categoryId=` | tenant's listings (paginated) |
+| POST | `/listings/bulk` | list one/some/all variants of ONE master (`{productMasterId, selections[]?, selectAll?, defaults?, onConflict: skip\|error}`) → `{created[], skipped[], warnings[]}` |
+| GET | `/listings?status=&search=&categoryId=&productMasterId=` | tenant's listings (paginated), each row carries its `variant` |
 | GET | `/listings/:id` | listing + master + images |
 | PATCH | `/listings/:id/price` | `{price{mrp,sellingPrice}, reason, expectedVersion}` → 409 on stale version |
 | PATCH | `/listings/:id/status` | `{status, expectedVersion}` |
@@ -203,6 +222,17 @@ Non-admin → `403 FORBIDDEN`; missing/invalid token → `401`; cross-tenant tok
 // POST /catalog/tenant/listings
 { "productMasterId": "…", "price": { "mrp": 349, "sellingPrice": 299 }, "stockQty": 50, "status": "active" }
 // 201 { data: { id, price, stockQty, availability: {status:"in_stock"}, status:"active", version: 1 } }
+
+// POST /catalog/tenant/listings/bulk — list "some" (per-variant prices)
+{ "productMasterId": "…", "selections": [
+    { "variantId": "…white", "price": { "mrp": 999, "sellingPrice": 799 }, "stockQty": 10, "status": "active" },
+    { "variantId": "…red", "price": { "mrp": 1099, "sellingPrice": 899 }, "stockQty": 7, "status": "active" } ] }
+// 201 { data: { created: [{ variantId, listingId, price }], skipped: [], warnings: [] } }
+
+// POST /catalog/tenant/listings/bulk — list "all" with shared defaults
+{ "productMasterId": "…", "selectAll": true,
+  "defaults": { "price": { "mrp": 1299, "sellingPrice": 999 }, "stockQty": 3, "status": "active" } }
+// already-listed variants land in skipped[] as { variantId, reason: "already_listed" }
 ```
 
 ### Central ops (`/catalog/admin` — ADMIN / SUPER_ADMIN)
@@ -216,7 +246,14 @@ Non-admin → `403 FORBIDDEN`; missing/invalid token → `401`; cross-tenant tok
 | PATCH | `/masters/:id` | global fields + `expectedVersion` (409 on conflict) |
 | POST | `/masters/:id/review` | `{decision: approve\|reject}` for PENDING_REVIEW masters |
 | POST | `/masters/:id/deprecate` | soft-delete master → cascades listings to INACTIVE |
-| POST | `/masters/:id/variants` · `/images` · `PUT /masters/:id/attributes` | sub-resources |
+| POST | `/masters/:id/variants` | add variant (`{variantType, value, displayLabel?, sku?, isDefault?, images?[], expectedVersion}`) |
+| PATCH | `/masters/:id/variants/:variantId` | edit label/SKU/order/default/status + `expectedVersion` |
+| DELETE | `/masters/:id/variants/:variantId` | retire variant + its gallery (`{expectedVersion}`) |
+| POST | `/masters/:id/variants/:variantId/images` | add a photo to one variant's gallery |
+| POST | `/masters/:id/images` | add master photo, or variant photo via `{…, variantId}` |
+| PATCH | `/masters/:id/images/:imageId/primary` | set primary within its scope (master OR that variant) |
+| DELETE | `/masters/:id/images/:imageId` | remove photo (`{expectedVersion}`) |
+| PUT | `/masters/:id/attributes` | replace attribute set |
 | GET | `/change-requests?status=` | review queue |
 | POST | `/change-requests/:id/review` | `{decision: approve\|reject\|needs_changes, note?}` — approve applies diff |
 | GET | `/audit?entityType=&action=&from=&to=` | full audit trail |
