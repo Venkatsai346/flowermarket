@@ -32,6 +32,15 @@ export const createAuthStore = (options) => {
         refreshToken: null,
         /** last tenant id seen — prefilled on the login form for store-owner re-login */
         lastTenantId: null,
+        /**
+         * Monotonic session-identity counter. Bumped by every setSession
+         * (login/register) and every clear (logout / expired refresh), and
+         * NOT by token rotation or profile hydration — those are the same
+         * identity. Data-fetching hooks subscribe to this to invalidate any
+         * payload cached under the previous identity, so a logout→login (or a
+         * direct account switch) can never leave user A's data on screen.
+         */
+        sessionId: 0,
 
         setSession: ({ user, owner, tokens }) => {
           // Login returns {user, tokens}; store registration returns
@@ -43,7 +52,10 @@ export const createAuthStore = (options) => {
             user: sessionUser,
             accessToken: tokens?.accessToken || null,
             refreshToken: tokens?.refreshToken || null,
-            lastTenantId: sessionUser?.tenantId || get().lastTenantId,
+            // A new login overwrites any previous tenant — never carry the
+            // last user's tenant forward into a different account's session.
+            lastTenantId: sessionUser?.tenantId || null,
+            sessionId: get().sessionId + 1,
           });
         },
 
@@ -56,7 +68,16 @@ export const createAuthStore = (options) => {
             refreshToken: tokens?.refreshToken ?? get().refreshToken,
           }),
 
-        clear: () => set({ user: null, accessToken: null, refreshToken: null }),
+        clear: () => set({
+          user: null,
+          accessToken: null,
+          refreshToken: null,
+          // Nothing about the previous identity may survive a logout: the
+          // tenant prefill, the user, and the tokens all go, and the session
+          // counter advances so every mounted data hook invalidates at once.
+          lastTenantId: null,
+          sessionId: get().sessionId + 1,
+        }),
 
         isAuthenticated: () => Boolean(get().accessToken),
         role: () => get().user?.role || null,
