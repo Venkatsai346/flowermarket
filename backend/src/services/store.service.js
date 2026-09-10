@@ -14,7 +14,7 @@
 import mongoose from 'mongoose';
 import Tenant from '../models/tenant.model.js';
 import TenantAuthConfig from '../models/tenantAuthConfig.model.js';
-import Subscription from '../models/subscription.model.js';
+import TenantSubscription from '../models/tenantSubscription.model.js';
 import User from '../models/user.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
 import Hub from '../models/hub.model.js';
@@ -26,7 +26,7 @@ import TaxRegistration from '../models/taxRegistration.model.js';
 import ProductMaster from '../models/productMaster.model.js';
 import Vendor from '../models/vendor.model.js';
 import planService from './plan.service.js';
-import billingService, { assertBillingSubscriptionSchema } from './billing.service.js';
+import billingService, { assertTenantSubscriptionSchema } from './billing.service.js';
 import auditService from './audit.service.js';
 import { transactionsSupported } from '../utils/transactions.js';
 import { serializeList } from '../utils/serialize.js';
@@ -54,8 +54,8 @@ class StoreService {
     if (config.marketplace.reservedSlugs.includes(slug)) throw conflict('This slug is reserved', 'SLUG_RESERVED');
     const slugTaken = await Tenant.findOne({ slug }).select('_id').lean();
     if (slugTaken) throw conflict('Tenant slug already exists', 'TENANT_SLUG_EXISTS');
-    const planDoc = await planService.getByCode(planCode || plan);
-    assertBillingSubscriptionSchema();
+    const planDoc = await planService.getActiveByCode(planCode || plan);
+    assertTenantSubscriptionSchema();
     const { tenant, ownerUser } = await this.createRegistrationCore({ name, slug, contactEmail, owner, planDoc });
 
     // ---- operational skeleton (F5) ----
@@ -193,7 +193,7 @@ class StoreService {
    */
   async compensateRegistration(created) {
     const steps = [
-      ['subscription', Subscription, created.subscriptionId],
+      ['tenant subscription', TenantSubscription, created.subscriptionId],
       ['owner user', User, created.userId],
       ['auth config', TenantAuthConfig, created.authConfigId],
       ['tenant', Tenant, created.tenantId],

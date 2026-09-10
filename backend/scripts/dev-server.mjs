@@ -43,6 +43,7 @@ async function main() {
     // ---- Phase 5: multi-tenant marketplace collections ----
     (await import('../src/models/plan.model.js')).default.init(),
     (await import('../src/models/subscription.model.js')).default.init(),
+    (await import('../src/models/tenantSubscription.model.js')).default.init(),
     (await import('../src/models/invoice.model.js')).default.init(),
     (await import('../src/models/vendorApplication.model.js')).default.init(),
     (await import('../src/models/vendor.model.js')).default.init(),

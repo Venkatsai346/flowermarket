@@ -69,7 +69,10 @@ export { default as ExportArtifact } from './exportArtifact.model.js';
 
 // ---- Phase 5: multi-tenant marketplace ----
 export { default as Plan } from './plan.model.js';
+// Subscription = CUSTOMER recurring orders (Phase 7.8.1); store plan billing
+// is TenantSubscription. See the vocabulary header in constants/enums.js.
 export { default as Subscription } from './subscription.model.js';
+export { default as TenantSubscription } from './tenantSubscription.model.js';
 export { default as Invoice } from './invoice.model.js';
 export { default as VendorApplication } from './vendorApplication.model.js';
 export { default as PlatformDaily } from './platformDaily.model.js';

@@ -9,7 +9,7 @@
  * - Payments go through billingProvider (mock default).
  */
 
-import Subscription from '../models/subscription.model.js';
+import TenantSubscription from '../models/tenantSubscription.model.js';
 import Invoice from '../models/invoice.model.js';
 import AnalyticsDaily from '../models/analyticsDaily.model.js';
 import Order from '../models/order.model.js';
@@ -23,7 +23,7 @@ import { roundMoney, moneySum } from '../utils/money.js';
 import { generateOpaqueToken } from '../utils/hash.js';
 import config from '../config/index.js';
 import {
-  SUBSCRIPTION_STATUS,
+  TENANT_SUBSCRIPTION_STATUS,
   INVOICE_STATUS,
   INVOICE_LINE_TYPE,
 } from '../constants/enums.js';
@@ -37,26 +37,26 @@ function addMonths(d, n = 1) {
 }
 
 /**
- * Schema-identity guard. Mongoose resolves models by NAME, so if anything in
- * the runtime ever registers a different schema under 'Subscription' (a shopper
- * recurring-delivery schema has exactly that name in some codebases), every
- * billing write fails with a cryptic VALIDATION_ERROR — while the tenant it was
- * written for already exists. That incident is why this guard exists: it turns
- * "mystery 400 + orphan tenant" into a loud, actionable 500 BEFORE any write.
+ * Schema-identity guard. Tenant billing writes go to the TenantSubscription
+ * model — never to Subscription, which is the CUSTOMER recurring-order schema
+ * (userId/frequency/nextDeliveryAt). A past incident wrote billing rows through
+ * the bare `Subscription` name and failed cryptically AFTER the tenant existed;
+ * the vocabulary split makes that unrepresentable, and this guard fails LOUD
+ * (500, before any write) if the wiring ever regresses.
  */
-export function assertBillingSubscriptionSchema() {
-  const schema = Subscription?.schema;
+export function assertTenantSubscriptionSchema() {
+  const schema = TenantSubscription?.schema;
   const statusValues = schema?.path('status')?.enumValues || [];
   const ok = Boolean(
     schema
     && schema.path('planCode')
     && schema.path('tenantId')
     && schema.path('planSnapshot')
-    && statusValues.includes(SUBSCRIPTION_STATUS.TRIAL)
+    && statusValues.includes(TENANT_SUBSCRIPTION_STATUS.TRIAL)
   );
   if (!ok) {
     throw internal(
-      'Billing Subscription schema mismatch: the registered \'Subscription\' model is not the tenant-billing schema (expected planCode/tenantId/planSnapshot + a status enum containing \'trial\'). Refusing to write billing state against the wrong schema.',
+      'TenantSubscription schema mismatch: the registered \'TenantSubscription\' model is not the tenant-billing schema (expected planCode/tenantId/planSnapshot + a status enum containing \'trial\'). Refusing to write billing state against the wrong schema.',
       'BILLING_SCHEMA_MISMATCH',
       { statusEnum: statusValues, hasPlanCode: Boolean(schema?.path('planCode')), hasTenantId: Boolean(schema?.path('tenantId')) }
     );
@@ -77,9 +77,9 @@ async function nextInvoiceNumber() {
 class BillingService {
   // ---------------- subscriptions ----------------
   async ensureSubscription({ tenantId, planCode, commissionRateBps = null, trialDays = 0, actorId = null, session = null }) {
-    assertBillingSubscriptionSchema();
+    assertTenantSubscriptionSchema();
     const plan = await planService.getByCode(planCode);
-    const lookup = Subscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
+    const lookup = TenantSubscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
     if (session) lookup.session(session);
     const existing = await lookup;
     if (existing) return { subscription: existing, created: false };
@@ -89,13 +89,13 @@ class BillingService {
     // `new + save` (not create-with-options): Model.create(doc, opts) has a
     // notorious doc-vs-options ambiguity for the single-doc form, while
     // save(options) is unambiguous — and identical otherwise.
-    const subscription = new Subscription({
+    const subscription = new TenantSubscription({
       tenantId,
       planCode: plan.code,
       planSnapshot: { name: plan.name, priceMonthly: plan.priceMonthly },
       commissionRateBps: commissionRateBps ?? plan.commissionRateBps,
       currency: plan.currency || 'INR',
-      status: trialDays > 0 ? SUBSCRIPTION_STATUS.TRIAL : SUBSCRIPTION_STATUS.ACTIVE,
+      status: trialDays > 0 ? TENANT_SUBSCRIPTION_STATUS.TRIAL : TENANT_SUBSCRIPTION_STATUS.ACTIVE,
       periodStart: now,
       periodEnd,
       trialEndsAt: trialDays > 0 ? new Date(now.getTime() + trialDays * 86400000) : null,
@@ -108,18 +108,18 @@ class BillingService {
   }
 
   async currentSubscription({ tenantId }) {
-    return Subscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } }).lean();
+    return TenantSubscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } }).lean();
   }
 
   async subscriptionsForTenants(tenantIds) {
     if (!tenantIds.length) return [];
-    return Subscription.find({ tenantId: { $in: tenantIds }, status: { $in: ['trial', 'active', 'past_due'] } }).lean();
+    return TenantSubscription.find({ tenantId: { $in: tenantIds }, status: { $in: ['trial', 'active', 'past_due'] } }).lean();
   }
 
   /** Plan change: snapshot updates now, price difference applies from next period. */
   async changePlan({ tenantId, planCode, actorId = null, req = null }) {
-    const plan = await planService.getByCode(planCode);
-    let sub = await Subscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
+    const plan = await planService.getActiveByCode(planCode);
+    let sub = await TenantSubscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
     if (!sub) {
       // existing store joining the marketplace: create its first subscription
       const res = await this.ensureSubscription({
@@ -225,7 +225,7 @@ class BillingService {
     if (existing) return { invoice: existing, created: false };
 
     const gmv = await this.periodGmv({ tenantId, from, to });
-    const inTrial = sub.status === SUBSCRIPTION_STATUS.TRIAL && to <= (sub.trialEndsAt || new Date(0));
+    const inTrial = sub.status === TENANT_SUBSCRIPTION_STATUS.TRIAL && to <= (sub.trialEndsAt || new Date(0));
     const lineItems = [];
 
     // 1. subscription fee (waived while the whole period was inside the trial)
@@ -291,7 +291,7 @@ class BillingService {
   async runBillingCycle({ tenantId = null, period = null, actorId = null, req = null } = {}) {
     const q = { status: { $in: ['trial', 'active', 'past_due'] } };
     if (tenantId) q.tenantId = tenantId;
-    const subs = await Subscription.find(q);
+    const subs = await TenantSubscription.find(q);
 
     let invoicesCreated = 0;
     let periodsAdvanced = 0;
@@ -307,11 +307,11 @@ class BillingService {
       sub.periodStart = sub.periodEnd;
       sub.periodEnd = addMonths(sub.periodEnd, 1);
       // trial rollover: after the trial period, the subscription becomes active
-      if (sub.status === SUBSCRIPTION_STATUS.TRIAL && sub.trialEndsAt && sub.trialEndsAt <= new Date()) {
-        sub.status = SUBSCRIPTION_STATUS.ACTIVE;
+      if (sub.status === TENANT_SUBSCRIPTION_STATUS.TRIAL && sub.trialEndsAt && sub.trialEndsAt <= new Date()) {
+        sub.status = TENANT_SUBSCRIPTION_STATUS.ACTIVE;
       }
       if (sub.cancelAtPeriodEnd) {
-        sub.status = SUBSCRIPTION_STATUS.CANCELLED;
+        sub.status = TENANT_SUBSCRIPTION_STATUS.CANCELLED;
         sub.cancelAtPeriodEnd = false;
       }
       await sub.save();
@@ -328,9 +328,9 @@ class BillingService {
     for (const inv of overdue) {
       inv.status = INVOICE_STATUS.OVERDUE;
       await inv.save();
-      await Subscription.updateOne(
+      await TenantSubscription.updateOne(
         { tenantId: inv.tenantId, status: { $in: ['trial', 'active'] } },
-        { $set: { status: SUBSCRIPTION_STATUS.PAST_DUE, changedAt: new Date() } }
+        { $set: { status: TENANT_SUBSCRIPTION_STATUS.PAST_DUE, changedAt: new Date() } }
       );
     }
     return { markedOverdue: overdue.length };
@@ -393,9 +393,9 @@ class BillingService {
     await invoice.save();
 
     // paying clears past_due
-    await Subscription.updateOne(
-      { tenantId: invoice.tenantId, status: SUBSCRIPTION_STATUS.PAST_DUE },
-      { $set: { status: SUBSCRIPTION_STATUS.ACTIVE, changedAt: new Date() } }
+    await TenantSubscription.updateOne(
+      { tenantId: invoice.tenantId, status: TENANT_SUBSCRIPTION_STATUS.PAST_DUE },
+      { $set: { status: TENANT_SUBSCRIPTION_STATUS.ACTIVE, changedAt: new Date() } }
     );
     return invoice;
   }
@@ -452,7 +452,7 @@ class BillingService {
 
   /** MRR: sum of live subscriptions' snapshot price. */
   async mrr() {
-    const [agg] = await Subscription.aggregate([
+    const [agg] = await TenantSubscription.aggregate([
       { $match: { status: { $in: ['trial', 'active', 'past_due'] } } },
       { $group: { _id: null, mrr: { $sum: '$planSnapshot.priceMonthly' } } },
     ]);

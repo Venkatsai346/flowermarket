@@ -604,10 +604,10 @@ token when no `x-tenant-id` header is sent (the token IS the store).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /marketplace/store` | my store: branding + plan + subscription |
+| `GET /marketplace/store` | my store: branding + plan + tenant subscription |
 | `PATCH /marketplace/store` `{name?, logoUrl?, theme?, tagline?, description?, bannerUrl?, socialLinks?, isPublished?}` | update branding; publish flips onboarding → active, refused with `STORE_NOT_READY` while blockers (incl. unverified owner email) remain |
-| `GET /marketplace/store/subscription` | live subscription (trial/active/past_due) |
-| `PATCH /marketplace/store/plan` `{planCode}` | change plan (creates subscription for existing stores); mid-period change → pro-rata `pendingAdjustment` on next invoice |
+| `GET /marketplace/store/subscription` | live tenant subscription (trial/active/past_due) — the store's seat on its plan, NOT customer recurring orders |
+| `PATCH /marketplace/store/plan` `{planCode}` | change plan (creates a tenant subscription for existing stores; inactive codes → 409 `PLAN_INACTIVE`); mid-period change → pro-rata `pendingAdjustment` on next invoice |
 | `GET /marketplace/store/invoices?status=` · `GET /marketplace/store/invoices/:id` | my invoices (frozen line items) |
 | `POST /marketplace/store/invoices/:id/pay` | owner self-pay (tenant-scoped: other stores' invoices 404); sync rail → `paid`, async rail → `pending` + gateway order, confirmed by webhook |
 | `GET /marketplace/store/usage` | plan limits + live usage (hubs/listings/staff) for the billing-page meters |

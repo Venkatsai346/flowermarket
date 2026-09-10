@@ -20,7 +20,9 @@ const MODEL_FILES = [
   'inventoryAdjustment.model.js', 'analyticsDaily.model.js',
   'device.model.js', 'notificationTemplate.model.js', 'notification.model.js', 'exportJob.model.js', 'exportArtifact.model.js',
   // ---- Phase 5 ----
-  'plan.model.js', 'subscription.model.js', 'invoice.model.js', 'vendorApplication.model.js', 'vendor.model.js',
+  // subscription.model.js = CUSTOMER recurring orders; tenant plan billing is
+  // tenantSubscription.model.js. Both must load (see enums.js vocabulary).
+  'plan.model.js', 'subscription.model.js', 'tenantSubscription.model.js', 'invoice.model.js', 'vendorApplication.model.js', 'vendor.model.js',
   'platformDaily.model.js', 'counter.model.js',
   // ---- worker runtime ----
   'scheduledJob.model.js',

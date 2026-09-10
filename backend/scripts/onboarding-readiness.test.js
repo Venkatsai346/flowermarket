@@ -25,7 +25,7 @@ const ids = (r) => r.items.map((i) => i.id);
 const stateOf = (r, id) => r.items.find((i) => i.id === id)?.state;
 const item = (r, id) => r.items.find((i) => i.id === id);
 
-/** Everything a shop needs to trade. */
+/** Everything a shop needs to trade — including a verified owner email. */
 const READY = {
   activeHubs: 1,
   serviceablePincodes: 4,
@@ -37,9 +37,10 @@ const READY = {
   categoriesMissingTaxPolicy: 0,
   tagline: 'Fresh cuts, same morning',
   gstin: '37ABCDE1234F1Z5',
+  ownerEmailVerified: true,
 };
 
-/** Exactly what registerStore() used to leave behind: nothing. */
+/** Exactly what registerStore() leaves behind: nothing (email unverified). */
 const EMPTY = {
   activeHubs: 0,
   serviceablePincodes: 0,
@@ -51,6 +52,7 @@ const EMPTY = {
   categoriesMissingTaxPolicy: 0,
   tagline: null,
   gstin: null,
+  ownerEmailVerified: false,
 };
 
 console.log('\n── the reported bug, as a test ──────────────────────────');
@@ -59,18 +61,20 @@ console.log('\n── the reported bug, as a test ──────────
   assert.equal(r.ready, false);
   assert.equal(r.canPublish, false);
   assert.deepEqual(r.blocking, [
+    ONBOARDING_ITEM.OWNER_EMAIL,
     ONBOARDING_ITEM.HUB,
     ONBOARDING_ITEM.PINCODES,
     ONBOARDING_ITEM.SLOTS,
     ONBOARDING_ITEM.FEE_POLICY,
     ONBOARDING_ITEM.PRODUCTS,
   ]);
-  ok('a freshly registered store reports 5 blocking gaps and cannot publish');
+  ok('a freshly registered store reports 6 blocking gaps and cannot publish');
 
   // The point of the finding: the operator is TOLD, in words, in order.
-  assert.equal(r.reasons.length, 5);
-  assert.match(r.reasons[0], /delivery hub/i);
-  assert.match(r.reasons[1], /pincodes/i);
+  assert.equal(r.reasons.length, 6);
+  assert.match(r.reasons[0], /verify.*email|email.*verif/i);
+  assert.match(r.reasons[1], /delivery hub/i);
+  assert.match(r.reasons[2], /pincodes/i);
   assert.ok(r.reasons.every((s) => s.length > 10), 'every reason is a sentence, not a code');
   ok('reasons are human-readable and ordered the way a merchant should tackle them');
 }
@@ -91,6 +95,7 @@ console.log('\n── each blocking gap is detected on its own ─────�
   // Removing exactly one thing must name exactly that thing. A checklist that
   // only works when everything is missing is not a checklist.
   const gaps = [
+    ['ownerEmailVerified', false, ONBOARDING_ITEM.OWNER_EMAIL],
     ['activeHubs', 0, ONBOARDING_ITEM.HUB],
     ['serviceablePincodes', 0, ONBOARDING_ITEM.PINCODES],
     ['upcomingSlots', 0, ONBOARDING_ITEM.SLOTS],
@@ -105,7 +110,7 @@ console.log('\n── each blocking gap is detected on its own ─────�
     assert.equal(r.canPublish, false);
     assert.equal(stateOf(r, expectedId), ITEM_STATE.TODO);
   }
-  ok('each of the 5 blocking gaps is isolated to its own item');
+  ok('each of the 6 blocking gaps is isolated to its own item');
 }
 
 {
@@ -169,7 +174,7 @@ console.log('\n── the escape hatch tells the truth ────────�
   const r = evaluateOnboarding(EMPTY, { requireReadyToPublish: false });
   assert.equal(r.canPublish, true);
   assert.equal(r.ready, false, 'ready must keep reporting the truth');
-  assert.equal(r.blocking.length, 5, 'the gaps must still be listed');
+  assert.equal(r.blocking.length, 6, 'the gaps must still be listed');
   // One item reads as done even for an empty store: tax coverage. With no
   // listings there are no categories, so there is nothing to declare — demanding
   // it before a merchant has listed anything would be noise.
@@ -193,12 +198,12 @@ console.log('\n── garbage in, sane out ────────────�
 {
   const r = evaluateOnboarding();
   assert.equal(r.ready, false);
-  assert.equal(r.blocking.length, 5);
+  assert.equal(r.blocking.length, 6);
   ok('no facts at all behaves like a brand-new store');
 
   for (const junk of [null, undefined, 0]) {
     const j = evaluateOnboarding(junk === null ? null : {});
-    assert.equal(j.items.length, 8);
+    assert.equal(j.items.length, 9);
   }
   ok('null / empty facts do not throw');
 
@@ -208,7 +213,7 @@ console.log('\n── garbage in, sane out ────────────�
     activeProducts: NaN, categoriesInUse: -2, categoriesMissingTaxPolicy: -1,
     hasActiveFeePolicy: 'yes',
   });
-  assert.equal(r2.blocking.length, 5);
+  assert.equal(r2.blocking.length, 6);
   assert.equal(stateOf(r2, ONBOARDING_ITEM.HUB), ITEM_STATE.TODO);
   assert.equal(stateOf(r2, ONBOARDING_ITEM.FEE_POLICY), ITEM_STATE.TODO,
     'a truthy non-boolean is not "yes"');
@@ -232,7 +237,7 @@ console.log('\n── the contract the API and console depend on ─────
 {
   const r = evaluateOnboarding(READY);
   assert.deepEqual(ids(r), [
-    'hub', 'pincodes', 'slots', 'feePolicy', 'products', 'taxPolicies', 'profile', 'gstin',
+    'ownerEmail', 'hub', 'pincodes', 'slots', 'feePolicy', 'products', 'taxPolicies', 'profile', 'gstin',
   ]);
   ok('item ids and their order are stable (the console renders this list)');
 
@@ -244,7 +249,7 @@ console.log('\n── the contract the API and console depend on ─────
   }
   ok('every item carries id/label/hint/state/blocking/count');
 
-  assert.equal(r.progress.total, 8);
+  assert.equal(r.progress.total, 9);
   assert.equal(typeof r.progress.pct, 'number');
   ok('progress reports done/total/pct');
 
@@ -258,11 +263,11 @@ console.log('\n── the contract the API and console depend on ─────
 
 {
   // A partial store: progress must reflect reality, not round to 0 or 100.
-  const r = evaluateOnboarding({ ...EMPTY, activeHubs: 1, hasActiveFeePolicy: true, activeProducts: 3 });
-  assert.equal(r.progress.done, 4, 'hub + fee policy + products + tax(no categories) are done');
-  assert.equal(r.progress.pct, 50);
+  const r = evaluateOnboarding({ ...EMPTY, ownerEmailVerified: true, activeHubs: 1, hasActiveFeePolicy: true, activeProducts: 3 });
+  assert.equal(r.progress.done, 5, 'email + hub + fee policy + products + tax(no categories) are done');
+  assert.equal(r.progress.pct, 56);
   assert.deepEqual(r.blocking, [ONBOARDING_ITEM.PINCODES, ONBOARDING_ITEM.SLOTS]);
-  ok('a half-configured store reports 50% and names the two things still missing');
+  ok('a half-configured store reports 56% and names the two things still missing');
 }
 
 console.log('\n── slotDaysAhead is reflected in the wording ────────────');
@@ -279,6 +284,39 @@ console.log('\n── slotDaysAhead is reflected in the wording ─────�
   ok('a nonsense horizon falls back to 3 days');
 }
 
+console.log('\n── owner email verification gates publishing ────────────');
+{
+  // Registration must never self-attest an address, so a fresh owner email is
+  // unverified — and an unverified email alone blocks publishing, everything
+  // else complete.
+  const r = evaluateOnboarding({ ...READY, ownerEmailVerified: false });
+  assert.deepEqual(r.blocking, [ONBOARDING_ITEM.OWNER_EMAIL]);
+  assert.equal(r.ready, false);
+  assert.equal(r.canPublish, false);
+  assert.equal(stateOf(r, ONBOARDING_ITEM.OWNER_EMAIL), ITEM_STATE.TODO);
+  assert.match(item(r, ONBOARDING_ITEM.OWNER_EMAIL).hint, /typo/i);
+  ok('an unverified owner email blocks publishing on its own');
+}
+
+{
+  // Unknown is unverified: an absent flag fails closed, exactly like every
+  // other absent fact (an absent fee policy blocks too). Legacy tenants
+  // without a recorded owner are grandfathered where the facts are GATHERED
+  // (getOnboardingFacts, with DB context) — never here in the pure decision.
+  const noFlag = { ...READY };
+  delete noFlag.ownerEmailVerified;
+  const r = evaluateOnboarding(noFlag);
+  assert.deepEqual(r.blocking, [ONBOARDING_ITEM.OWNER_EMAIL]);
+  ok('a missing flag counts as unverified (fail closed, like every absent fact)');
+}
+
+{
+  const r = evaluateOnboarding({ ...READY, ownerEmailVerified: true });
+  assert.equal(r.ready, true);
+  assert.equal(stateOf(r, ONBOARDING_ITEM.OWNER_EMAIL), ITEM_STATE.DONE);
+  ok('a verified owner email clears the gate');
+}
+
 console.log('\n── determinism ──────────────────────────────────────────');
 {
   const a = evaluateOnboarding(READY);
@@ -290,7 +328,7 @@ console.log('\n── determinism ───────────────�
   assert.doesNotThrow(() => { r.items.push({ id: 'x' }); });
   // the caller mutating the result must not corrupt a later evaluation
   const again = evaluateOnboarding(EMPTY);
-  assert.equal(again.items.length, 8);
+  assert.equal(again.items.length, 9);
   ok('a caller mutating the returned array cannot corrupt the next evaluation');
 }
 

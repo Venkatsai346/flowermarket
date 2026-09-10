@@ -804,11 +804,45 @@ export const VENDOR_STATUS = Object.freeze({
   SUSPENDED: 'suspended',
 });
 
-export const SUBSCRIPTION_STATUS = Object.freeze({
+/**
+ * TWO subscription vocabularies — do not merge them.
+ *
+ * 1. TENANT_SUBSCRIPTION_* — a STORE's plan billing lifecycle (Phase 5). One
+ *    live row per tenant in `tenant_subscriptions`: trial → active, overdue
+ *    invoices flip it past_due (checkout blocked), owner payment clears it.
+ *    Tenants follow PLANS created by the super admin; this row is the tenant's
+ *    seat ON a plan, with snapshotted pricing.
+ *
+ * 2. SUBSCRIPTION_* — a CUSTOMER's recurring-order subscription (Phase 7.8.1).
+ *    Lives in `subscriptions`: weekly/biweekly/monthly cadence, scheduler
+ *    materialises orders at nextDeliveryAt, pause/resume/cancel lifecycle.
+ *    Nothing to do with store plans or platform billing.
+ *
+ * The Phase-5 code once squatted on the bare `Subscription` name for tenant
+ * billing; a same-named customer schema in another runtime then made every
+ * billing write fail cryptically AFTER the tenant existed. The names are
+ * split precisely so that class of incident is unrepresentable.
+ */
+export const TENANT_SUBSCRIPTION_STATUS = Object.freeze({
   TRIAL: 'trial',
   ACTIVE: 'active',
   PAST_DUE: 'past_due',
   CANCELLED: 'cancelled',
+});
+
+/** Customer recurring-order lifecycle (Phase 7.8.1) — see the header above. */
+export const SUBSCRIPTION_STATUS = Object.freeze({
+  ACTIVE: 'active',
+  PAUSED: 'paused',
+  CANCELLED: 'cancelled',
+  EXPIRED: 'expired',
+});
+
+/** Customer recurring-order cadence (Phase 7.8.1). */
+export const SUBSCRIPTION_FREQUENCY = Object.freeze({
+  WEEKLY: 'weekly',
+  BIWEEKLY: 'biweekly',
+  MONTHLY: 'monthly',
 });
 
 export const INVOICE_STATUS = Object.freeze({

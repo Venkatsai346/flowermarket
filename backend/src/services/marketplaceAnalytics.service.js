@@ -15,16 +15,16 @@
 import PlatformDaily from '../models/platformDaily.model.js';
 import AnalyticsDaily from '../models/analyticsDaily.model.js';
 import Invoice from '../models/invoice.model.js';
-import Subscription from '../models/subscription.model.js';
+import TenantSubscription from '../models/tenantSubscription.model.js';
 import Vendor from '../models/vendor.model.js';
 import Tenant from '../models/tenant.model.js';
 import OrderItem from '../models/orderItem.model.js';
 import billingService from './billing.service.js';
 import auditService from './audit.service.js';
 import { roundMoney } from '../utils/money.js';
-import { INVOICE_STATUS, INVOICE_LINE_TYPE, SUBSCRIPTION_STATUS } from '../constants/enums.js';
+import { INVOICE_STATUS, INVOICE_LINE_TYPE, TENANT_SUBSCRIPTION_STATUS } from '../constants/enums.js';
 
-const LIVE_SUB = { status: { $in: [SUBSCRIPTION_STATUS.TRIAL, SUBSCRIPTION_STATUS.ACTIVE, SUBSCRIPTION_STATUS.PAST_DUE] } };
+const LIVE_SUB = { status: { $in: [TENANT_SUBSCRIPTION_STATUS.TRIAL, TENANT_SUBSCRIPTION_STATUS.ACTIVE, TENANT_SUBSCRIPTION_STATUS.PAST_DUE] } };
 
 class MarketplaceAnalyticsService {
   /** Cross-tenant dashboard KPIs for a date range. */
@@ -42,7 +42,7 @@ class MarketplaceAnalyticsService {
         { $match: { 'lineItems.type': INVOICE_LINE_TYPE.COMMISSION } },
         { $group: { _id: null, commissions: { $sum: '$lineItems.amount' } } },
       ]),
-      Subscription.aggregate([
+      TenantSubscription.aggregate([
         { $match: LIVE_SUB },
         { $group: { _id: null, mrr: { $sum: '$planSnapshot.priceMonthly' }, tenants: { $sum: 1 }, byPlan: { $push: '$planCode' } } },
       ]),
@@ -146,7 +146,7 @@ class MarketplaceAnalyticsService {
           { $match: { 'lineItems.type': INVOICE_LINE_TYPE.COMMISSION } },
           { $group: { _id: null, commissions: { $sum: '$lineItems.amount' } } },
         ]),
-        Subscription.aggregate([
+        TenantSubscription.aggregate([
           { $match: LIVE_SUB },
           { $group: { _id: null, mrr: { $sum: '$planSnapshot.priceMonthly' }, byPlan: { $push: '$planCode' } } },
         ]),

@@ -33,11 +33,29 @@ export const INVOICE_STATUS_META = {
   void: { label: 'Void', tone: 'slate' },
 };
 
-export const SUBSCRIPTION_STATUS_META = {
+/**
+ * TWO subscription vocabularies (mirrors backend enums.js — do not merge).
+ * TENANT_* = a STORE's plan billing lifecycle; bare SUBSCRIPTION_* = a
+ * CUSTOMER's recurring-order subscription (frequency ordering).
+ */
+export const TENANT_SUBSCRIPTION_STATUS_META = {
   trial: { label: 'Trial', tone: 'sky' },
   active: { label: 'Active', tone: 'emerald' },
   past_due: { label: 'Past due', tone: 'rose' },
   cancelled: { label: 'Cancelled', tone: 'slate' },
+};
+
+export const SUBSCRIPTION_STATUS_META = {
+  active: { label: 'Active', tone: 'emerald' },
+  paused: { label: 'Paused', tone: 'amber' },
+  cancelled: { label: 'Cancelled', tone: 'slate' },
+  expired: { label: 'Expired', tone: 'slate' },
+};
+
+export const SUBSCRIPTION_FREQUENCY_META = {
+  weekly: { label: 'Weekly' },
+  biweekly: { label: 'Every 2 weeks' },
+  monthly: { label: 'Monthly' },
 };
 
 export const APPLICATION_STATUS_META = {
