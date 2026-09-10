@@ -13,6 +13,10 @@ export function createEndpoints(client) {
       logout: (refreshToken) => c.post('/auth/logout', { refreshToken }),
       me: () => c.get('/users/me'),
       changePassword: (body) => c.post('/auth/password/change', body),
+      // Forgot-password: request an email OTP (purpose password_reset), then
+      // exchange it for a new password. No login required.
+      requestPasswordReset: (body) => c.post('/auth/otp/request', body),
+      resetPassword: (body) => c.post('/auth/password/reset', body),
     },
 
     marketplace: {

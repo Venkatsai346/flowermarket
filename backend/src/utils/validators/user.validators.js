@@ -102,6 +102,14 @@ export const changePasswordSchema = Joi.object({
   newPassword: Joi.string().min(6).max(72).required(),
 });
 
+export const resetPasswordSchema = Joi.object({
+  channel: Joi.string().valid('phone', 'email').default('phone'),
+  phone: Joi.when('channel', { is: 'phone', then: phoneSchema.required(), otherwise: Joi.forbidden() }),
+  email: Joi.when('channel', { is: 'email', then: emailSchema.required(), otherwise: Joi.forbidden() }),
+  otpCode: Joi.string().pattern(/^[0-9]{4,8}$/).required(),
+  newPassword: Joi.string().min(6).max(72).required(),
+});
+
 export const setPasswordSchema = Joi.object({
   otpCode: Joi.string().pattern(/^[0-9]{4,8}$/).required(),
   newPassword: Joi.string().min(6).max(72).required(),

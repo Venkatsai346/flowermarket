@@ -6,6 +6,7 @@
  *   -> profile update -> address create/update/default -> ownership guard
  *   -> refresh-token rotation -> logout -> RBAC -> tenant-scope guard
  *   -> token-tenant self fallback -> password login (global email resolution)
+ *   -> password reset by email (global email resolution)
  *
  * Run: npm run smoke   (downloads the MongoDB binary once on first run)
  */
@@ -236,11 +237,12 @@ async function main() {
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.data.id, String(cUser._id));
 
-  // ---- 19. password login resolves the account by email when no tenant is named ----
-  // Emails are globally unique: a logged-out store owner cannot be asked for a
-  // tenant id they were never shown, so a headerless login must find their
-  // account anywhere. An EXPLICIT wrong header stays scoped (a choice, not a
-  // guess → INVALID_CREDENTIALS), and wrong passwords stay opaque either way.
+  // ---- 19. password login resolves the account by email, ALWAYS ----
+  // Emails are globally unique, so a logged-out store owner cannot be asked for
+  // a tenant id they were never shown: the lookup is global and the tenant is an
+  // output of login. Wrong passwords / unknown emails stay opaque (no
+  // enumeration), and an OTP-first account is told PASSWORD_NOT_SET instead of
+  // being lied to as "wrong password".
   const dUser = await User.create({
     tenantId: tenantC.id,
     email: { address: 'owner@tenantc.in', verified: true },
@@ -261,15 +263,43 @@ async function main() {
   r = await call('/auth/login', { method: 'POST', tenantless: true, body: { email: 'nobody@nowhere.in', password: 'Wrong@12345' } });
   assert.equal(r.status, 401, JSON.stringify(r.body));
   assert.equal(r.body.code, 'INVALID_CREDENTIALS');
-  // explicit WRONG header → still scoped to the named tenant
+  // a WRONG explicit header no longer forces a miss: the account is found by
+  // email and the token is minted for the account's OWN tenant, never the one
+  // the header named (no cross-tenant escalation is possible)
   r = await call('/auth/login', { method: 'POST', headers: { 'x-tenant-id': tenant.id }, body: { email: 'owner@tenantc.in', password: 'Store@12345' } });
-  assert.equal(r.status, 401, JSON.stringify(r.body));
-  assert.equal(r.body.code, 'INVALID_CREDENTIALS');
-  // explicit RIGHT header → 200 (the old path keeps working)
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(String(r.body.data.user.tenantId), String(tenantC._id));
+  // explicit RIGHT header → 200 (unchanged)
   r = await call('/auth/login', { method: 'POST', headers: { 'x-tenant-id': tenantC.id }, body: { email: 'owner@tenantc.in', password: 'Store@12345' } });
   assert.equal(r.status, 200, JSON.stringify(r.body));
 
-  console.log('✅ ALL SMOKE TESTS PASSED (19 scenarios)');
+  // an OTP-first account has NO password: the server says PASSWORD_NOT_SET
+  // (actionable) instead of pretending it was a wrong password
+  const eUser = await User.create({
+    tenantId: tenantC.id,
+    email: { address: 'nopass@tenantc.in', verified: true },
+    role: 'admin',
+    status: 'active',
+  });
+  r = await call('/auth/login', { method: 'POST', tenantless: true, body: { email: 'nopass@tenantc.in', password: 'Whatever@123' } });
+  assert.equal(r.status, 401, JSON.stringify(r.body));
+  assert.equal(r.body.code, 'PASSWORD_NOT_SET');
+
+  // ---- 20. password reset by email resolves the account globally ----
+  // The same guessed-tenant miss that broke login also broke reset for owners;
+  // the reset OTP is requested headerless, then the account is found by email.
+  r = await call('/auth/otp/request', { method: 'POST', tenantless: true, body: { purpose: 'password_reset', channel: 'email', email: 'owner@tenantc.in' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const resetCode = smsSender.getLastCode({ channel: 'email', target: 'owner@tenantc.in', purpose: 'password_reset' });
+  assert.ok(resetCode, 'email OTP must be captured by the memory provider');
+  r = await call('/auth/password/reset', { method: 'POST', tenantless: true, body: { channel: 'email', email: 'owner@tenantc.in', otpCode: resetCode, newPassword: 'NewPass@12345' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  // the new password now signs in headerless (global lookup again)
+  r = await call('/auth/login', { method: 'POST', tenantless: true, body: { email: 'owner@tenantc.in', password: 'NewPass@12345' } });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(String(r.body.data.user.tenantId), String(tenantC._id));
+
+  console.log('✅ ALL SMOKE TESTS PASSED (20 scenarios)');
 
   server.close();
   await mongoose.disconnect();

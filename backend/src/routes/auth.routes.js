@@ -11,6 +11,7 @@ import {
   loginSchema,
   refreshTokenSchema,
   changePasswordSchema,
+  resetPasswordSchema,
 } from '../utils/validators/user.validators.js';
 
 const router = Router();
@@ -33,7 +34,7 @@ router.post('/logout', rateLimiter.standard, AuthController.logout);
 
 // authenticated password endpoints
 router.post('/password/change', authenticate, validate(changePasswordSchema), AuthController.changePassword);
-router.post('/password/reset', rateLimiter.standard, AuthController.resetPassword);
+router.post('/password/reset', rateLimiter.standard, validate(resetPasswordSchema), AuthController.resetPassword);
 
 // ---- 2FA / TOTP (super_admin only) ----
 router.post('/2fa/enroll', authenticate, rateLimiter.standard, AuthController.enroll2fa);

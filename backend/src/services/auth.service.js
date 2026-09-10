@@ -6,7 +6,7 @@ import TokenService from '../utils/jwt.js';
 import { generateOpaqueToken, sha256 } from '../utils/hash.js';
 import { badRequest, unauthorized, notFound, conflict, forbidden } from '../utils/ApiError.js';
 import config from '../config/index.js';
-import { USER_ROLES, USER_STATUS, LOGIN_METHOD, TENANT_RESOLUTION_SOURCE } from '../constants/enums.js';
+import { USER_ROLES, USER_STATUS, LOGIN_METHOD } from '../constants/enums.js';
 
 /**
  * AuthService — orchestration of all authentication flows.
@@ -21,8 +21,11 @@ import { USER_ROLES, USER_STATUS, LOGIN_METHOD, TENANT_RESOLUTION_SOURCE } from 
  *   loginWithPassword -> email+password login (for users who set a password)
  *   changePassword / setPassword (OTP-based password reset)
  *
- * Multi-tenancy: every lookup is scoped by tenantId.
- * Session model: short-lived JWT access + stored, hashed, rotating refresh token.
+ * Multi-tenancy: phone/OTP identity is tenant-scoped (a phone number is reused
+ * across businesses); EMAIL is globally unique, so email-identity lookups
+ * (password login, password reset) resolve the account globally and treat the
+ * tenant as an output of login, never an input. Session model: short-lived JWT
+ * access + stored, hashed, rotating refresh token.
  */
 class AuthService {
   /** @param deviceInfo { deviceId?, deviceName?, platform?, userAgent? } */
@@ -143,30 +146,46 @@ class AuthService {
   /**
    * Email + password login (available once a user sets a password).
    *
-   * Email addresses are GLOBALLY unique (the unique index is not
-   * tenant-scoped), so one email identifies one account in one tenant — the
-   * tenant is an output of login, not an input the human must supply. When the
-   * caller named a tenant EXPLICITLY (header/host), the lookup stays scoped to
-   * it and a miss is INVALID_CREDENTIALS exactly as before. But when the
-   * tenant was merely GUESSED (configured default / first-active fallback),
-   * scoping the lookup to the guess rejects every correct password that lives
-   * anywhere else — every logged-out store owner. So on a scoped miss with a
-   * guessed tenant, resolve the account by email alone and let the password —
-   * never the guess — decide.
+   * Email addresses are GLOBALLY unique (the model's unique index is not
+   * tenant-scoped), so one email identifies exactly one account and its tenant
+   * is an OUTPUT of login, never an input. Scoping this lookup to req.tenantId
+   * can only reject correct credentials: for a logged-out human the resolved
+   * tenant is a guess (configured default / first-active fallback), and an
+   * explicit header/host is equally unable to make a different account exist.
+   * And it adds zero security — the token is minted for the account's OWN
+   * tenant, whatever the request claimed. So the lookup is global, always.
+   * `tenantId`/`tenantSource` are retained purely for the diagnostic log.
+   *
+   * Client-visible outcomes:
+   *   unknown email    -> 401 INVALID_CREDENTIALS  (opaque, no enumeration)
+   *   wrong password   -> 401 INVALID_CREDENTIALS  (opaque)
+   *   no password set  -> 401 PASSWORD_NOT_SET     (actionable recovery path)
+   *   blocked/deleted  -> 403/401 ACCOUNT_*        (only after a correct password)
    */
-  async loginWithPassword({ tenantId, tenantSource = null, email, password, deviceInfo = {}, ip = null }) {
+  async loginWithPassword({ tenantId = null, tenantSource = null, email, password, deviceInfo = {}, ip = null }) {
     if (!email || !password) throw badRequest('Email and password are required', 'CREDENTIALS_REQUIRED');
     const address = String(email).trim().toLowerCase();
-    let user = await User.findOne({ tenantId, 'email.address': address }).select('+passwordHash');
-    const tenantWasGuessed = tenantSource === TENANT_RESOLUTION_SOURCE.DEFAULT
-      || tenantSource === TENANT_RESOLUTION_SOURCE.FALLBACK
-      || !tenantSource;
-    if (!user && tenantWasGuessed) {
-      user = await User.findOne({ 'email.address': address }).select('+passwordHash');
+    const user = await User.findOne({ 'email.address': address }).select('+passwordHash');
+    if (!user) {
+      this.logLoginFailure({ email: address, tenantId, tenantSource, reason: 'email_not_found' });
+      throw unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
     }
-    if (!user) throw unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
+    if (!user.passwordHash) {
+      // The account exists but was created OTP-first — no password was ever
+      // set, so no password can match. Saying so is the difference between a
+      // dead end and a recovery path; it reveals only that a password is
+      // absent, which the owner must know in order to fix it.
+      this.logLoginFailure({ email: address, tenantId, tenantSource, userTenantId: user.tenantId, reason: 'password_not_set' });
+      throw unauthorized(
+        'This account has no password set. Sign in with a one-time code, or reset your password.',
+        'PASSWORD_NOT_SET',
+      );
+    }
     const ok = await user.isValidPassword(password);
-    if (!ok) throw unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
+    if (!ok) {
+      this.logLoginFailure({ email: address, tenantId, tenantSource, userTenantId: user.tenantId, reason: 'password_mismatch' });
+      throw unauthorized('Invalid email or password', 'INVALID_CREDENTIALS');
+    }
 
     await this.ensureUserCanLogin(user);
     await user.touchLogin({ ip, deviceId: deviceInfo.deviceId, method: LOGIN_METHOD.EMAIL_PASSWORD });
@@ -186,10 +205,19 @@ class AuthService {
     return { message: 'Password updated. All devices signed out.' };
   }
 
-  /** Password reset via OTP (no login required). */
+  /**
+   * Password reset via OTP (no login required).
+   *
+   * Email targets resolve GLOBALLY (email is unique; the tenant is an output),
+   * mirroring password login — otherwise a store owner resetting their password
+   * from the console would hit the same guessed-tenant miss that broke login.
+   * Phone targets stay tenant-scoped (a phone number is reused across tenants).
+   */
   async resetPasswordWithOtp({ tenantId, channel, target, otpCode, newPassword }) {
     await OtpService.verify({ tenantId, purpose: 'password_reset', channel, target, code: otpCode });
-    const user = await this.findUserByIdentity({ tenantId, channel, target });
+    const user = channel === 'email'
+      ? await User.findOne({ 'email.address': String(target).trim().toLowerCase() })
+      : await this.findUserByIdentity({ tenantId, channel, target });
     if (!user) throw notFound('No account found for this identity', 'USER_NOT_FOUND');
     await user.setPassword(newPassword);
     await user.save();
@@ -232,6 +260,23 @@ class AuthService {
     if (!user) throw unauthorized('Account not found', 'USER_NOT_FOUND');
     if (user.status === USER_STATUS.BLOCKED) throw forbidden('Your account has been blocked. Contact support.', 'ACCOUNT_BLOCKED');
     if (user.status === USER_STATUS.DELETED || user.isDeleted) throw unauthorized('Account no longer exists', 'ACCOUNT_DELETED');
+  }
+
+  /**
+   * Structured login-failure diagnostics. The client always sees the opaque
+   * INVALID_CREDENTIALS; this line is how an operator splits "email missing"
+   * from "password mismatch" from "account has no password" without touching
+   * the database by hand. The raw email is PII, so it is logged as a stable
+   * digest — sha256(address) still lets an operator correlate to the account.
+   * Never logs the password or the hash.
+   */
+  logLoginFailure({ email, tenantId = null, tenantSource = null, userTenantId = null, reason }) {
+    console.warn(
+      `[auth] login failed reason=${reason} emailSha256=${sha256(email)}`
+      + ` requestTenant=${tenantId ? String(tenantId) : 'none'}`
+      + ` tenantSource=${tenantSource || 'none'}`
+      + ` accountTenant=${userTenantId ? String(userTenantId) : 'none'}`,
+    );
   }
 
   /** Issue access token + persist hashed refresh token; returns both. */
