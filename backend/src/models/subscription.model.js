@@ -13,39 +13,64 @@
  */
 
 import mongoose from 'mongoose';
-import { softDeletePlugin, auditPlugin, toJSONPlugin } from './plugins/index.js';
-import { SUBSCRIPTION_STATUS, SUBSCRIPTION_FREQUENCY } from '../constants/enums.js';
+import {
+  softDeletePlugin,
+  auditPlugin,
+  toJSONPlugin,
+} from './plugins/index.js';
+
+import {
+  SUBSCRIPTION_STATUS,
+  SUBSCRIPTION_FREQUENCY,
+} from '../constants/enums.js';
 
 // Re-exported so Phase 7.8.1 consumers keep importing from the model file;
-// the canonical home is constants/enums.js (single vocabulary, like every
-// other model).
-export { SUBSCRIPTION_STATUS, SUBSCRIPTION_FREQUENCY };
+// the canonical home is constants/enums.js.
+export {
+  SUBSCRIPTION_STATUS,
+  SUBSCRIPTION_FREQUENCY,
+};
 
 const { Schema, Types } = mongoose;
 
-export const SUBSCRIPTION_STATUS = Object.freeze({
-  ACTIVE: 'active',
-  PAUSED: 'paused',
-  CANCELLED: 'cancelled',
-  EXPIRED: 'expired',
-});
-
-export const SUBSCRIPTION_FREQUENCY = Object.freeze({
-  WEEKLY: 'weekly',
-  BIWEEKLY: 'biweekly',
-  MONTHLY: 'monthly',
-});
-
 const SubscriptionSchema = new Schema(
   {
-    tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
-    userId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
+    tenantId: {
+      type: Types.ObjectId,
+      ref: 'Tenant',
+      required: true,
+      index: true,
+    },
 
-    items: [{
-      tenantProductId: { type: Types.ObjectId, ref: 'TenantProduct', required: true },
-      quantity: { type: Number, required: true, min: 1 },
-      unitPrice: { type: Number, required: true, min: 0 }, // locked at subscribe time
-    }],
+    userId: {
+      type: Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+
+    items: [
+      {
+        tenantProductId: {
+          type: Types.ObjectId,
+          ref: 'TenantProduct',
+          required: true,
+        },
+
+        quantity: {
+          type: Number,
+          required: true,
+          min: 1,
+        },
+
+        // Locked at subscribe time
+        unitPrice: {
+          type: Number,
+          required: true,
+          min: 0,
+        },
+      },
+    ],
 
     frequency: {
       type: String,
@@ -60,42 +85,107 @@ const SubscriptionSchema = new Schema(
       index: true,
     },
 
-    nextDeliveryAt: { type: Date, required: true, index: true },
-    startDate: { type: Date, required: true },
-    endDate: { type: Date, default: null }, // null = indefinite
+    nextDeliveryAt: {
+      type: Date,
+      required: true,
+      index: true,
+    },
+
+    startDate: {
+      type: Date,
+      required: true,
+    },
+
+    // null = indefinite
+    endDate: {
+      type: Date,
+      default: null,
+    },
 
     // Delivery preferences
-    deliveryAddress: { type: Types.ObjectId, ref: 'Address', default: null },
-    preferredSlotId: { type: Types.ObjectId, default: null },
+    deliveryAddress: {
+      type: Types.ObjectId,
+      ref: 'Address',
+      default: null,
+    },
+
+    preferredSlotId: {
+      type: Types.ObjectId,
+      default: null,
+    },
 
     // Billing
-    paymentMethodId: { type: String, default: null }, // Razorpay token
-    totalOrders: { type: Number, default: 0 },
-    totalAmount: { type: Number, default: 0 },
+    paymentMethodId: {
+      type: String,
+      default: null,
+    },
 
-    // Pause/resume
-    pausedAt: { type: Date, default: null },
-    pauseReason: { type: String, default: '' },
-    resumedAt: { type: Date, default: null },
+    totalOrders: {
+      type: Number,
+      default: 0,
+    },
+
+    totalAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    // Pause / resume
+    pausedAt: {
+      type: Date,
+      default: null,
+    },
+
+    pauseReason: {
+      type: String,
+      default: '',
+    },
+
+    resumedAt: {
+      type: Date,
+      default: null,
+    },
 
     // Cancellation
-    cancelledAt: { type: Date, default: null },
-    cancelReason: { type: String, default: '' },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
+
+    cancelReason: {
+      type: String,
+      default: '',
+    },
 
     // Metadata
-    notes: { type: String, default: '' },
+    notes: {
+      type: String,
+      default: '',
+    },
   },
-  { collection: 'subscriptions' }
+  {
+    collection: 'subscriptions',
+  },
 );
 
 // Find subscriptions due for order generation
-SubscriptionSchema.index({ status: 1, nextDeliveryAt: 1 });
+SubscriptionSchema.index({
+  status: 1,
+  nextDeliveryAt: 1,
+});
 
 // User's subscriptions
-SubscriptionSchema.index({ tenantId: 1, userId: 1, status: 1 });
+SubscriptionSchema.index({
+  tenantId: 1,
+  userId: 1,
+  status: 1,
+});
 
 SubscriptionSchema.plugin(auditPlugin);
 SubscriptionSchema.plugin(softDeletePlugin);
 SubscriptionSchema.plugin(toJSONPlugin);
 
-export default mongoose.model('Subscription', SubscriptionSchema);
+export default mongoose.model(
+  'Subscription',
+  SubscriptionSchema,
+);
