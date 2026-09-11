@@ -81,6 +81,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
   — or the slides predate the schema fix and were never re-saved. Check the
   bootstrap `heroSlides[].imageUrl` values to confirm in seconds.
 
+### Added — local multi-store development
+- `<slug>.localhost` now resolves like a production store subdomain (new
+  `HOST_LOCAL` resolution source, `ALLOW_LOCAL_SUBDOMAINS` flag defaulting on
+  outside production): one storefront dev server acts as every store via
+  `http://<slug>.localhost:5174` — own hostname, own sessions, own carts, zero
+  DNS/hosts setup. Unknown slugs fail closed (`STORE_NOT_FOUND`); bare
+  `localhost`, reserved labels and multi-label names fall through exactly as
+  before. Pure parser `parseLocalSubdomain` is contract-tested; live
+  resolution is covered by smoke-domains section 8.
+- The storefront dev proxy no longer sets `changeOrigin` (it rewrote Host to
+  the backend's address, collapsing every store to the fallback tenant).
+  CORS already permits `*.localhost` in development — no change needed there.
+- DEV-only `?asTenant=<id>` storage is now isolated per pin, so pinned tabs
+  cannot cross-contaminate carts/sessions. See "Testing multiple stores
+  locally" in the storefront README.
+
 ### Added — public catalog
 - `GET /catalog/store/brands` — brands this store actually sells (scoped to the
   tenant's live listings), each with `productCount` + `fromPrice`, featured

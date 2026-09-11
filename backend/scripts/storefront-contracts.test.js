@@ -39,6 +39,8 @@ import Brand from '../src/models/brand.model.js';
 import Category from '../src/models/category.model.js';
 import { serializeDoc, serializeList } from '../src/utils/serialize.js';
 import { buildStoreUpdate, cleanStoreValue, cleanStoreObject } from '../src/services/store.service.js';
+import { parseLocalSubdomain } from '../src/services/tenantDomain.service.js';
+import { TENANT_RESOLUTION_SOURCE } from '../src/constants/enums.js';
 import { storeUpdateSchema } from '../src/utils/validators/marketplace.validators.js';
 import { brandCreateSchema, categoryCreateSchema } from '../src/utils/validators/catalog.validators.js';
 
@@ -291,6 +293,39 @@ console.log('S9 · store-merge fidelity');
 
   check('cleanStoreValue passthrough', cleanStoreValue('x') === 'x' && cleanStoreValue(null) === null);
   check('cleanStoreObject skips arrays', cleanStoreObject([1])?.length === 1);
+}
+
+// ── S10 · local multi-store: <slug>.localhost parsing + dev-plumbing wiring ──
+// One dev server acts as every store via per-slug loopback hostnames. The
+// parser is pure (pinned here); live resolution is pinned hermetically in
+// smoke-domains section 8. The wiring checks pin the two silent killers:
+// a proxy that rewrites Host collapses every store to the fallback tenant,
+// and storage that ignores the ?asTenant pin cross-contaminates tabs.
+console.log('S10 · local multi-store parsing + wiring');
+{
+  check('basic slug parses', parseLocalSubdomain('rosebazaar.localhost') === 'rosebazaar');
+  check('port tolerated', parseLocalSubdomain('rosebazaar.localhost:5174') === 'rosebazaar');
+  check('case tolerated', parseLocalSubdomain('Rose-Bazaar.LOCALHOST') === 'rose-bazaar');
+  check('bare localhost falls through', parseLocalSubdomain('localhost:5174') === null);
+  check('loopback IP falls through', parseLocalSubdomain('127.0.0.1:5174') === null);
+  check('multi-label falls through', parseLocalSubdomain('a.b.localhost') === null);
+  check('non-local hosts untouched', parseLocalSubdomain('rosebazaar.flowermarket.in') === null);
+  check('reserved labels fall through', parseLocalSubdomain('admin.localhost', { reservedSlugs: ['admin', 'api'] }) === null);
+  check('non-reserved passes with list', parseLocalSubdomain('shop.localhost', { reservedSlugs: ['admin'] }) === 'shop');
+  check('userinfo rejected', parseLocalSubdomain('rosebazaar.localhost@evil.com') === null);
+  check('empty rejected', parseLocalSubdomain('') === null && parseLocalSubdomain(null) === null);
+  check('HOST_LOCAL source exists', TENANT_RESOLUTION_SOURCE.HOST_LOCAL === 'host_local');
+
+  const svc = read('backend/src/services/tenantDomain.service.js');
+  check('resolveByHost consults the dev parser', svc.includes('parseLocalSubdomain(rawHost'));
+  check('dev path gated by flag', svc.includes('config.domains.allowLocalSubdomains'));
+  check('unknown local slug fails closed', svc.includes("throw notFound(`No store at ${host}`, 'STORE_NOT_FOUND')"));
+  check('config flag mirrors override style', read('backend/src/config/index.js').includes('ALLOW_LOCAL_SUBDOMAINS'));
+
+  const vite = read('frontend/apps/storefront/vite.config.js');
+  check('dev proxy preserves Host (no changeOrigin: key)', !/changeOrigin\s*:/.test(vite));
+  const api = read('frontend/apps/storefront/src/api.js');
+  check('storage isolated per dev pin', api.includes('fm-shop:${host}${devPin'));
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

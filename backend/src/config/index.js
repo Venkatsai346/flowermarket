@@ -353,6 +353,15 @@ const config = {
     allowHeaderOverride: process.env.ALLOW_TENANT_HEADER_OVERRIDE
       ? process.env.ALLOW_TENANT_HEADER_OVERRIDE === 'true'
       : env !== 'production',
+    /**
+     * Resolve `<slug>.localhost` to the tenant with that slug. LOCAL
+     * DEVELOPMENT ONLY (default on outside production): one dev server acts
+     * as every store via `http://<slug>.localhost:<port>` — own hostname,
+     * own sessions, own carts — exactly like production subdomains.
+     */
+    allowLocalSubdomains: process.env.ALLOW_LOCAL_SUBDOMAINS
+      ? process.env.ALLOW_LOCAL_SUBDOMAINS === 'true'
+      : env !== 'production',
     cacheTtlMs: Number(process.env.DOMAIN_RESOLUTION_CACHE_TTL_MS) || 300000,
     /** IPs allowed to call the TLS `ask` hook (comma-separated; empty = any). */
     tlsHookAllowlist: (process.env.TLS_HOOK_IP_ALLOWLIST || '')

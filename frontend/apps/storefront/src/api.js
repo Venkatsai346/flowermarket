@@ -34,8 +34,14 @@ function readDevTenantPin() {
 }
 
 const host = typeof window !== 'undefined' ? window.location.hostname : 'server';
-const storageKey = `fm-shop:${host}`;
-const guestStorageKey = `fm-guest:${host}`;
+// DEV-only `?asTenant=` pins the tenant without changing the hostname, so the
+// pin joins the storage namespace — three tabs pinned to three stores keep
+// three isolated carts/sessions. In production the pin is always null and the
+// keys are exactly `fm-shop:{host}` / `fm-guest:{host}` as before. (Captured
+// at load: changing the pin needs a reload for storage to follow.)
+const devPin = readDevTenantPin();
+const storageKey = `fm-shop:${host}${devPin ? `:${devPin}` : ''}`;
+const guestStorageKey = `fm-guest:${host}${devPin ? `:${devPin}` : ''}`;
 
 export function readGuestKey() {
   if (typeof window === 'undefined') return null;

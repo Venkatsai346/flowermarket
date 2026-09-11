@@ -1176,6 +1176,7 @@ export const TLS_STATUS = Object.freeze({
 export const TENANT_RESOLUTION_SOURCE = Object.freeze({
   HOST_SUBDOMAIN: 'host_subdomain',
   HOST_CUSTOM: 'host_custom',
+  HOST_LOCAL: 'host_local', // <slug>.localhost — local development only
   HEADER: 'header',
   TOKEN: 'token',
   DEFAULT: 'default',

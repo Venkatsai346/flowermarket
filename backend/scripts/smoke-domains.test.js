@@ -192,6 +192,33 @@ async function main() {
   const live = await svc.liveHostnames();
   check('the CORS host set lists only verified domains', live.includes('shop.rosebazaar.com') && !live.includes('shop.lilyco.com'), live.join(','));
 
+  // -------------------------------------------------------------------------
+  section('8. local multi-store development (<slug>.localhost)');
+  // -------------------------------------------------------------------------
+  config.domains.allowLocalSubdomains = true; // hermetic-proof: never depends on ambient NODE_ENV
+  const rLocal = await svc.resolveByHost('rosebazaar.localhost:5174');
+  eq('slug.localhost resolves the tenant (port tolerated)', String(rLocal.tenantId), String(rose._id));
+  eq('source is host_local', rLocal.source, 'host_local');
+  const rLily = await svc.resolveByHost('LILY-FLOWERS.localhost');
+  eq('slug match is case-insensitive', String(rLily.tenantId), String(lily._id));
+  let ghostLocal = null;
+  try { await svc.resolveByHost('ghost.localhost'); } catch (e) { ghostLocal = e; }
+  eq('★ unknown local slug fails closed (never the wrong store)', ghostLocal?.code, 'STORE_NOT_FOUND');
+  let deadLocal = null;
+  try { await svc.resolveByHost('closedstore.localhost'); } catch (e) { deadLocal = e; }
+  eq('inactive tenant fails closed', deadLocal?.code, 'STORE_NOT_FOUND');
+  eq('bare localhost falls through to header/default', await svc.resolveByHost('localhost:5174'), null);
+  eq('multi-label names fall through', await svc.resolveByHost('a.b.localhost'), null);
+  const reservedLabel = (config.marketplace.reservedSlugs || [])[0];
+  if (reservedLabel) {
+    eq(`reserved label '${reservedLabel}' falls through`, await svc.resolveByHost(`${reservedLabel}.localhost`), null);
+  } else {
+    check('reserved list non-empty for the fallthrough check', false);
+  }
+  config.domains.allowLocalSubdomains = false;
+  eq('flag off restores legacy localhost behaviour', await svc.resolveByHost('rosebazaar.localhost'), null);
+  config.domains.allowLocalSubdomains = true;
+
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`domain routing: ${passed} passed, ${failed} failed`);
   if (failed) { console.log('\nFailures:'); for (const f of failures) console.log(`  • ${f}`); }

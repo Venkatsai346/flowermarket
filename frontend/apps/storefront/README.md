@@ -14,10 +14,11 @@ The backend resolves the tenant from the `Host` the browser used
 (`{slug}.{PLATFORM_ROOT_DOMAIN}` or a verified custom domain, Phase 6.4) and
 returns branding, theme tokens and feature flags. Consequently:
 
-* **there is no `x-tenant-id` header anywhere in this app.** The console needs
-  one because it can administer any tenant; a storefront is only ever one
-  store. Nothing here knows a tenant id, so nothing here can address the wrong
-  tenant.
+* **there is no `x-tenant-id` header anywhere in this app — in production.**
+  The console needs one because it can administer any tenant; a storefront is
+  only ever one store. Nothing here knows a tenant id, so nothing here can
+  address the wrong tenant. (DEV ONLY: `?asTenant=<id>` pins the tenant for
+  local testing; the branch is `import.meta.env.DEV`-gated out of prod builds.)
 * **there is no per-store build.** Brand colours arrive as data and are written
   onto `:root` as CSS custom properties (`src/theme.js`). Text colour on the
   brand is chosen by **computing WCAG luminance**, so a store that picks pale
@@ -51,9 +52,44 @@ npm run build:storefront
 ```
 
 In development the API falls back to header/default tenant resolution because
-`localhost` is classified as infrastructure — so the app works without DNS. In
-production it is served for every `{slug}.{root}` hostname and for verified
-custom domains.
+bare `localhost` is classified as infrastructure — so the app works without
+DNS. In production it is served for every `{slug}.{root}` hostname and for
+verified custom domains.
+
+## Testing multiple stores locally
+
+One dev server acts as **every** store — no extra ports, no hosts-file edits,
+no rebuilds. Browsers resolve `*.localhost` to loopback natively.
+
+```bash
+npm run storefront          # one server, :5174
+```
+
+Then open one tab per store (use each tenant's `slug` from the console or DB):
+
+```
+http://flower-market.localhost:5174     # store 1
+http://rose-bazaar.localhost:5174       # store 2
+http://lily-co.localhost:5174           # store 3
+```
+
+Each hostname gets its own sessions, carts and logins (storage is namespaced
+by hostname), exactly like production subdomains. The backend resolves
+`<slug>.localhost` only outside production (`ALLOW_LOCAL_SUBDOMAINS`, default
+on in dev); an unknown slug fails closed with "No store at this address"
+rather than silently showing the wrong store.
+
+Two things that had to be true for this to work, and now are:
+
+* the dev proxy preserves the `Host` header (`vite.config.js` deliberately
+  omits `changeOrigin` — rewriting it would collapse every store to the
+  fallback tenant);
+* CORS already permits `*.localhost` origins in development.
+
+Escape hatches: bare `http://localhost:5174` still shows the default/first
+tenant (unchanged), and DEV-only `?asTenant=<tenantId>` pins any tab to any
+tenant without touching the hostname (its storage is isolated per pin, but
+changing the pin needs a reload for storage to follow — prefer hostnames).
 
 ## Deliberate omissions
 

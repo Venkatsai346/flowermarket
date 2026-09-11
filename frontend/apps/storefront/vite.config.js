@@ -17,8 +17,12 @@ export default defineConfig({
     port: 5174,
     allowedHosts: true, // the preview/storefront host varies; dev-only
     proxy: {
-      '/api': { target: process.env.VITE_API_TARGET || 'http://localhost:4000', changeOrigin: true },
-      '/media/local': { target: process.env.VITE_API_TARGET || 'http://localhost:4000', changeOrigin: true },
+      // NOTE: no `changeOrigin` here — deliberately. The Host header IS the
+      // store's identity (`<slug>.localhost` in dev, subdomains/custom domains
+      // in prod), and rewriting it to the backend's address would collapse
+      // every storefront to the fallback tenant.
+      '/api': { target: process.env.VITE_API_TARGET || 'http://localhost:4000' },
+      '/media/local': { target: process.env.VITE_API_TARGET || 'http://localhost:4000' },
     },
   },
   build: {
