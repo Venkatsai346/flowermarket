@@ -89,6 +89,30 @@ export const vendorStatusQuerySchema = Joi.object({
 });
 
 // ---------------- store owner ----------------
+const heroSlideInput = Joi.object({
+  imageUrl: Joi.string().uri({ allowRelative: true }).required(),
+  mobileImageUrl: Joi.string().uri({ allowRelative: true }).allow('', null).optional(),
+  title: Joi.string().max(80).allow('', null).optional(),
+  subtitle: Joi.string().max(160).allow('', null).optional(),
+  ctaLabel: Joi.string().max(30).allow('', null).optional(),
+  ctaLink: Joi.string().max(300).allow('', null).optional(),
+  sortOrder: Joi.number().integer().min(0).max(100).optional(),
+  isActive: Joi.boolean().optional(),
+});
+
+const highlightInput = Joi.object({
+  icon: Joi.string().max(30).allow('', null).optional(),
+  title: Joi.string().max(60).required(),
+  text: Joi.string().max(200).allow('', null).optional(),
+});
+
+const testimonialInput = Joi.object({
+  name: Joi.string().max(80).required(),
+  text: Joi.string().max(500).required(),
+  rating: Joi.number().integer().min(1).max(5).allow(null).optional(),
+  avatarUrl: Joi.string().uri({ allowRelative: true }).allow('', null).optional(),
+});
+
 export const storeUpdateSchema = Joi.object({
   name: Joi.string().max(120).optional(),
   logoUrl: Joi.string().uri({ allowRelative: true }).allow('', null).optional(),
@@ -104,7 +128,46 @@ export const storeUpdateSchema = Joi.object({
     instagram: Joi.string().uri().allow('', null).optional(),
     facebook: Joi.string().uri().allow('', null).optional(),
     website: Joi.string().uri().allow('', null).optional(),
+    youtube: Joi.string().uri().allow('', null).optional(),
+    x: Joi.string().uri().allow('', null).optional(),
+    whatsapp: Joi.string().max(30).allow('', null).optional(),
   }).optional(),
+  // Rich storefront content (all arrays bounded — they ship in bootstrap).
+  heroSlides: Joi.array().items(heroSlideInput).max(8).optional(),
+  announcement: Joi.object({
+    text: Joi.string().max(120).allow('', null).optional(),
+    linkUrl: Joi.string().max(300).allow('', null).optional(),
+    isActive: Joi.boolean().optional(),
+  }).optional(),
+  about: Joi.object({
+    title: Joi.string().max(120).allow('', null).optional(),
+    content: Joi.string().max(4000).allow('', null).optional(),
+    imageUrl: Joi.string().uri({ allowRelative: true }).allow('', null).optional(),
+    videoUrl: Joi.string().uri({ allowRelative: true }).allow('', null).optional(),
+  }).optional(),
+  highlights: Joi.array().items(highlightInput).max(6).optional(),
+  testimonials: Joi.array().items(testimonialInput).max(12).optional(),
+  contact: Joi.object({
+    phone: Joi.string().max(20).allow('', null).optional(),
+    email: Joi.string().email().allow('', null).optional(),
+    address: Joi.object({
+      line1: Joi.string().max(120).allow('', null).optional(),
+      line2: Joi.string().max(120).allow('', null).optional(),
+      city: Joi.string().max(80).allow('', null).optional(),
+      state: Joi.string().max(80).allow('', null).optional(),
+      pincode: Joi.string().max(10).allow('', null).optional(),
+    }).optional(),
+    hours: Joi.string().max(200).allow('', null).optional(),
+    whatsapp: Joi.string().max(20).allow('', null).optional(),
+    mapUrl: Joi.string().uri().allow('', null).optional(),
+  }).optional(),
+  seo: Joi.object({
+    title: Joi.string().max(70).allow('', null).optional(),
+    description: Joi.string().max(170).allow('', null).optional(),
+  }).optional(),
+  footerText: Joi.string().max(300).allow('', null).optional(),
+  featuredCategoryIds: Joi.array().items(objectId).max(12).unique().optional(),
+  featuredBrandIds: Joi.array().items(objectId).max(12).unique().optional(),
   isPublished: Joi.boolean().optional(),
 });
 

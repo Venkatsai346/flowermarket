@@ -61,12 +61,18 @@ class BrandService {
     return brand;
   }
 
-  async list({ status = null, verified = null, page = 1, limit = 50 } = {}) {
+  async list({ status = null, verified = null, featured = null, search = null, page = 1, limit = 50 } = {}) {
     const q = {};
     if (status) q.status = status;
     if (verified === true) q['verification.isVerified'] = true;
     if (verified === false) q['verification.isVerified'] = false;
-    const docs = await Brand.find(q).sort({ name: 1 }).skip((page - 1) * limit).limit(limit).lean();
+    if (featured === true) q.isFeatured = true;
+    if (featured === false) q.isFeatured = false;
+    if (search) {
+      const rx = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      q.$or = [{ name: rx }, { slug: rx }, { tagline: rx }];
+    }
+    const docs = await Brand.find(q).sort({ isFeatured: -1, sortOrder: 1, name: 1 }).skip((page - 1) * limit).limit(limit).lean();
     const total = await Brand.countDocuments(q);
     return { items: docs, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }

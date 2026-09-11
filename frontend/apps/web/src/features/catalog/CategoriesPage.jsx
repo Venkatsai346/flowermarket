@@ -28,6 +28,7 @@ const blank = () => ({
   sortOrder: 0,
   description: '',
   imageUrl: '',
+  bannerUrl: '',
   attributeSchema: [],
 });
 
@@ -127,13 +128,22 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
         <Field label="Description">
           <Textarea value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="What belongs in this category…" />
         </Field>
-        <ImageField
-          label="Image"
-          hint="Upload from device or paste a URL"
-          purpose={MEDIA_PURPOSE.categoryImage}
-          value={form.imageUrl}
-          onChange={(v) => set('imageUrl', v)}
-        />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ImageField
+            label="Image"
+            hint="Square tile for rails and cards"
+            purpose={MEDIA_PURPOSE.categoryImage}
+            value={form.imageUrl}
+            onChange={(v) => set('imageUrl', v)}
+          />
+          <ImageField
+            label="Banner"
+            hint="Wide hero for the category page header"
+            purpose={MEDIA_PURPOSE.categoryBanner}
+            value={form.bannerUrl}
+            onChange={(v) => set('bannerUrl', v)}
+          />
+        </div>
         <Checkbox label="Featured (highlight on storefront)" checked={form.isFeatured} onChange={(e) => set('isFeatured', e.target.checked)} />
 
         <div>

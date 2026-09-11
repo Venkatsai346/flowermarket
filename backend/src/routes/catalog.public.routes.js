@@ -12,6 +12,9 @@ const router = Router();
 router.get('/', validate(catalogQuerySchema, 'query'), CatalogPublicController.search);
 router.get('/categories', CatalogPublicController.categories);
 router.get('/brands', CatalogPublicController.brands);
+// Tenant-scoped storefront indexes (counts over this store's live listings).
+router.get('/store/brands', CatalogPublicController.storeBrands);
+router.get('/store/categories', CatalogPublicController.storeCategories);
 router.get('/serviceability', CatalogPublicController.serviceability);
 router.get('/p/:slug', validate(slugParamSchema, 'params'), validate(productDetailQuerySchema, 'query'), CatalogPublicController.productBySlug);
 router.get('/products/:id', validate(idParamSchema, 'params'), validate(productDetailQuerySchema, 'query'), CatalogPublicController.productDetail);
