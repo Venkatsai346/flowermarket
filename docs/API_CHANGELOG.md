@@ -31,6 +31,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
   behaviour, Joi acceptance, and source-wiring invariants. The hermetic suite
   gains section 5 asserting the admin list/tree id contract against a live DB.
 
+### Fixed — storefront-content round 3 (attach failures)
+- **Saved announcements never rendered**: `App.jsx` passed `message=` while
+  `AnnouncementBar` reads `announcement=` — a prop-name mismatch builds cannot
+  catch and the null-guard hid completely. Fixed; every other new section's
+  props were audited usage-vs-definition and match. Contract suite gains S6
+  (storefront prop wiring) so the class cannot recur.
+- **Brand modal ignored the enriched model**: `blank()`/`pickFields()`/UI were
+  the old poor shape while the submit body referenced new keys — new fields
+  were invisible, and editing a brand silently WIPED its banner/tagline/story/
+  website/socials/curation to null. The modal is now coherent end to end
+  (all fields, banner purpose, featured curation) and edits resolve ids via
+  `rid()`. Pinned by contract section S7.
+- **Stale reads after save (the "wrong API method" GET)**: the response cache
+  cached ALL GETs including authenticated ones (the `/admin/ + req.user` skip
+  never fires — the middleware runs before per-route auth). Credentialed
+  requests (Authorization/Cookie) now bypass the cache entirely; anonymous
+  public reads stay cached with bust-on-write. Store saves additionally bust
+  `/marketplace/store`, which covers both the owner's GET and the public
+  `/stores/:slug` reads.
+- **Localhost tenant alignment**: the storefront sends no tenant header, so on
+  localhost it renders DEFAULT_TENANT_ID/first-active — possibly not the store
+  edited in the console. DEV-only `?asTenant=<id>` pins the storefront tenant
+  for testing (backend ignores the header under real hostnames; the branch is
+  `import.meta.env.DEV`-gated out of production builds).
+
 ### Added — public catalog
 - `GET /catalog/store/brands` — brands this store actually sells (scoped to the
   tenant's live listings), each with `productCount` + `fromPrice`, featured

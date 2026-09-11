@@ -167,7 +167,7 @@ console.log('S5 · wiring invariants');
   check('taxonomy writes bust catalog cache (7 sites)', bustSites === 7, `found ${bustSites}`);
   const marketplace = read('backend/src/controllers/marketplace.controller.js');
   check('store save busts bootstrap', marketplace.includes("invalidateCache('/domains/bootstrap')"));
-  check('store save busts storefront api', marketplace.includes("invalidateCache('/marketplace/stores/')"));
+  check('store save busts storefront api', marketplace.includes("invalidateCache('/marketplace/store')"));
   check('store save busts store indexes', marketplace.includes("invalidateCache('/catalog/store/')"));
 
   const brandsPage = read('frontend/apps/web/src/features/catalog/BrandsPage.jsx');
@@ -178,6 +178,59 @@ console.log('S5 · wiring invariants');
 
   const catsPage = read('frontend/apps/web/src/features/catalog/CategoriesPage.jsx');
   check('CategoryModal edits via rid(initial)', catsPage.includes('updateCategory(rid(initial), body)'));
+}
+
+// ── S6 · storefront prop wiring: every section receives what it renders ──────
+// esbuild/vite never flag a wrong prop NAME (it is just an unused key), and
+// the section components null-guard — so `message=` instead of `announcement=`
+// shipped a storefront where saved announcements could never appear.
+console.log('S6 · storefront prop wiring');
+{
+  const app = read('frontend/apps/storefront/src/App.jsx');
+  check('App feeds AnnouncementBar.announcement', app.includes('<AnnouncementBar announcement={store?.announcement}'));
+  check('App has no message= leftover', !app.includes('<AnnouncementBar message='));
+
+  const home = read('frontend/apps/storefront/src/pages/Home.jsx');
+  for (const prop of ['slides={slides}', 'storeName={store.name}', 'tagline={store.tagline}', 'description={store.description}']) {
+    check(`Home feeds HeroCarousel ${prop.split('=')[0]}`, home.includes(prop));
+  }
+  check('Home feeds StoreHighlights items', home.includes('<StoreHighlights items={store.highlights}'));
+  check('Home feeds Testimonials items+title', home.includes('<Testimonials items={store.testimonials}'));
+  check('Home rails link out', home.includes('actionTo="/categories"') && home.includes('actionTo="/brands"'));
+
+  const about = read('frontend/apps/storefront/src/pages/About.jsx');
+  check('About feeds Testimonials', about.includes('<Testimonials items={store.testimonials}'));
+  check('Brands page feeds BrandCard', read('frontend/apps/storefront/src/pages/Brands.jsx').includes('<BrandCard key={b.id} brand={b}'));
+  const catsPage = read('frontend/apps/storefront/src/pages/Categories.jsx');
+  check('Categories page feeds CategoryCard', catsPage.includes('<CategoryCard key={c.id} node={c}'));
+}
+
+// ── S7 · brand modal coherence: blank/pick/body/UI must all know the fields ──
+// Shipped once half-wired: body referenced new keys while blank/pick/UI were
+// the old shape — new fields invisible AND wiped (null) on every edit save.
+console.log('S7 · brand modal coherence');
+{
+  const page = read('frontend/apps/web/src/features/catalog/BrandsPage.jsx');
+  const blank = page.slice(page.indexOf('const blank'), page.indexOf('function BrandModal'));
+  const pick = page.slice(page.indexOf('const pickFields'), page.indexOf('export default function BrandsPage'));
+  for (const key of [
+    'bannerUrl', 'tagline', 'story', 'website', 'headquarters', 'foundedYear',
+    'instagram', 'youtube', 'isFeatured', 'sortOrder',
+  ]) {
+    check(`blank() carries ${key}`, blank.includes(key));
+    check(`pickFields() carries ${key}`, pick.includes(key));
+  }
+  check('modal edits media banner purpose', page.includes('MEDIA_PURPOSE.brandBanner'));
+  check('modal edits via rid(initial)', page.includes('updateBrand(rid(initial), body)'));
+}
+
+// ── S8 · cache freshness wiring: authed reads fresh, writes bust publics ─────
+console.log('S8 · cache freshness wiring');
+{
+  const cache = read('backend/src/middleware/responseCache.js');
+  check('credentialed requests bypass cache', cache.includes('req.headers.authorization || req.headers.cookie'));
+  const marketplace = read('backend/src/controllers/marketplace.controller.js');
+  check('store save busts owner GET + public stores', marketplace.includes("invalidateCache('/marketplace/store')"));
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

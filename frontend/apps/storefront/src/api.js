@@ -10,8 +10,28 @@
  *
  * Session storage is namespaced per hostname so two stores open in two tabs
  * never share a cart or a login.
+ *
+ * ── Local development with several tenants ───────────────────────────────────
+ * On localhost the Host resolves to nothing, so the API serves DEFAULT_TENANT_ID
+ * (or the first active tenant) — which may not be the store you just edited in
+ * the console. In DEV ONLY, `?asTenant=<id>` sends `x-tenant-id` so you can pin
+ * the storefront to the tenant under test. The backend ignores the header
+ * whenever a real hostname resolved (unless the override flag is on), and the
+ * branch is `import.meta.env.DEV`-gated so production builds cannot carry it.
  */
 import { createApiClient, createEndpoints, createAuthStore } from '@flower-market/shared';
+
+/** DEV-only: explicit tenant pin from `?asTenant=`. Null in prod, always. */
+function readDevTenantPin() {
+  try {
+    if (!import.meta.env?.DEV) return null;
+    if (typeof window === 'undefined') return null;
+    const id = new URLSearchParams(window.location.search).get('asTenant');
+    return id && /^[0-9a-fA-F]{24}$/.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 const host = typeof window !== 'undefined' ? window.location.hostname : 'server';
 const storageKey = `fm-shop:${host}`;
@@ -44,8 +64,12 @@ const client = createApiClient({
   saveTokens: (tokens) => useShopAuth.getState().setTokens(tokens),
   clearSession: () => useShopAuth.getState().clear(),
   extraHeaders: () => {
+    const headers = {};
     const key = readGuestKey();
-    return key ? { 'x-guest-key': key } : {};
+    if (key) headers['x-guest-key'] = key;
+    const pin = readDevTenantPin();
+    if (pin) headers['x-tenant-id'] = pin;
+    return headers;
   },
 });
 
