@@ -31,7 +31,26 @@ const STATUSES = [
   ['archived', 'Archived'],
 ];
 
-const blank = () => ({ name: '', slug: '', logoUrl: '', description: '', countryOfOrigin: '', status: 'active' });
+const blank = () => ({
+  name: '',
+  slug: '',
+  logoUrl: '',
+  bannerUrl: '',
+  tagline: '',
+  description: '',
+  story: '',
+  countryOfOrigin: '',
+  website: '',
+  headquarters: '',
+  foundedYear: '',
+  instagram: '',
+  facebook: '',
+  youtube: '',
+  x: '',
+  isFeatured: false,
+  sortOrder: 0,
+  status: 'active',
+});
 
 function BrandModal({ open, onClose, initial, onSaved }) {
   const { busy, run } = useAction();
@@ -47,13 +66,29 @@ function BrandModal({ open, onClose, initial, onSaved }) {
       name: form.name.trim(),
       slug: form.slug || undefined,
       logoUrl: form.logoUrl || null,
+      bannerUrl: form.bannerUrl || null,
+      tagline: form.tagline || null,
       description: form.description || null,
+      story: form.story || null,
       countryOfOrigin: form.countryOfOrigin || null,
+      website: form.website || null,
+      headquarters: form.headquarters || null,
+      foundedYear: form.foundedYear === '' || form.foundedYear == null ? null : Number(form.foundedYear),
+      socialLinks: {
+        instagram: form.instagram || null,
+        facebook: form.facebook || null,
+        youtube: form.youtube || null,
+        x: form.x || null,
+      },
+      isFeatured: form.isFeatured,
+      sortOrder: Number(form.sortOrder) || 0,
       status: form.status,
     };
     try {
       const r = await run(() =>
-        isEdit ? api.catalogAdmin.updateBrand(initial.id, body) : api.catalogAdmin.createBrand(body)
+        // rid(), not .id: rows inject id, but resolve either shape so edit can
+        // never aim at `undefined` (same lean-row class as categories).
+        isEdit ? api.catalogAdmin.updateBrand(rid(initial), body) : api.catalogAdmin.createBrand(body)
       );
       toast.success(isEdit ? 'Brand updated' : `Brand “${r.data?.name}” created`);
       onSaved?.();
@@ -85,26 +120,75 @@ function BrandModal({ open, onClose, initial, onSaved }) {
             <Input className="font-mono" value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') })} placeholder="green-thumb" />
           </Field>
         </div>
-        <ImageField
-          label="Logo"
-          hint="Upload from device or paste a URL"
-          purpose={MEDIA_PURPOSE.brandLogo}
-          value={form.logoUrl}
-          onChange={(v) => setForm({ ...form, logoUrl: v })}
-        />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ImageField
+            label="Logo"
+            hint="Upload from device or paste a URL"
+            purpose={MEDIA_PURPOSE.brandLogo}
+            value={form.logoUrl}
+            onChange={(v) => setForm({ ...form, logoUrl: v })}
+          />
+          <ImageField
+            label="Banner"
+            hint="Wide hero for the brand card"
+            purpose={MEDIA_PURPOSE.brandBanner}
+            value={form.bannerUrl}
+            onChange={(v) => setForm({ ...form, bannerUrl: v })}
+          />
+        </div>
+        <Field label="Tagline" hint="One line under the brand name (max 160)">
+          <Input value={form.tagline} onChange={(e) => setForm({ ...form, tagline: e.target.value })} placeholder="Farm-fresh roses, every morning" />
+        </Field>
+        <Field label="Description" hint="Short summary for cards (max 500)">
+          <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="About this brand…" />
+        </Field>
+        <Field label="Story" hint="Long-form story for the brands page (max 3000)">
+          <Textarea value={form.story} onChange={(e) => setForm({ ...form, story: e.target.value })} placeholder="How this brand started, what it stands for…" />
+        </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Country of origin">
             <Input value={form.countryOfOrigin} onChange={(e) => setForm({ ...form, countryOfOrigin: e.target.value })} placeholder="India" />
           </Field>
+          <Field label="Website" hint="https://…">
+            <Input value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} placeholder="https://brand.example.com" />
+          </Field>
+          <Field label="Headquarters">
+            <Input value={form.headquarters} onChange={(e) => setForm({ ...form, headquarters: e.target.value })} placeholder="Bengaluru" />
+          </Field>
+          <Field label="Founded year">
+            <Input type="number" min={1800} max={2100} value={form.foundedYear} onChange={(e) => setForm({ ...form, foundedYear: e.target.value })} placeholder="2015" />
+          </Field>
+        </div>
+        <div>
+          <p className="label">Social links</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input value={form.instagram} onChange={(e) => setForm({ ...form, instagram: e.target.value })} placeholder="Instagram URL" />
+            <Input value={form.facebook} onChange={(e) => setForm({ ...form, facebook: e.target.value })} placeholder="Facebook URL" />
+            <Input value={form.youtube} onChange={(e) => setForm({ ...form, youtube: e.target.value })} placeholder="YouTube URL" />
+            <Input value={form.x} onChange={(e) => setForm({ ...form, x: e.target.value })} placeholder="X URL" />
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
           <Field label="Status">
             <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
               {['active', 'inactive', 'archived'].map((s) => <option key={s} value={s}>{s}</option>)}
             </Select>
           </Field>
+          <Field label="Sort order" hint="Lower first">
+            <Input type="number" min={0} value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
+          </Field>
+          <Field label="Curation">
+            <label className="flex h-[42px] items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300"
+                checked={form.isFeatured}
+                onChange={(e) => setForm({ ...form, isFeatured: e.target.checked })}
+              />
+              Featured brand
+            </label>
+          </Field>
         </div>
-        <Field label="Description">
-          <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="About this brand…" />
-        </Field>
       </form>
     </Modal>
   );
@@ -114,8 +198,20 @@ const pickFields = (b) => ({
   name: b.name || '',
   slug: b.slug || '',
   logoUrl: b.logoUrl || '',
+  bannerUrl: b.bannerUrl || '',
+  tagline: b.tagline || '',
   description: b.description || '',
+  story: b.story || '',
   countryOfOrigin: b.countryOfOrigin || '',
+  website: b.website || '',
+  headquarters: b.headquarters || '',
+  foundedYear: b.foundedYear ?? '',
+  instagram: b.socialLinks?.instagram || '',
+  facebook: b.socialLinks?.facebook || '',
+  youtube: b.socialLinks?.youtube || '',
+  x: b.socialLinks?.x || '',
+  isFeatured: Boolean(b.isFeatured),
+  sortOrder: b.sortOrder ?? 0,
   status: b.status || 'active',
 });
 
@@ -123,6 +219,8 @@ export default function BrandsPage() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
   const [verified, setVerified] = useState('');
+  const [featured, setFeatured] = useState('');
+  const [q, setQ] = useState('');
   const [modal, setModal] = useState(null); // null | 'new' | brand
   const [verify, setVerify] = useState(null); // {brand, verified}
   const [note, setNote] = useState('');
@@ -135,8 +233,10 @@ export default function BrandsPage() {
         page, limit: 20,
         status: status || undefined,
         verified: verified === '' ? undefined : verified === 'true',
+        featured: featured === '' ? undefined : featured === 'true',
+        search: q.trim() || undefined,
       }),
-    [page, status, verified]
+    [page, status, verified, featured, q]
   );
 
   const doVerify = async () => {
@@ -183,6 +283,20 @@ export default function BrandsPage() {
             <option value="true">Verified</option>
             <option value="false">Unverified</option>
           </Select>
+          <Select className="!w-40" value={featured} onChange={(e) => { setFeatured(e.target.value); setPage(1); }}>
+            <option value="">All curation</option>
+            <option value="true">Featured</option>
+            <option value="false">Not featured</option>
+          </Select>
+          <label className="relative ml-auto">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              className="!w-56 !pl-9"
+              value={q}
+              onChange={(e) => { setQ(e.target.value); setPage(1); }}
+              placeholder="Search brands…"
+            />
+          </label>
         </div>
         <Table
           loading={brands.loading && !brands.data}

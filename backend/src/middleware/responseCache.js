@@ -55,6 +55,16 @@ export function responseCache(opts = {}) {
     // Skip excluded paths
     if (exclude.some((p) => p.test(req.path))) return next();
 
+    // Never cache credentialed requests. This middleware runs BEFORE per-route
+    // `authenticate`, so `req.user` is not set yet — detect credentials from
+    // the headers directly. Authenticated reads are identity-scoped (my store,
+    // my cart, tenant catalog) and the cache key carries no identity, so
+    // caching them breaks write→read-your-write (a save followed by a refetch
+    // returns the pre-save snapshot) and can leak one identity's payload to
+    // another. Anonymous public reads (bootstrap, catalog, stores) carry no
+    // credentials and stay cached; their freshness comes from bust-on-write.
+    if (req.headers.authorization || req.headers.cookie) return next();
+
     // Skip authenticated admin routes (always fresh)
     if (req.path.includes('/admin/') && req.user) return next();
 

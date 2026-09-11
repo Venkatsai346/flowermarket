@@ -92,3 +92,16 @@ body { @apply bg-white text-slate-900; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 .animate-sheet { animation: sheet-up 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
 .animate-fade { animation: fade-in 0.15s ease-out; }
+
+/* Hero carousel — crossfade between stacked slides, copy rises on change.
+   .hero-slide-media keeps a brand-tinted backdrop behind every image so a
+   slow or failed load degrades to an elegant gradient, never a hole. */
+.hero-slide { opacity: 0; transition: opacity 0.7s ease; pointer-events: none; }
+.hero-slide-active { opacity: 1; z-index: 1; }
+.hero-slide-media { background: linear-gradient(135deg, var(--brand-soft), var(--brand-ring)); }
+@keyframes hero-copy-up { from { transform: translateY(14px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.hero-copy { animation: hero-copy-up 0.5s cubic-bezier(0.16, 1, 0.3, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .hero-slide { transition: none; }
+  .hero-copy { animation: none; }
+}

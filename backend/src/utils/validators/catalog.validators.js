@@ -49,6 +49,7 @@ export const categoryCreateSchema = Joi.object({
   description: Joi.string().max(500).allow(null, ''),
   imageUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
   iconUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
+  bannerUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
   attributeSchema: Joi.array().items(attributeSchemaField).max(40),
   sortOrder: Joi.number().integer().min(0).default(0),
   isFeatured: Joi.boolean().default(false),
@@ -69,8 +70,22 @@ export const brandCreateSchema = Joi.object({
   name: Joi.string().max(120).required(),
   slug: Joi.string().max(140).pattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   logoUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
+  bannerUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
+  tagline: Joi.string().max(160).allow(null, ''),
   description: Joi.string().max(500).allow(null, ''),
+  story: Joi.string().max(3000).allow(null, ''),
   countryOfOrigin: Joi.string().max(60).allow(null, ''),
+  website: Joi.string().uri().allow(null, ''),
+  foundedYear: Joi.number().integer().min(1800).max(2100).allow(null),
+  headquarters: Joi.string().max(120).allow(null, ''),
+  socialLinks: Joi.object({
+    instagram: Joi.string().uri().allow(null, ''),
+    facebook: Joi.string().uri().allow(null, ''),
+    youtube: Joi.string().uri().allow(null, ''),
+    x: Joi.string().uri().allow(null, ''),
+  }),
+  isFeatured: Joi.boolean().default(false),
+  sortOrder: Joi.number().integer().min(0).default(0),
   status: Joi.string().valid('active', 'inactive', 'archived'),
 });
 
@@ -84,6 +99,8 @@ export const brandVerifySchema = Joi.object({
 export const brandQuerySchema = Joi.object({
   status: Joi.string().valid('active', 'inactive', 'archived'),
   verified: Joi.boolean(),
+  featured: Joi.boolean(),
+  search: Joi.string().max(120).allow('', null),
   ...pagination,
 });
 

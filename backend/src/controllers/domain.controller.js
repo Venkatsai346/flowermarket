@@ -80,14 +80,8 @@ class DomainController {
     const theme = resolveBrandTheme(tenant.theme || {});
     res.status(200).json(success({
       store: {
+        ...storeService.publicStoreShape(tenant.toObject ? tenant.toObject() : tenant),
         id: String(tenant._id),
-        name: tenant.name,
-        slug: tenant.slug,
-        tagline: tenant.store?.tagline || null,
-        description: tenant.store?.description || null,
-        logoUrl: tenant.logoUrl || null,
-        bannerUrl: tenant.store?.bannerUrl || null,
-        socialLinks: tenant.store?.socialLinks || {},
         isPublished: Boolean(tenant.store?.isPublished),
         gstin,
       },

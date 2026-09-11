@@ -24,6 +24,8 @@ import DeliveryFeePolicy from '../models/deliveryFeePolicy.model.js';
 import TaxPolicy from '../models/taxPolicy.model.js';
 import TaxRegistration from '../models/taxRegistration.model.js';
 import ProductMaster from '../models/productMaster.model.js';
+import Category from '../models/category.model.js';
+import Brand from '../models/brand.model.js';
 import Vendor from '../models/vendor.model.js';
 import planService from './plan.service.js';
 import billingService, { assertTenantSubscriptionSchema } from './billing.service.js';
@@ -41,6 +43,84 @@ import { evaluateOnboarding } from '../utils/onboardingReadiness.js';
 import { TAX_OWNER_TYPE } from '../constants/enums.js';
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+// ---------------------------------------------------------------------------
+// Pure store-merge helpers (exported for the contract suite).
+//
+// updateStore() wholesale-replaces `tenant.store`, so the merge MUST run on
+// POJOs: passing live Mongoose subdocument instances through the replacement
+// EMPTIES every SingleNested block (about, socialLinks, announcement, contact,
+// seo silently became {} on any unrelated card save — arrays and scalars were
+// unaffected, which is why only those fields "stripped"). Callers pass
+// `tenant.store.toObject()`; this function never touches Mongoose.
+// ---------------------------------------------------------------------------
+
+/** '' means "cleared" from every form — store null so storefront `||`/`?.` checks behave. */
+export function cleanStoreValue(v) {
+  return v === '' ? null : v;
+}
+
+export function cleanStoreObject(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out = { ...obj };
+  for (const k of Object.keys(out)) {
+    if (out[k] === '') out[k] = null;
+  }
+  return out;
+}
+
+/**
+ * Merge a store-content patch onto the previous store POJO.
+ *
+ * Semantics (pinned by storefront-contracts S9):
+ *  - scalars: payload wins when the key is present ('' → null), else prev kept;
+ *  - nested objects (socialLinks/about/…): shallow-merged onto prev;
+ *  - contact.address: merged one level deeper;
+ *  - content arrays: REPLACED wholesale — a form always submits the full
+ *    intended set, so patch-merging would only resurrect deleted slides;
+ *  - featured ids: `featured.*` carries the write-time-validated lists;
+ *    `undefined` keeps prev, `[]` explicitly clears curation.
+ */
+export function buildStoreUpdate(prev = {}, payload = {}, featured = {}) {
+  const p = prev || {};
+  const prevSocial = p.socialLinks || {};
+  const prevAbout = p.about || {};
+  const prevContact = p.contact || {};
+  const prevSeo = p.seo || {};
+  const prevAnnouncement = p.announcement || {};
+  return {
+    ...p,
+    tagline: payload.tagline !== undefined ? cleanStoreValue(payload.tagline) : p.tagline || null,
+    description: payload.description !== undefined ? cleanStoreValue(payload.description) : p.description || null,
+    bannerUrl: payload.bannerUrl !== undefined ? cleanStoreValue(payload.bannerUrl) : p.bannerUrl || null,
+    socialLinks: payload.socialLinks ? cleanStoreObject({ ...prevSocial, ...payload.socialLinks }) : prevSocial,
+    heroSlides: payload.heroSlides !== undefined
+      ? payload.heroSlides.map((s) => cleanStoreObject({ sortOrder: 0, isActive: true, ...s }))
+      : p.heroSlides,
+    announcement: payload.announcement
+      ? cleanStoreObject({ ...prevAnnouncement, ...payload.announcement })
+      : prevAnnouncement,
+    about: payload.about ? cleanStoreObject({ ...prevAbout, ...payload.about }) : prevAbout,
+    highlights: payload.highlights !== undefined
+      ? payload.highlights.map(cleanStoreObject)
+      : p.highlights,
+    testimonials: payload.testimonials !== undefined
+      ? payload.testimonials.map(cleanStoreObject)
+      : p.testimonials,
+    contact: payload.contact
+      ? {
+        ...cleanStoreObject({ ...prevContact, ...payload.contact }),
+        address: payload.contact.address
+          ? cleanStoreObject({ ...(prevContact.address || {}), ...payload.contact.address })
+          : prevContact.address,
+      }
+      : prevContact,
+    seo: payload.seo ? cleanStoreObject({ ...prevSeo, ...payload.seo }) : prevSeo,
+    footerText: payload.footerText !== undefined ? cleanStoreValue(payload.footerText) : p.footerText || null,
+    featuredCategoryIds: featured.categoryIds !== undefined ? featured.categoryIds : (p.featuredCategoryIds || []),
+    featuredBrandIds: featured.brandIds !== undefined ? featured.brandIds : (p.featuredBrandIds || []),
+  };
+}
 
 class StoreService {
   /**
@@ -459,6 +539,50 @@ class StoreService {
     return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
+  /**
+   * Public storefront content shape — the ONE function that decides what a
+   * store's public face contains. Shared by `storefront()` (marketplace
+   * discovery) and the storefront bootstrap (domain.controller), so the two
+   * can never drift: same slides, same about, same contact.
+   */
+  publicStoreShape(tenant) {
+    const store = tenant.store || {};
+    const slides = (store.heroSlides || [])
+      .filter((s) => s && s.isActive !== false && s.imageUrl)
+      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    const contact = store.contact || {};
+    return {
+      name: tenant.name,
+      slug: tenant.slug,
+      logoUrl: tenant.logoUrl || null,
+      bannerUrl: store.bannerUrl || null,
+      tagline: store.tagline || null,
+      description: store.description || null,
+      theme: tenant.theme || null,
+      socialLinks: store.socialLinks || {},
+      contactEmail: tenant.contactEmail || null,
+      marketplaceEnabled: Boolean(tenant.features?.marketplaceEnabled),
+      // ---- rich storefront content ----
+      heroSlides: slides,
+      announcement: store.announcement?.isActive && store.announcement?.text
+        ? { text: store.announcement.text, linkUrl: store.announcement.linkUrl || null }
+        : null,
+      about: store.about || null,
+      highlights: store.highlights || [],
+      testimonials: store.testimonials || [],
+      contact,
+      // Flat aliases — the storefront About page reads these at top level.
+      phone: contact.phone || tenant.contactPhone || null,
+      email: contact.email || tenant.contactEmail || null,
+      address: contact.address || null,
+      hours: contact.hours || null,
+      seo: store.seo || null,
+      footerText: store.footerText || null,
+      featuredCategoryIds: (store.featuredCategoryIds || []).map(String),
+      featuredBrandIds: (store.featuredBrandIds || []).map(String),
+    };
+  }
+
   /** Public storefront: branding + (when marketplace mode) vendor products + vendors. */
   async storefront({ slug }) {
     const tenant = await Tenant.findOne({ slug, status: 'active' }).lean();
@@ -481,18 +605,7 @@ class StoreService {
     }
 
     return {
-      store: {
-        name: tenant.name,
-        slug: tenant.slug,
-        logoUrl: tenant.logoUrl || null,
-        bannerUrl: tenant.store?.bannerUrl || null,
-        tagline: tenant.store?.tagline || null,
-        description: tenant.store?.description || null,
-        theme: tenant.theme || null,
-        socialLinks: tenant.store?.socialLinks || {},
-        contactEmail: tenant.contactEmail || null,
-        marketplaceEnabled: Boolean(tenant.features?.marketplaceEnabled),
-      },
+      store: this.publicStoreShape(tenant),
       vendorProducts,
       vendors,
     };
@@ -506,11 +619,38 @@ class StoreService {
     return { tenant, subscription: sub };
   }
 
+  /**
+   * Featured-rail guard: every curated id must name a live taxonomy row.
+   * A rail pointing at a deleted category is a homepage hole the merchant
+   * cannot see from the console — fail loudly at write time instead.
+   */
+  async assertFeaturedIds(Model, ids, label) {
+    const unique = [...new Set((ids || []).map(String))];
+    if (!unique.length) return [];
+    const rows = await Model.find({ _id: { $in: unique } }).select('_id').lean();
+    const found = new Set(rows.map((r) => String(r._id)));
+    const missing = unique.filter((id) => !found.has(id));
+    if (missing.length) {
+      throw badRequest(
+        `Unknown ${label} id(s) in featured ${label}s: ${missing.join(', ')}`,
+        'INVALID_FEATURED_IDS',
+        { label, missing },
+      );
+    }
+    return unique;
+  }
+
   async updateStore({ tenantId, payload, actorId = null, req = null }) {
     const tenant = await Tenant.findById(tenantId);
     if (!tenant) throw notFound('Store not found', 'STORE_NOT_FOUND');
 
-    const before = { store: tenant.store, theme: tenant.theme, logoUrl: tenant.logoUrl, name: tenant.name };
+    // Snapshot POJOs, not live subdocs: a live ref would show AFTER values.
+    const before = {
+      store: tenant.store?.toObject?.() || null,
+      theme: tenant.theme?.toObject?.() || tenant.theme || null,
+      logoUrl: tenant.logoUrl,
+      name: tenant.name,
+    };
     if (payload.name) tenant.name = String(payload.name).trim();
     if (payload.logoUrl !== undefined) tenant.logoUrl = payload.logoUrl || null;
     if (payload.theme) {
@@ -522,13 +662,18 @@ class StoreService {
       }
       tenant.theme = incoming;
     }
-    tenant.store = {
-      ...(tenant.store || {}),
-      tagline: payload.tagline !== undefined ? payload.tagline || null : tenant.store?.tagline || null,
-      description: payload.description !== undefined ? payload.description || null : tenant.store?.description || null,
-      bannerUrl: payload.bannerUrl !== undefined ? payload.bannerUrl || null : tenant.store?.bannerUrl || null,
-      socialLinks: payload.socialLinks ? { ...(tenant.store?.socialLinks || {}), ...payload.socialLinks } : tenant.store?.socialLinks || {},
-    };
+    // Merge on a POJO snapshot: live SingleNested instances do NOT survive
+    // wholesale parent replacement (they cast back as {}), which used to wipe
+    // about/socials/announcement/contact/seo on every unrelated card save.
+    const prevStore = tenant.store?.toObject?.() || {};
+    tenant.store = buildStoreUpdate(prevStore, payload, {
+      categoryIds: payload.featuredCategoryIds !== undefined
+        ? await this.assertFeaturedIds(Category, payload.featuredCategoryIds, 'category')
+        : undefined,
+      brandIds: payload.featuredBrandIds !== undefined
+        ? await this.assertFeaturedIds(Brand, payload.featuredBrandIds, 'brand')
+        : undefined,
+    });
     if (payload.isPublished !== undefined) {
       const wantsPublish = Boolean(payload.isPublished);
       const alreadyPublished = Boolean(tenant.store?.isPublished);

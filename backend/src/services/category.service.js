@@ -1,6 +1,7 @@
 import Category from '../models/category.model.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
+import { serializeDoc, serializeList } from '../utils/serialize.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import { ATTRIBUTE_FIELD_TYPE } from '../constants/enums.js';
@@ -73,7 +74,7 @@ class CategoryService {
     if (featured) q.isFeatured = true;
     const docs = await Category.find(q).sort({ sortOrder: 1, name: 1 }).skip((page - 1) * limit).limit(limit).lean();
     const total = await Category.countDocuments(q);
-    return { items: docs, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+    return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
   /** Full tree (bounded recursion via parent refs). */
@@ -88,8 +89,10 @@ class CategoryService {
       byParent.get(key).push(c);
     }
     const attach = (cat) => {
+      // Match children on the raw _id BEFORE serializing (serializeDoc
+      // replaces _id with the public string id).
       const children = byParent.get(String(cat._id)) || [];
-      return { ...cat, children: children.map(attach) };
+      return { ...serializeDoc(cat), children: children.map(attach) };
     };
     return (byParent.get('root') || []).map(attach);
   }

@@ -7,6 +7,7 @@ import { useShop } from './store.js';
 import { applyTheme, applyDocumentMeta, resolveBrandTheme } from './theme.js';
 import { kolkataDate, pickNextSlot } from './lib/arrival.js';
 import Header from './components/Header.jsx';
+import AnnouncementBar from './components/AnnouncementBar.jsx';
 import Footer from './components/Footer.jsx';
 import SkipLink from './components/SkipLink.jsx';
 import ScrollToTop from './components/ScrollToTop.jsx';
@@ -28,6 +29,8 @@ const Sell = lazy(() => import('./pages/Sell.jsx'));
 const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
 const Browse = lazy(() => import('./pages/Browse.jsx'));
 const About = lazy(() => import('./pages/About.jsx'));
+const Brands = lazy(() => import('./pages/Brands.jsx'));
+const Categories = lazy(() => import('./pages/Categories.jsx'));
 
 /**
  * The storefront shell.
@@ -166,14 +169,16 @@ export default function App() {
   }, [language]);
 
   // OG + canonical follow the route so a shared PDP is the PDP, not Home.
+  // The tenant's SEO overrides win verbatim when set.
   useEffect(() => {
     if (!booted || bootError) return;
     const resolved = resolveBrandTheme(theme || {});
+    const seo = store?.seo || {};
     applyDocumentMeta({
-      name: store?.name,
-      tagline: store?.tagline,
-      description: store?.description,
-      image: store?.bannerUrl || resolved.heroUrl,
+      name: seo.title || store?.name,
+      tagline: seo.title ? undefined : store?.tagline,
+      description: seo.description || store?.description,
+      image: store?.heroSlides?.[0]?.imageUrl || store?.bannerUrl || resolved.heroUrl,
       canonicalUrl: routing?.canonicalUrl,
       path: location.pathname + location.search,
     });
@@ -185,6 +190,7 @@ export default function App() {
     <div className="flex min-h-screen flex-col">
       <ScrollToTop />
       <SkipLink />
+      <AnnouncementBar announcement={store?.announcement} />
       <Header />
       <main id="main-content" className="flex-1" role="main">
         <ErrorBoundary>
@@ -200,6 +206,8 @@ export default function App() {
             <Route path="/wallet" element={<Wallet />} />
             <Route path="/wishlist" element={<Wishlist />} />
             <Route path="/browse" element={<Browse />} />
+            <Route path="/brands" element={<Brands />} />
+            <Route path="/categories" element={<Categories />} />
             <Route path="/about" element={<About />} />
             <Route path="/addresses" element={<Addresses />} />
             <Route path="/sell" element={<Sell />} />

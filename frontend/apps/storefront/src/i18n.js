@@ -48,6 +48,50 @@ export const STRINGS = {
     keepIt: 'Keep it',
     languageEn: 'EN',
     languageTe: 'తె',
+    shop: 'Shop',
+    categories: 'Categories',
+    brands: 'Brands',
+    viewAll: 'View all',
+    loading: 'Loading…',
+    retry: 'Try again',
+    clearFilters: 'Clear filters',
+    clearSearch: 'Clear search',
+    brandsAt: 'Brands at {name}',
+    brandCount: '{n} brands in this store',
+    searchBrands: 'Search brands…',
+    verifiedOnly: 'Verified',
+    couldNotLoadBrands: 'Could not load brands',
+    noBrandsMatch: 'No brands match',
+    noBrandsMatchMsg: 'Try a different search or clear the filters.',
+    noBrandsYet: 'No brands yet',
+    noBrandsYetMsg: 'This store has not listed any branded products.',
+    categoriesAt: 'Categories at {name}',
+    categoryCount: '{n} categories in this store',
+    searchCategories: 'Search categories…',
+    couldNotLoadCategories: 'Could not load categories',
+    noCategoriesMatch: 'No categories match',
+    noCategoriesMatchMsg: 'Try a different search.',
+    noCategoriesYet: 'No categories yet',
+    noCategoriesYetMsg: 'This store has not listed any products yet.',
+    featuredCategories: 'Featured categories',
+    allCategories: 'All categories',
+    browseAllProducts: 'Browse all products',
+    shopByCategory: 'Shop by category',
+    ourBrands: 'Our brands',
+    ourStory: 'Our story',
+    readOurStory: 'Read our story',
+    lovedByCustomers: 'Loved by customers',
+    inStore: 'in this store',
+    shopBrand: 'Shop',
+    contactUs: 'Get in touch',
+    visitUs: 'Visit us',
+    callUs: 'Call us',
+    emailUs: 'Email us',
+    openHours: 'Open hours',
+    getDirections: 'Get directions',
+    quickLinks: 'Shop',
+    companyLinks: 'Company',
+    allRights: 'All rights reserved.',
   },
   te: {
     searchPlaceholder: 'పూలు, మొక్కలు, బహుమతులు…',
@@ -91,12 +135,67 @@ export const STRINGS = {
     keepIt: 'ఉంచండి',
     languageEn: 'EN',
     languageTe: 'తె',
+    shop: 'షాప్',
+    categories: 'వర్గాలు',
+    brands: 'బ్రాండ్లు',
+    viewAll: 'అన్నీ చూడండి',
+    loading: 'లోడ్ అవుతోంది…',
+    retry: 'మళ్ళీ ప్రయత్నించండి',
+    clearFilters: 'ఫిల్టర్లు తీసివేయండి',
+    clearSearch: 'సెర్చ్ తీసివేయండి',
+    brandsAt: '{name} లో బ్రాండ్లు',
+    brandCount: 'ఈ స్టోర్‌లో {n} బ్రాండ్లు',
+    searchBrands: 'బ్రాండ్లు వెతకండి…',
+    verifiedOnly: 'ధృవీకరించినవి',
+    couldNotLoadBrands: 'బ్రాండ్లు లోడ్ కాలేదు',
+    noBrandsMatch: 'ఏ బ్రాండ్ సరిపోలలేదు',
+    noBrandsMatchMsg: 'వేరే సెర్చ్ ప్రయత్నించండి లేదా ఫిల్టర్లు తీసివేయండి.',
+    noBrandsYet: 'ఇంకా బ్రాండ్లు లేవు',
+    noBrandsYetMsg: 'ఈ స్టోర్‌లో ఇంకా బ్రాండెడ్ ఉత్పత్తులు లేవు.',
+    categoriesAt: '{name} లో వర్గాలు',
+    categoryCount: 'ఈ స్టోర్‌లో {n} వర్గాలు',
+    searchCategories: 'వర్గాలు వెతకండి…',
+    couldNotLoadCategories: 'వర్గాలు లోడ్ కాలేదు',
+    noCategoriesMatch: 'ఏ వర్గం సరిపోలలేదు',
+    noCategoriesMatchMsg: 'వేరే సెర్చ్ ప్రయత్నించండి.',
+    noCategoriesYet: 'ఇంకా వర్గాలు లేవు',
+    noCategoriesYetMsg: 'ఈ స్టోర్‌లో ఇంకా ఉత్పత్తులు లేవు.',
+    featuredCategories: 'ఫీచర్డ్ వర్గాలు',
+    allCategories: 'అన్ని వర్గాలు',
+    browseAllProducts: 'అన్ని ఉత్పత్తులు చూడండి',
+    shopByCategory: 'వర్గాల వారీగా షాప్',
+    ourBrands: 'మా బ్రాండ్లు',
+    ourStory: 'మా కథ',
+    readOurStory: 'మా కథ చదవండి',
+    lovedByCustomers: 'కస్టమర్ల అభిమానం',
+    inStore: 'ఈ స్టోర్‌లో',
+    shopBrand: 'షాప్',
+    contactUs: 'సంప్రదించండి',
+    visitUs: 'మమ్మల్ని సందర్శించండి',
+    callUs: 'కాల్ చేయండి',
+    emailUs: 'ఈమెయిల్ చేయండి',
+    openHours: 'సమయాలు',
+    getDirections: 'దారి చూడండి',
+    quickLinks: 'షాప్',
+    companyLinks: 'సమాచారం',
+    allRights: 'అన్ని హక్కులు ప్రత్యేకించబడ్డాయి.',
   },
 };
 
-export function t(lang, key) {
+/**
+ * t(lang, key, vars?) — `vars` interpolates `{placeholders}`. A scalar fills
+ * both `{name}` and `{n}`, so `t(l, 'brandsAt', store.name)` and
+ * `t(l, 'brandCount', list.length)` both read naturally. No vars → the raw
+ * string, exactly as before.
+ */
+export function t(lang, key, vars) {
   const pack = STRINGS[lang] || STRINGS.en;
-  return pack[key] || STRINGS.en[key] || key;
+  let s = pack[key] || STRINGS.en[key] || key;
+  if (vars != null && typeof s === 'string') {
+    const map = typeof vars === 'object' ? vars : { name: vars, n: vars };
+    for (const [k, v] of Object.entries(map)) s = s.split(`{${k}}`).join(String(v));
+  }
+  return s;
 }
 
 export default t;

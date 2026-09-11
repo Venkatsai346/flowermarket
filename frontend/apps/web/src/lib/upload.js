@@ -13,9 +13,13 @@ import { api } from '../api.js';
 export const MEDIA_PURPOSE = {
   productImage: 'product_image',
   categoryImage: 'category_image',
+  categoryBanner: 'category_banner',
   brandLogo: 'brand_logo',
+  brandBanner: 'brand_banner',
   storeLogo: 'store_logo',
   storeBanner: 'store_banner',
+  storeHero: 'store_hero',
+  storeAbout: 'store_about',
   productVideo: 'product_video',
 };
 

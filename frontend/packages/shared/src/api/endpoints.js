@@ -438,6 +438,9 @@ export function createEndpoints(client) {
       serviceability: (pincode) => c.get('/catalog/serviceability', { query: { pincode } }),
       categories: () => c.get('/catalog/categories'),
       brands: () => c.get('/catalog/brands'),
+      // Tenant-scoped storefront indexes (this store's live listings only).
+      storeBrands: () => c.get('/catalog/store/brands'),
+      storeCategories: () => c.get('/catalog/store/categories'),
 
       // sign-in by phone OTP (the customer flow)
       requestOtp: (body) => c.post('/auth/otp/request', body),

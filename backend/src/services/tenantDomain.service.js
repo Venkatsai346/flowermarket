@@ -66,9 +66,52 @@ class HostCache {
   }
 }
 
+/**
+ * Parse a local-development store address: `<slug>.localhost[:port]`.
+ *
+ * Pure (no DB) so the contract suite pins it without Mongo. Returns the slug,
+ * or null when the host is not a dev store address — bare `localhost`,
+ * reserved labels (`admin`, `api`, …), multi-label names and every non-local
+ * host all fall through to the normal pipeline untouched.
+ */
+export function parseLocalSubdomain(rawHost, { reservedSlugs = [] } = {}) {
+  const host = normalizeHost(rawHost || '');
+  if (!host || !host.endsWith('.localhost')) return null;
+  const labels = host.split('.');
+  if (labels.length !== 2) return null;
+  const [slug] = labels;
+  if (!slug || reservedSlugs.includes(slug)) return null;
+  return slug;
+}
+
 class TenantDomainService {
   constructor() {
     this.cache = new HostCache({ ttlMs: config.domains.cacheTtlMs });
+  }
+
+  /**
+   * DEV ONLY (`allowLocalSubdomains`): resolve `<slug>.localhost` exactly like
+   * a production store subdomain — same indexed lookup, same process-local
+   * cache, same fail-closed 404 on an unknown slug (a typo must error, never
+   * silently serve whichever store happens to be default). Returns null when
+   * the host is not a dev store address so the normal pipeline proceeds.
+   */
+  async resolveDevLocalhost(rawHost) {
+    const slug = parseLocalSubdomain(rawHost, { reservedSlugs: config.marketplace.reservedSlugs });
+    if (!slug) return null;
+    const host = normalizeHost(rawHost);
+    const cached = this.cache.get(host);
+    if (cached !== undefined) {
+      if (cached === null) throw notFound(`No store at ${host}`, 'STORE_NOT_FOUND');
+      return cached;
+    }
+    const tenant = await Tenant.findOne({ slug, status: 'active' }).select('_id slug').lean();
+    const resolved = tenant
+      ? { tenantId: tenant._id, slug: tenant.slug, hostname: host, source: TENANT_RESOLUTION_SOURCE.HOST_LOCAL }
+      : null;
+    this.cache.set(host, resolved);
+    if (!resolved) throw notFound(`No store at ${host}`, 'STORE_NOT_FOUND');
+    return resolved;
   }
 
   /**
@@ -80,6 +123,14 @@ class TenantDomainService {
    * a typo or an attack, never a legitimate fallback.
    */
   async resolveByHost(rawHost) {
+    // DEV ONLY: `<slug>.localhost` behaves like a production store subdomain,
+    // so one dev server acts as every store. Null falls through below (which
+    // also yields null for localhost) — only a resolved match returns early.
+    if (config.domains.allowLocalSubdomains) {
+      const local = await this.resolveDevLocalhost(rawHost);
+      if (local) return local;
+    }
+
     const cls = classifyHost(rawHost, {
       rootDomain: config.domains.rootDomain,
       reservedSlugs: config.marketplace.reservedSlugs,

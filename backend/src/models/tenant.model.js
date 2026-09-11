@@ -20,6 +20,62 @@ import { TENANT_PLAN } from '../constants/enums.js';
 
 const { Schema } = mongoose;
 
+// ---------------------------------------------------------------------------
+// Storefront content blocks (world-class storefront).
+//
+// Everything a tenant's public store needs to render a rich homepage, about
+// page, header and footer — WITHOUT extra round-trips: the whole `store`
+// object ships inside the storefront bootstrap response, so first paint needs
+// exactly one call. All arrays are BOUNDED (see the matching Joi limits in
+// marketplace.validators.js) so a tenant cannot bloat their own bootstrap.
+// ---------------------------------------------------------------------------
+
+/** One responsive hero-carousel slide. `mobileImageUrl` is the portrait crop. */
+const HeroSlideSchema = new Schema(
+  {
+    imageUrl: { type: String, required: true, trim: true },
+    mobileImageUrl: { type: String, default: null, trim: true },
+    title: { type: String, default: null, maxlength: 80, trim: true },
+    subtitle: { type: String, default: null, maxlength: 160, trim: true },
+    ctaLabel: { type: String, default: null, maxlength: 30, trim: true },
+    ctaLink: { type: String, default: null, maxlength: 300, trim: true },
+    sortOrder: { type: Number, default: 0 },
+    isActive: { type: Boolean, default: true },
+  },
+  { _id: false }
+);
+
+/** Trust-badge row under the hero (freshness, slots, guarantee…). */
+const HighlightSchema = new Schema(
+  {
+    icon: { type: String, default: null, maxlength: 30, trim: true },
+    title: { type: String, required: true, maxlength: 60, trim: true },
+    text: { type: String, default: null, maxlength: 200, trim: true },
+  },
+  { _id: false }
+);
+
+const TestimonialSchema = new Schema(
+  {
+    name: { type: String, required: true, maxlength: 80, trim: true },
+    text: { type: String, required: true, maxlength: 500, trim: true },
+    rating: { type: Number, default: null, min: 1, max: 5 },
+    avatarUrl: { type: String, default: null, trim: true },
+  },
+  { _id: false }
+);
+
+const StoreAddressSchema = new Schema(
+  {
+    line1: { type: String, default: null, maxlength: 120, trim: true },
+    line2: { type: String, default: null, maxlength: 120, trim: true },
+    city: { type: String, default: null, maxlength: 80, trim: true },
+    state: { type: String, default: null, maxlength: 80, trim: true },
+    pincode: { type: String, default: null, maxlength: 10, trim: true },
+  },
+  { _id: false }
+);
+
 const TenantSchema = new Schema(
   {
     // ---- Identity ----
@@ -110,7 +166,41 @@ const TenantSchema = new Schema(
         instagram: { type: String, default: null, trim: true },
         facebook: { type: String, default: null, trim: true },
         website: { type: String, default: null, trim: true },
+        youtube: { type: String, default: null, trim: true },
+        x: { type: String, default: null, trim: true },
+        whatsapp: { type: String, default: null, maxlength: 30, trim: true },
       },
+      // ---- rich storefront content (bounded arrays — see marketplace.validators.js) ----
+      heroSlides: { type: [HeroSlideSchema], default: [] },
+      announcement: {
+        text: { type: String, default: null, maxlength: 120, trim: true },
+        linkUrl: { type: String, default: null, maxlength: 300, trim: true },
+        isActive: { type: Boolean, default: true },
+      },
+      about: {
+        title: { type: String, default: null, maxlength: 120, trim: true },
+        content: { type: String, default: null, maxlength: 4000, trim: true },
+        imageUrl: { type: String, default: null, trim: true },
+        videoUrl: { type: String, default: null, trim: true },
+      },
+      highlights: { type: [HighlightSchema], default: [] },
+      testimonials: { type: [TestimonialSchema], default: [] },
+      contact: {
+        phone: { type: String, default: null, maxlength: 20, trim: true },
+        email: { type: String, default: null, trim: true },
+        address: { type: StoreAddressSchema, default: null },
+        hours: { type: String, default: null, maxlength: 200, trim: true },
+        whatsapp: { type: String, default: null, maxlength: 20, trim: true },
+        mapUrl: { type: String, default: null, trim: true },
+      },
+      seo: {
+        title: { type: String, default: null, maxlength: 70, trim: true },
+        description: { type: String, default: null, maxlength: 170, trim: true },
+      },
+      footerText: { type: String, default: null, maxlength: 300, trim: true },
+      // Merchant-curated homepage rails (validated live at write time).
+      featuredCategoryIds: [{ type: Schema.Types.ObjectId, ref: 'Category' }],
+      featuredBrandIds: [{ type: Schema.Types.ObjectId, ref: 'Brand' }],
       isPublished: { type: Boolean, default: false },
       onboardingStatus: {
         type: String,

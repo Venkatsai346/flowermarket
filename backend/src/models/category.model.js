@@ -46,6 +46,8 @@ const CategorySchema = new Schema(
     description: { type: String, default: null, maxlength: 500 },
     imageUrl: { type: String, default: null },
     iconUrl: { type: String, default: null },
+    // Wide hero for the category card / browse header (falls back to imageUrl).
+    bannerUrl: { type: String, default: null, trim: true },
 
     attributeSchema: { type: [AttributeSchemaField], default: [] },
 
