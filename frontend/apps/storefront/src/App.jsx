@@ -190,7 +190,7 @@ export default function App() {
     <div className="flex min-h-screen flex-col">
       <ScrollToTop />
       <SkipLink />
-      <AnnouncementBar message={store?.announcement} />
+      <AnnouncementBar announcement={store?.announcement} />
       <Header />
       <main id="main-content" className="flex-1" role="main">
         <ErrorBoundary>

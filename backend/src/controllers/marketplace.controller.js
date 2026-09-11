@@ -107,9 +107,10 @@ class MarketplaceController {
     const tenant = await storeService.updateStore({ tenantId: req.tenantId, payload: req.body, actorId: req.auth.userId, req });
     // The storefront bootstraps from cached GETs — a saved slide that takes a
     // minute to appear reads as "didn't save". Bust every public surface this
-    // write feeds the moment the write commits.
+    // write feeds the moment the write commits. ('/marketplace/store' is a
+    // substring of both the owner's GET and the public /stores/:slug reads.)
     invalidateCache('/domains/bootstrap');
-    invalidateCache('/marketplace/stores/');
+    invalidateCache('/marketplace/store');
     invalidateCache('/catalog/store/');
     res.status(200).json(success(tenant, { message: 'Store updated' }));
   });
