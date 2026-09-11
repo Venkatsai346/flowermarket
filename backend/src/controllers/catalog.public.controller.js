@@ -97,6 +97,32 @@ class CatalogPublicController {
   });
 
   /**
+   * GET /catalog/store/brands — brands mapped to THIS tenant's live listings,
+   * with per-brand product counts + from-prices. The storefront brands page
+   * source (tenant resolved from host/header by tenantContext).
+   */
+  storeBrands = asyncHandler(async (req, res) => {
+    const brands = await catalogSearchService.storefrontBrands({ tenantId: req.tenantId });
+    res.status(200).json(success(brands, {
+      message: 'Store brands fetched',
+      meta: { total: brands.length },
+    }));
+  });
+
+  /**
+   * GET /catalog/store/categories — categories mapped to THIS tenant's live
+   * listings, as a pruned tree (subtree totals rolled up) + flat lookup.
+   * The storefront categories page + browse-header source.
+   */
+  storeCategories = asyncHandler(async (req, res) => {
+    const result = await catalogSearchService.storefrontCategories({ tenantId: req.tenantId });
+    res.status(200).json(success(result, {
+      message: 'Store categories fetched',
+      meta: { total: result.flat.length },
+    }));
+  });
+
+  /**
    * Assemble the shareable PDP payload: master (images + EAV) + this store's
    * listing + the FULL listed-variant family + related listings.
    *

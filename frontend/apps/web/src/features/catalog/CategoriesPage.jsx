@@ -28,6 +28,7 @@ const blank = () => ({
   sortOrder: 0,
   description: '',
   imageUrl: '',
+  bannerUrl: '',
   attributeSchema: [],
 });
 
@@ -70,7 +71,9 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
     };
     try {
       const r = await run(() =>
-        isEdit ? api.catalogAdmin.updateCategory(initial.id, body) : api.catalogAdmin.createCategory(body)
+        // rid(), not .id: tree rows historically arrived id-less (lean _id
+        // only) — resolve either shape so edit can never aim at `undefined`.
+        isEdit ? api.catalogAdmin.updateCategory(rid(initial), body) : api.catalogAdmin.createCategory(body)
       );
       toast.success(isEdit ? 'Category updated' : `Category “${r.data?.name}” created`);
       onSaved?.();
@@ -107,7 +110,7 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
           <Field label="Parent category">
             <Select value={form.parentId} onChange={(e) => set('parentId', e.target.value)}>
               <option value="">— Root —</option>
-              {parents.filter((p) => !isEdit || rid(p) !== initial.id).map((p) => (
+              {parents.filter((p) => !isEdit || rid(p) !== rid(initial)).map((p) => (
                 <option key={rid(p)} value={rid(p)}>{p.name}</option>
               ))}
             </Select>
@@ -127,13 +130,22 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
         <Field label="Description">
           <Textarea value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="What belongs in this category…" />
         </Field>
-        <ImageField
-          label="Image"
-          hint="Upload from device or paste a URL"
-          purpose={MEDIA_PURPOSE.categoryImage}
-          value={form.imageUrl}
-          onChange={(v) => set('imageUrl', v)}
-        />
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ImageField
+            label="Image"
+            hint="Square tile for rails and cards"
+            purpose={MEDIA_PURPOSE.categoryImage}
+            value={form.imageUrl}
+            onChange={(v) => set('imageUrl', v)}
+          />
+          <ImageField
+            label="Banner"
+            hint="Wide hero for the category page header"
+            purpose={MEDIA_PURPOSE.categoryBanner}
+            value={form.bannerUrl}
+            onChange={(v) => set('bannerUrl', v)}
+          />
+        </div>
         <Checkbox label="Featured (highlight on storefront)" checked={form.isFeatured} onChange={(e) => set('isFeatured', e.target.checked)} />
 
         <div>
@@ -173,7 +185,7 @@ function fromDoc(c) {
   return {
     name: c.name || '',
     slug: c.slug || '',
-    parentId: c.parentId || '',
+    parentId: c.parentId ? String(c.parentId) : '',
     status: c.status || 'active',
     isFeatured: Boolean(c.isFeatured),
     sortOrder: c.sortOrder ?? 0,

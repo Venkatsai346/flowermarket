@@ -895,9 +895,13 @@ export const MEDIA_STATUS = Object.freeze({
 export const MEDIA_PURPOSE = Object.freeze({
   PRODUCT_IMAGE: 'product_image',
   CATEGORY_IMAGE: 'category_image',
+  CATEGORY_BANNER: 'category_banner',
   BRAND_LOGO: 'brand_logo',
+  BRAND_BANNER: 'brand_banner',
   STORE_LOGO: 'store_logo',
   STORE_BANNER: 'store_banner',
+  STORE_HERO: 'store_hero',
+  STORE_ABOUT: 'store_about',
   PRODUCT_VIDEO: 'product_video',
   OTHER: 'other',
 });

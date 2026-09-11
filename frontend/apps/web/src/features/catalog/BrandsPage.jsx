@@ -47,8 +47,22 @@ function BrandModal({ open, onClose, initial, onSaved }) {
       name: form.name.trim(),
       slug: form.slug || undefined,
       logoUrl: form.logoUrl || null,
+      bannerUrl: form.bannerUrl || null,
+      tagline: form.tagline || null,
       description: form.description || null,
+      story: form.story || null,
       countryOfOrigin: form.countryOfOrigin || null,
+      website: form.website || null,
+      headquarters: form.headquarters || null,
+      foundedYear: form.foundedYear === '' || form.foundedYear == null ? null : Number(form.foundedYear),
+      socialLinks: {
+        instagram: form.instagram || null,
+        facebook: form.facebook || null,
+        youtube: form.youtube || null,
+        x: form.x || null,
+      },
+      isFeatured: form.isFeatured,
+      sortOrder: Number(form.sortOrder) || 0,
       status: form.status,
     };
     try {
@@ -123,6 +137,8 @@ export default function BrandsPage() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
   const [verified, setVerified] = useState('');
+  const [featured, setFeatured] = useState('');
+  const [q, setQ] = useState('');
   const [modal, setModal] = useState(null); // null | 'new' | brand
   const [verify, setVerify] = useState(null); // {brand, verified}
   const [note, setNote] = useState('');
@@ -135,8 +151,10 @@ export default function BrandsPage() {
         page, limit: 20,
         status: status || undefined,
         verified: verified === '' ? undefined : verified === 'true',
+        featured: featured === '' ? undefined : featured === 'true',
+        search: q.trim() || undefined,
       }),
-    [page, status, verified]
+    [page, status, verified, featured, q]
   );
 
   const doVerify = async () => {
@@ -183,6 +201,20 @@ export default function BrandsPage() {
             <option value="true">Verified</option>
             <option value="false">Unverified</option>
           </Select>
+          <Select className="!w-40" value={featured} onChange={(e) => { setFeatured(e.target.value); setPage(1); }}>
+            <option value="">All curation</option>
+            <option value="true">Featured</option>
+            <option value="false">Not featured</option>
+          </Select>
+          <label className="relative ml-auto">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+            <Input
+              className="!w-56 !pl-9"
+              value={q}
+              onChange={(e) => { setQ(e.target.value); setPage(1); }}
+              placeholder="Search brands…"
+            />
+          </label>
         </div>
         <Table
           loading={brands.loading && !brands.data}

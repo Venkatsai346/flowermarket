@@ -459,6 +459,50 @@ class StoreService {
     return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
+  /**
+   * Public storefront content shape — the ONE function that decides what a
+   * store's public face contains. Shared by `storefront()` (marketplace
+   * discovery) and the storefront bootstrap (domain.controller), so the two
+   * can never drift: same slides, same about, same contact.
+   */
+  publicStoreShape(tenant) {
+    const store = tenant.store || {};
+    const slides = (store.heroSlides || [])
+      .filter((s) => s && s.isActive !== false && s.imageUrl)
+      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    const contact = store.contact || {};
+    return {
+      name: tenant.name,
+      slug: tenant.slug,
+      logoUrl: tenant.logoUrl || null,
+      bannerUrl: store.bannerUrl || null,
+      tagline: store.tagline || null,
+      description: store.description || null,
+      theme: tenant.theme || null,
+      socialLinks: store.socialLinks || {},
+      contactEmail: tenant.contactEmail || null,
+      marketplaceEnabled: Boolean(tenant.features?.marketplaceEnabled),
+      // ---- rich storefront content ----
+      heroSlides: slides,
+      announcement: store.announcement?.isActive && store.announcement?.text
+        ? { text: store.announcement.text, linkUrl: store.announcement.linkUrl || null }
+        : null,
+      about: store.about || null,
+      highlights: store.highlights || [],
+      testimonials: store.testimonials || [],
+      contact,
+      // Flat aliases — the storefront About page reads these at top level.
+      phone: contact.phone || tenant.contactPhone || null,
+      email: contact.email || tenant.contactEmail || null,
+      address: contact.address || null,
+      hours: contact.hours || null,
+      seo: store.seo || null,
+      footerText: store.footerText || null,
+      featuredCategoryIds: (store.featuredCategoryIds || []).map(String),
+      featuredBrandIds: (store.featuredBrandIds || []).map(String),
+    };
+  }
+
   /** Public storefront: branding + (when marketplace mode) vendor products + vendors. */
   async storefront({ slug }) {
     const tenant = await Tenant.findOne({ slug, status: 'active' }).lean();
@@ -481,18 +525,7 @@ class StoreService {
     }
 
     return {
-      store: {
-        name: tenant.name,
-        slug: tenant.slug,
-        logoUrl: tenant.logoUrl || null,
-        bannerUrl: tenant.store?.bannerUrl || null,
-        tagline: tenant.store?.tagline || null,
-        description: tenant.store?.description || null,
-        theme: tenant.theme || null,
-        socialLinks: tenant.store?.socialLinks || {},
-        contactEmail: tenant.contactEmail || null,
-        marketplaceEnabled: Boolean(tenant.features?.marketplaceEnabled),
-      },
+      store: this.publicStoreShape(tenant),
       vendorProducts,
       vendors,
     };
@@ -504,6 +537,27 @@ class StoreService {
     if (!tenant) throw notFound('Store not found', 'STORE_NOT_FOUND');
     const sub = await billingService.currentSubscription({ tenantId });
     return { tenant, subscription: sub };
+  }
+
+  /**
+   * Featured-rail guard: every curated id must name a live taxonomy row.
+   * A rail pointing at a deleted category is a homepage hole the merchant
+   * cannot see from the console — fail loudly at write time instead.
+   */
+  async assertFeaturedIds(Model, ids, label) {
+    const unique = [...new Set((ids || []).map(String))];
+    if (!unique.length) return [];
+    const rows = await Model.find({ _id: { $in: unique } }).select('_id').lean();
+    const found = new Set(rows.map((r) => String(r._id)));
+    const missing = unique.filter((id) => !found.has(id));
+    if (missing.length) {
+      throw badRequest(
+        `Unknown ${label} id(s) in featured ${label}s: ${missing.join(', ')}`,
+        'INVALID_FEATURED_IDS',
+        { label, missing },
+      );
+    }
+    return unique;
   }
 
   async updateStore({ tenantId, payload, actorId = null, req = null }) {
@@ -522,12 +576,60 @@ class StoreService {
       }
       tenant.theme = incoming;
     }
+    // '' means "cleared" from every form — store null, not an empty string, so
+    // the storefront's `||` fallbacks and `?.` checks behave identically.
+    const clean = (v) => (v === '' ? null : v);
+    const cleanObj = (obj) => {
+      if (!obj || typeof obj !== 'object') return obj;
+      const out = { ...obj };
+      for (const k of Object.keys(out)) {
+        if (out[k] === '') out[k] = null;
+      }
+      return out;
+    };
+    const prevStore = tenant.store || {};
+    const prevSocial = prevStore.socialLinks || {};
+    const prevAbout = prevStore.about || {};
+    const prevContact = prevStore.contact || {};
+    const prevSeo = prevStore.seo || {};
+    const prevAnnouncement = prevStore.announcement || {};
     tenant.store = {
-      ...(tenant.store || {}),
-      tagline: payload.tagline !== undefined ? payload.tagline || null : tenant.store?.tagline || null,
-      description: payload.description !== undefined ? payload.description || null : tenant.store?.description || null,
-      bannerUrl: payload.bannerUrl !== undefined ? payload.bannerUrl || null : tenant.store?.bannerUrl || null,
-      socialLinks: payload.socialLinks ? { ...(tenant.store?.socialLinks || {}), ...payload.socialLinks } : tenant.store?.socialLinks || {},
+      ...prevStore,
+      tagline: payload.tagline !== undefined ? clean(payload.tagline) : prevStore.tagline || null,
+      description: payload.description !== undefined ? clean(payload.description) : prevStore.description || null,
+      bannerUrl: payload.bannerUrl !== undefined ? clean(payload.bannerUrl) : prevStore.bannerUrl || null,
+      socialLinks: payload.socialLinks ? cleanObj({ ...prevSocial, ...payload.socialLinks }) : prevSocial,
+      // Content arrays are replaced wholesale — a form always submits the full
+      // intended set, so patch-merging would only resurrect deleted slides.
+      heroSlides: payload.heroSlides !== undefined
+        ? payload.heroSlides.map((s) => cleanObj({ sortOrder: 0, isActive: true, ...s }))
+        : prevStore.heroSlides,
+      announcement: payload.announcement
+        ? cleanObj({ ...prevAnnouncement, ...payload.announcement })
+        : prevAnnouncement,
+      about: payload.about ? cleanObj({ ...prevAbout, ...payload.about }) : prevAbout,
+      highlights: payload.highlights !== undefined
+        ? payload.highlights.map(cleanObj)
+        : prevStore.highlights,
+      testimonials: payload.testimonials !== undefined
+        ? payload.testimonials.map(cleanObj)
+        : prevStore.testimonials,
+      contact: payload.contact
+        ? {
+          ...cleanObj({ ...prevContact, ...payload.contact }),
+          address: payload.contact.address
+            ? cleanObj({ ...(prevContact.address || {}), ...payload.contact.address })
+            : prevContact.address,
+        }
+        : prevContact,
+      seo: payload.seo ? cleanObj({ ...prevSeo, ...payload.seo }) : prevSeo,
+      footerText: payload.footerText !== undefined ? clean(payload.footerText) : prevStore.footerText || null,
+      featuredCategoryIds: payload.featuredCategoryIds !== undefined
+        ? await this.assertFeaturedIds(Category, payload.featuredCategoryIds, 'category')
+        : prevStore.featuredCategoryIds,
+      featuredBrandIds: payload.featuredBrandIds !== undefined
+        ? await this.assertFeaturedIds(Brand, payload.featuredBrandIds, 'brand')
+        : prevStore.featuredBrandIds,
     };
     if (payload.isPublished !== undefined) {
       const wantsPublish = Boolean(payload.isPublished);

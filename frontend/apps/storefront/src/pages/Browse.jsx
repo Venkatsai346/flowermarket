@@ -8,8 +8,17 @@ import { useCartActions } from '../lib/useCart.js';
 import { t } from '../i18n.js';
 import ProductCard from '../components/ProductCard.jsx';
 import FloralImage from '../components/FloralImage.jsx';
-import { Empty, ProductSkeleton, Button } from '../components/ui.jsx';
+import { Empty, Money, ProductSkeleton, Button } from '../components/ui.jsx';
 import { cn, errMsg } from '../lib/utils.js';
+
+/** Flatten a nested category tree (global-nav fallback) into id-keyed rows. */
+function flattenTree(nodes, out = []) {
+  for (const n of nodes || []) {
+    out.push(n);
+    if (n.children?.length) flattenTree(n.children, out);
+  }
+  return out;
+}
 
 /**
  * Category browse page — dedicated experience for browsing by category.
@@ -26,6 +35,9 @@ export default function Browse() {
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
 
   const { data: categories } = useApi(() => api.shop.categories(), []);
+  // Store-scoped index: live counts per category (+ subtree roll-up). The
+  // global tree stays as the nav fallback when the store index is empty.
+  const { data: storeCats } = useApi(() => api.shop.storeCategories(), []);
   const { data, loading, error } = useApi(
     () => api.shop.products({
       categoryId: categoryId || undefined,
@@ -38,25 +50,50 @@ export default function Browse() {
   const items = data || [];
   const tree = categories || [];
 
-  // Build breadcrumb path
+  // Flat lookup: store index first (it carries counts), global tree flattened.
+  const flat = useMemo(() => {
+    if (storeCats?.flat?.length) return storeCats.flat;
+    return flattenTree(tree);
+  }, [storeCats, tree]);
+  const byId = useMemo(() => new Map(flat.map((c) => [String(c.id), c])), [flat]);
+  const current = categoryId ? byId.get(categoryId) : null;
+
+  // Breadcrumb walks parentIds through the FLAT map, so nested categories
+  // resolve no matter how deep they sit (the old roots-only search broke
+  // below the first level).
   const breadcrumb = useMemo(() => {
-    if (!categoryId || !tree.length) return [];
+    if (!categoryId || !byId.size) return [];
     const path = [];
-    let current = tree.find((c) => String(c.id) === categoryId);
-    while (current) {
-      path.unshift(current);
-      current = tree.find((c) => String(c.id) === String(current.parentId));
+    const seen = new Set();
+    let node = byId.get(categoryId);
+    while (node && !seen.has(String(node.id))) {
+      seen.add(String(node.id));
+      path.unshift(node);
+      node = node.parentId ? byId.get(String(node.parentId)) : null;
     }
     return path;
-  }, [categoryId, tree]);
+  }, [categoryId, byId]);
 
-  // Get current category's children
+  // Children with live counts (store tree when available).
   const children = useMemo(() => {
+    if (storeCats?.tree?.length) {
+      const find = (nodes) => {
+        for (const n of nodes) {
+          if (String(n.id) === categoryId) return n.children || [];
+          const hit = find(n.children || []);
+          if (hit) return hit;
+        }
+        return null;
+      };
+      if (!categoryId) return storeCats.tree;
+      return find(storeCats.tree) || [];
+    }
     if (!categoryId) return tree.filter((c) => !c.parentId);
-    return tree.filter((c) => String(c.parentId) === categoryId);
-  }, [categoryId, tree]);
+    return flat.filter((c) => String(c.parentId || '') === categoryId);
+  }, [categoryId, storeCats, tree, flat]);
 
-  const currentName = breadcrumb.length ? breadcrumb[breadcrumb.length - 1].name : 'All Products';
+  const currentName = current?.name || (breadcrumb.length ? breadcrumb[breadcrumb.length - 1].name : 'All Products');
+  const currentTotal = current ? Number(current.totalCount ?? current.productCount ?? items.length) : null;
 
   const setCategory = (id) => {
     const params = new URLSearchParams(searchParams);
@@ -84,7 +121,37 @@ export default function Browse() {
         ))}
       </nav>
 
-      <h1 className="font-display text-2xl text-slate-900">{currentName}</h1>
+      {/* Category header — banner, story, live counts */}
+      {current ? (
+        <div className="card mb-2 overflow-hidden">
+          {(current.bannerUrl || current.imageUrl) && (
+            <div className="relative h-36 overflow-hidden sm:h-44">
+              <FloralImage
+                src={current.bannerUrl || current.imageUrl}
+                alt=""
+                className="h-full w-full object-cover"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent" />
+            </div>
+          )}
+          <div className="p-4 sm:p-5">
+            <h1 className="font-display text-2xl text-slate-900">{currentName}</h1>
+            {current.description && (
+              <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-500">{current.description}</p>
+            )}
+            <p className="mt-2 text-xs font-semibold text-slate-500">
+              {currentTotal} product{currentTotal === 1 ? '' : 's'}
+              {current.fromPrice != null && (
+                <span className="text-slate-400">
+                  {' '}· from <Money value={current.fromPrice} className="font-bold text-slate-700" />
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+      ) : (
+        <h1 className="font-display text-2xl text-slate-900">{currentName}</h1>
+      )}
 
       {/* Subcategories */}
       {children.length > 0 && (
@@ -111,6 +178,11 @@ export default function Browse() {
               <span className="text-center text-xs font-medium text-slate-700 group-hover:text-rose-700">
                 {c.name}
               </span>
+              {(c.totalCount ?? c.productCount) != null && (
+                <span className="text-[10px] tabular-nums text-slate-400">
+                  {c.totalCount ?? c.productCount}
+                </span>
+              )}
             </button>
           ))}
         </div>

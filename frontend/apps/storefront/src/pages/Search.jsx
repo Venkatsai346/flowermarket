@@ -27,6 +27,11 @@ export default function Search() {
 
   const q = (params.get('q') || '').trim();
   const categoryId = params.get('categoryId') || '';
+  // Brand-filtered listing (?brand=<id>) — the brands page and brand rails
+  // land here. `brandName` is a display hint so the header renders before
+  // (or without) the brand-index fetch below.
+  const brandId = params.get('brand') || '';
+  const brandNameParam = params.get('brandName') || '';
   const sort = params.get('sort') || 'relevance';
   const inStock = params.get('inStock') === '1';
   const page = Math.max(1, Number(params.get('page')) || 1);
@@ -42,22 +47,32 @@ export default function Search() {
   };
 
   const { data: categories } = useApi(() => api.shop.categories(), []);
+  // Resolve the brand's display name when the link didn't carry one. Skipped
+  // entirely for plain searches (no brand → no extra call).
+  const { data: storeBrands } = useApi(
+    () => (brandId && !brandNameParam ? api.shop.storeBrands() : Promise.resolve({ data: [] })),
+    [brandId, brandNameParam]
+  );
   const { data, meta, loading, error } = useApi(
     () => api.shop.products({
       search: q || undefined,
       categoryId: categoryId || undefined,
+      brandId: brandId || undefined,
       sort: sort || undefined,
       inStock: inStock || undefined,
       groupBy: 'master',
       page,
       limit: 24,
     }),
-    [q, categoryId, sort, inStock, page]
+    [q, categoryId, brandId, sort, inStock, page]
   );
 
   const items = data || [];
   const facets = meta?.facets || {};
   const tree = categories || [];
+  const brandName = brandNameParam
+    || (storeBrands || []).find((b) => String(b.id) === brandId)?.name
+    || '';
   const unserviceable = Boolean(pincode && serviceability && serviceability.serviceable === false);
   const facetCats = useMemo(() => {
     if (facets.categories?.length) return facets.categories;
@@ -68,12 +83,34 @@ export default function Search() {
     <div className="wrap py-6">
       <div className="mb-5">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-          {q ? <>Results for “{q}”</> : 'Browse'}
+          {q ? <>Results for “{q}”</> : brandId ? <>Shop {brandName || 'brand'}</> : 'Browse'}
         </h1>
         <p className="mt-1 text-sm text-slate-500">
           {loading ? 'Searching…' : `${meta?.total ?? items.length} product${(meta?.total ?? items.length) === 1 ? '' : 's'}`}
           {q && <> for “<span className="font-medium text-slate-700">{q}</span>”</>}
         </p>
+        {brandId && (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <span className="chip chip-active">
+              {brandName || 'Brand'}
+              <button
+                type="button"
+                onClick={() => set({ brand: '', brandName: '' })}
+                aria-label="Clear brand filter"
+                className="ml-1 grid h-5 w-5 place-items-center rounded-full bg-white/20 text-xs leading-none"
+              >
+                ×
+              </button>
+            </span>
+            <button
+              type="button"
+              onClick={() => navigate('/brands')}
+              className="text-xs font-semibold text-slate-500 hover:underline"
+            >
+              All brands →
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[220px_1fr]">

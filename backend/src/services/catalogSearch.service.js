@@ -382,7 +382,17 @@ class CatalogSearchService {
     for (const c of cats) {
       const key = String(c.parentId || 'root');
       if (!byParent.has(key)) byParent.set(key, []);
-      byParent.get(key).push({ id: c._id, name: c.name, slug: c.slug, iconUrl: c.iconUrl });
+      byParent.get(key).push({
+        id: c._id,
+        parentId: c.parentId || null,
+        name: c.name,
+        slug: c.slug,
+        description: c.description || null,
+        imageUrl: c.imageUrl || null,
+        iconUrl: c.iconUrl || null,
+        bannerUrl: c.bannerUrl || null,
+        isFeatured: Boolean(c.isFeatured),
+      });
     }
     const attach = (cat) => ({ ...cat, children: byParent.get(String(cat.id))?.map(attach) || [] });
     return (byParent.get('root') || []).map(attach);
@@ -391,7 +401,166 @@ class CatalogSearchService {
   /** Brand list for filter chips. */
   async customerBrands() {
     const brands = await Brand.find({ status: 'active', 'verification.isVerified': true }).sort({ name: 1 }).lean();
-    return brands.map((b) => ({ id: b._id, name: b.name, slug: b.slug }));
+    return brands.map((b) => ({ id: b._id, name: b.name, slug: b.slug, logoUrl: b.logoUrl || null }));
+  }
+
+  /**
+   * Brands MAPPED TO THIS TENANT — the storefront brands page source.
+   *
+   * A brand appears here iff ≥1 ACTIVE listing in this tenant points (through
+   * its master) at it. Verification is surfaced as a badge, not a filter: a
+   * store that chose to sell a brand should show it even before platform
+   * verification lands. Ordered featured-first, then most-stocked.
+   */
+  async storefrontBrands({ tenantId }) {
+    const rows = await TenantProduct.aggregate([
+      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true } } },
+      {
+        $lookup: {
+          from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master',
+        },
+      },
+      { $unwind: '$master' },
+      {
+        $match: {
+          'master.status': PRODUCT_MASTER_STATUS.ACTIVE,
+          'master.isDeleted': { $ne: true },
+          'master.brandId': { $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: '$master.brandId',
+          productCount: { $sum: 1 },
+          fromPrice: { $min: '$price.sellingPrice' },
+        },
+      },
+      { $lookup: { from: 'brands', localField: '_id', foreignField: '_id', as: 'brand' } },
+      { $unwind: '$brand' },
+      { $match: { 'brand.status': 'active', 'brand.isDeleted': { $ne: true } } },
+      {
+        $project: {
+          _id: 0,
+          id: '$_id',
+          productCount: 1,
+          fromPrice: 1,
+          name: '$brand.name',
+          slug: '$brand.slug',
+          logoUrl: '$brand.logoUrl',
+          bannerUrl: '$brand.bannerUrl',
+          tagline: '$brand.tagline',
+          description: '$brand.description',
+          story: '$brand.story',
+          countryOfOrigin: '$brand.countryOfOrigin',
+          website: '$brand.website',
+          foundedYear: '$brand.foundedYear',
+          headquarters: '$brand.headquarters',
+          socialLinks: '$brand.socialLinks',
+          isVerified: '$brand.verification.isVerified',
+          isFeatured: '$brand.isFeatured',
+          sortOrder: '$brand.sortOrder',
+        },
+      },
+    ]);
+    // Featured first → curated order → most stocked → alphabetical. Done in JS
+    // (not $sort) so the ordering rule stays identical wherever brands list.
+    rows.sort((a, b) => (
+      Number(b.isFeatured || false) - Number(a.isFeatured || false)
+      || (a.sortOrder || 0) - (b.sortOrder || 0)
+      || (b.productCount || 0) - (a.productCount || 0)
+      || String(a.name || '').localeCompare(String(b.name || ''))
+    ));
+    return rows;
+  }
+
+  /**
+   * Categories MAPPED TO THIS TENANT — the storefront categories page source.
+   *
+   * Direct listing counts come from one aggregation; ancestor roll-up happens
+   * in JS (taxonomy is hundreds of rows, not millions): a parent with no
+   * direct listings still appears when a descendant sells, carrying the
+   * subtree `totalCount`. Branches with nothing sellable anywhere are pruned,
+   * so the storefront never links into an empty shelf.
+   *
+   * @returns {{ tree: array, flat: array }} nested roots + flat lookup (with parentId).
+   */
+  async storefrontCategories({ tenantId }) {
+    const counted = await TenantProduct.aggregate([
+      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true } } },
+      {
+        $lookup: {
+          from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master',
+        },
+      },
+      { $unwind: '$master' },
+      {
+        $match: {
+          'master.status': PRODUCT_MASTER_STATUS.ACTIVE,
+          'master.isDeleted': { $ne: true },
+          'master.categoryId': { $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: '$master.categoryId',
+          productCount: { $sum: 1 },
+          fromPrice: { $min: '$price.sellingPrice' },
+        },
+      },
+    ]);
+    const direct = new Map(counted.map((r) => [String(r._id), r]));
+
+    const cats = await Category.find({ status: 'active', isDeleted: { $ne: true } })
+      .sort({ sortOrder: 1, name: 1 }).lean();
+    const nodes = new Map();
+    for (const c of cats) {
+      const d = direct.get(String(c._id));
+      nodes.set(String(c._id), {
+        id: c._id,
+        parentId: c.parentId || null,
+        level: c.level || 0,
+        name: c.name,
+        slug: c.slug,
+        description: c.description || null,
+        imageUrl: c.imageUrl || null,
+        iconUrl: c.iconUrl || null,
+        bannerUrl: c.bannerUrl || null,
+        isFeatured: Boolean(c.isFeatured),
+        sortOrder: c.sortOrder || 0,
+        productCount: d?.productCount || 0,
+        totalCount: d?.productCount || 0,
+        fromPrice: d?.fromPrice ?? null,
+        children: [],
+      });
+    }
+    // Roll up: deepest first, so each parent sees finished children.
+    const byLevelDesc = [...nodes.values()].sort((a, b) => b.level - a.level);
+    for (const n of byLevelDesc) {
+      if (!n.parentId || !nodes.has(String(n.parentId))) continue;
+      const p = nodes.get(String(n.parentId));
+      p.totalCount += n.totalCount;
+      if (n.fromPrice != null && (p.fromPrice == null || n.fromPrice < p.fromPrice)) {
+        p.fromPrice = n.fromPrice;
+      }
+    }
+    // Prune dead branches, then nest.
+    for (const n of nodes.values()) {
+      if (n.totalCount > 0 || direct.has(String(n.id))) continue;
+      nodes.delete(String(n.id));
+    }
+    const tree = [];
+    for (const n of nodes.values()) {
+      const pid = n.parentId ? String(n.parentId) : null;
+      if (pid && nodes.has(pid)) nodes.get(pid).children.push(n);
+      else tree.push(n);
+    }
+    const sortKids = (list) => {
+      list.sort((a, b) => (a.sortOrder - b.sortOrder) || a.name.localeCompare(b.name));
+      list.forEach((n) => sortKids(n.children));
+    };
+    sortKids(tree);
+    const flat = [...nodes.values()].map(({ children, ...rest }) => rest);
+    return { tree, flat };
   }
 }
 

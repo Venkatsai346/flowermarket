@@ -3,6 +3,90 @@
 All notable changes to the API are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/)
 
+## [Unreleased] — Storefront content (brands, categories, rich store pages)
+
+### Fixed — storefront-content follow-ups
+- **Saved store content never appeared**: the Tenant `store` schema was missing
+  the rich-content paths, so Mongoose strict mode silently stripped hero
+  slides, highlights, testimonials, about, contact, SEO and announcement on
+  save (200 + success toast, nothing in the DB). The schema now carries every
+  path `updateStore` writes. NOTE: content saved before this fix was dropped
+  and must be re-saved once — it never reached the database.
+- **Stale storefront after save**: the global response cache (60s default, 5min
+  for taxonomy) was never invalidated — `invalidateCache` had zero callers.
+  Store saves now bust `/domains/bootstrap`, `/marketplace/stores/` and
+  `/catalog/store/`; brand/category writes bust the whole `/catalog/`
+  namespace. Saves appear on the next storefront load.
+- **Category edit failed** (`'id' with value 'undefined'`): admin list/tree
+  endpoints return `.lean()` rows, which skip the toJSON `_id → id` mapping.
+  `category.service` (list + tree) and `brand.service` (list) now serialize
+  through `serializeDoc`/`serializeList`, so every entity row carries a string
+  `id`. The admin category modal additionally resolves ids via `rid()` and
+  normalizes `parentId`, so it cannot aim at `undefined` even against an
+  id-less payload.
+- **Admin BrandsPage crashed** (`featured is not defined`): the featured/search
+  filter UI shipped without its state declarations and query params. Restored.
+- New pure gate `test:storefront-contracts` (59 checks, in `test` + `smoke:all`)
+  pins all of the above: schema paths, strict-mode round-trips, serializer
+  behaviour, Joi acceptance, and source-wiring invariants. The hermetic suite
+  gains section 5 asserting the admin list/tree id contract against a live DB.
+
+### Added — public catalog
+- `GET /catalog/store/brands` — brands this store actually sells (scoped to the
+  tenant's live listings), each with `productCount` + `fromPrice`, featured
+  first. Tenant-resolved from the request host, same cache behaviour as the
+  other public catalog GETs.
+- `GET /catalog/store/categories` — categories this store actually sells as
+  `{ tree, flat }`: dead branches pruned, `productCount` rolled up into
+  `totalCount` per subtree, `fromPrice` per node.
+- `GET /catalog/products` already accepted `brandId` — the storefront now uses
+  it for brand-filtered listings (`/search?brand=<id>`).
+
+### Changed — store payload (`GET /domains/bootstrap`, `GET /marketplace/stores/:slug`)
+The public store shape is now shared (`publicStoreShape`) and carries the full
+storefront content model — all tenant-editable via `PATCH /marketplace/store`:
+- `heroSlides[]` (max 8): image + optional mobile crop, title, subtitle,
+  CTA label/link, per-slide on/off. Empty → legacy `bannerUrl` renders.
+- `announcement`: dismissible bar text + link + on/off.
+- `about`: title, content (blank-line paragraphs), image, video
+  (YouTube/Vimeo embed or direct file).
+- `highlights[]` (max 6): icon name + title + text trust badges.
+- `testimonials[]` (max 12): name, text, 1–5 rating, avatar.
+- `contact`: phone, email, hours, WhatsApp, map link, structured address.
+- `seo`: page-title / meta-description overrides (blank = name · tagline).
+- `footerText`, `featuredCategoryIds[]`, `featuredBrandIds[]` (max 12 each).
+- `socialLinks` gains `youtube`, `x`, `whatsapp`.
+
+### Changed — brands (global registry, admin-owned)
+- New fields on create/update: `bannerUrl`, `tagline`, `story`, `website`,
+  `headquarters`, `foundedYear`, `socialLinks{instagram,facebook,youtube,x}`,
+  `isFeatured`, `sortOrder`.
+- `GET /catalog/admin/brands` accepts `featured` + `search` filters.
+
+### Changed — categories
+- New `bannerUrl` field (wide hero for the category page header).
+
+### Changed — media
+- New upload purposes: `category_banner`, `brand_banner`, `store_hero`,
+  `store_about` (see `MEDIA_PURPOSE` in the web app).
+
+### Storefront (`@flower-market/storefront`)
+- New routes `/brands` (search / sort / verified-only) and `/categories`
+  (search + featured + full tree), both fed by the store-scoped endpoints.
+- Home: responsive hero carousel (autoplay, reduced-motion aware, swipe,
+  keyboard), trust highlights, shoppable category/brand rails (tenant
+  curation with automatic best-stocked fallback), story teaser, testimonials.
+- Browse gains a category header (banner, story, live counts, from-price)
+  and breadcrumbs that resolve at any depth; Search supports `?brand=`;
+  About renders the full story + video + contact; header sub-nav, richer
+  footer, tenant SEO overrides, announcement bar.
+
+### Admin console (`@flower-market/web`)
+- Storefront page becomes the tenant CMS: announcement, hero carousel,
+  story, highlights, testimonials, contact and SEO cards with per-card save.
+- Brands editor covers all new fields; brand list gains featured/search
+  filters. Categories editor gains the banner field.
+
 ## [1.0.0] — 2026-09-09
 
 ### Phase 7.0 — Foundation

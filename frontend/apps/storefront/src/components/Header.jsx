@@ -182,6 +182,29 @@ export default function Header() {
           </button>
         </nav>
       </div>
+      <nav className="border-t border-slate-200/60" aria-label="Browse the store">
+        <div className="wrap no-scrollbar flex items-center gap-1 overflow-x-auto py-1.5">
+          {[
+            ['/', t(language, 'shop'), (p) => p === '/'],
+            ['/categories', t(language, 'categories'), (p) => p.startsWith('/categories') || p.startsWith('/browse')],
+            ['/brands', t(language, 'brands'), (p) => p.startsWith('/brands')],
+            ['/about', t(language, 'about'), (p) => p.startsWith('/about')],
+          ].map(([to, label, active]) => (
+            <Link
+              key={to}
+              to={to}
+              aria-current={active(pathname) ? 'page' : undefined}
+              className={cn(
+                'shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-semibold transition',
+                active(pathname) ? 'text-white' : 'text-slate-600 hover:bg-slate-100'
+              )}
+              style={active(pathname) ? { background: 'var(--brand)', color: 'var(--brand-ink)' } : undefined}
+            >
+              {label}
+            </Link>
+          ))}
+        </div>
+      </nav>
     </header>
   );
 }
