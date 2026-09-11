@@ -24,6 +24,8 @@ import DeliveryFeePolicy from '../models/deliveryFeePolicy.model.js';
 import TaxPolicy from '../models/taxPolicy.model.js';
 import TaxRegistration from '../models/taxRegistration.model.js';
 import ProductMaster from '../models/productMaster.model.js';
+import Category from '../models/category.model.js';
+import Brand from '../models/brand.model.js';
 import Vendor from '../models/vendor.model.js';
 import planService from './plan.service.js';
 import billingService, { assertTenantSubscriptionSchema } from './billing.service.js';
@@ -41,6 +43,84 @@ import { evaluateOnboarding } from '../utils/onboardingReadiness.js';
 import { TAX_OWNER_TYPE } from '../constants/enums.js';
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+// ---------------------------------------------------------------------------
+// Pure store-merge helpers (exported for the contract suite).
+//
+// updateStore() wholesale-replaces `tenant.store`, so the merge MUST run on
+// POJOs: passing live Mongoose subdocument instances through the replacement
+// EMPTIES every SingleNested block (about, socialLinks, announcement, contact,
+// seo silently became {} on any unrelated card save — arrays and scalars were
+// unaffected, which is why only those fields "stripped"). Callers pass
+// `tenant.store.toObject()`; this function never touches Mongoose.
+// ---------------------------------------------------------------------------
+
+/** '' means "cleared" from every form — store null so storefront `||`/`?.` checks behave. */
+export function cleanStoreValue(v) {
+  return v === '' ? null : v;
+}
+
+export function cleanStoreObject(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out = { ...obj };
+  for (const k of Object.keys(out)) {
+    if (out[k] === '') out[k] = null;
+  }
+  return out;
+}
+
+/**
+ * Merge a store-content patch onto the previous store POJO.
+ *
+ * Semantics (pinned by storefront-contracts S9):
+ *  - scalars: payload wins when the key is present ('' → null), else prev kept;
+ *  - nested objects (socialLinks/about/…): shallow-merged onto prev;
+ *  - contact.address: merged one level deeper;
+ *  - content arrays: REPLACED wholesale — a form always submits the full
+ *    intended set, so patch-merging would only resurrect deleted slides;
+ *  - featured ids: `featured.*` carries the write-time-validated lists;
+ *    `undefined` keeps prev, `[]` explicitly clears curation.
+ */
+export function buildStoreUpdate(prev = {}, payload = {}, featured = {}) {
+  const p = prev || {};
+  const prevSocial = p.socialLinks || {};
+  const prevAbout = p.about || {};
+  const prevContact = p.contact || {};
+  const prevSeo = p.seo || {};
+  const prevAnnouncement = p.announcement || {};
+  return {
+    ...p,
+    tagline: payload.tagline !== undefined ? cleanStoreValue(payload.tagline) : p.tagline || null,
+    description: payload.description !== undefined ? cleanStoreValue(payload.description) : p.description || null,
+    bannerUrl: payload.bannerUrl !== undefined ? cleanStoreValue(payload.bannerUrl) : p.bannerUrl || null,
+    socialLinks: payload.socialLinks ? cleanStoreObject({ ...prevSocial, ...payload.socialLinks }) : prevSocial,
+    heroSlides: payload.heroSlides !== undefined
+      ? payload.heroSlides.map((s) => cleanStoreObject({ sortOrder: 0, isActive: true, ...s }))
+      : p.heroSlides,
+    announcement: payload.announcement
+      ? cleanStoreObject({ ...prevAnnouncement, ...payload.announcement })
+      : prevAnnouncement,
+    about: payload.about ? cleanStoreObject({ ...prevAbout, ...payload.about }) : prevAbout,
+    highlights: payload.highlights !== undefined
+      ? payload.highlights.map(cleanStoreObject)
+      : p.highlights,
+    testimonials: payload.testimonials !== undefined
+      ? payload.testimonials.map(cleanStoreObject)
+      : p.testimonials,
+    contact: payload.contact
+      ? {
+        ...cleanStoreObject({ ...prevContact, ...payload.contact }),
+        address: payload.contact.address
+          ? cleanStoreObject({ ...(prevContact.address || {}), ...payload.contact.address })
+          : prevContact.address,
+      }
+      : prevContact,
+    seo: payload.seo ? cleanStoreObject({ ...prevSeo, ...payload.seo }) : prevSeo,
+    footerText: payload.footerText !== undefined ? cleanStoreValue(payload.footerText) : p.footerText || null,
+    featuredCategoryIds: featured.categoryIds !== undefined ? featured.categoryIds : (p.featuredCategoryIds || []),
+    featuredBrandIds: featured.brandIds !== undefined ? featured.brandIds : (p.featuredBrandIds || []),
+  };
+}
 
 class StoreService {
   /**
@@ -564,7 +644,13 @@ class StoreService {
     const tenant = await Tenant.findById(tenantId);
     if (!tenant) throw notFound('Store not found', 'STORE_NOT_FOUND');
 
-    const before = { store: tenant.store, theme: tenant.theme, logoUrl: tenant.logoUrl, name: tenant.name };
+    // Snapshot POJOs, not live subdocs: a live ref would show AFTER values.
+    const before = {
+      store: tenant.store?.toObject?.() || null,
+      theme: tenant.theme?.toObject?.() || tenant.theme || null,
+      logoUrl: tenant.logoUrl,
+      name: tenant.name,
+    };
     if (payload.name) tenant.name = String(payload.name).trim();
     if (payload.logoUrl !== undefined) tenant.logoUrl = payload.logoUrl || null;
     if (payload.theme) {
@@ -576,61 +662,18 @@ class StoreService {
       }
       tenant.theme = incoming;
     }
-    // '' means "cleared" from every form — store null, not an empty string, so
-    // the storefront's `||` fallbacks and `?.` checks behave identically.
-    const clean = (v) => (v === '' ? null : v);
-    const cleanObj = (obj) => {
-      if (!obj || typeof obj !== 'object') return obj;
-      const out = { ...obj };
-      for (const k of Object.keys(out)) {
-        if (out[k] === '') out[k] = null;
-      }
-      return out;
-    };
-    const prevStore = tenant.store || {};
-    const prevSocial = prevStore.socialLinks || {};
-    const prevAbout = prevStore.about || {};
-    const prevContact = prevStore.contact || {};
-    const prevSeo = prevStore.seo || {};
-    const prevAnnouncement = prevStore.announcement || {};
-    tenant.store = {
-      ...prevStore,
-      tagline: payload.tagline !== undefined ? clean(payload.tagline) : prevStore.tagline || null,
-      description: payload.description !== undefined ? clean(payload.description) : prevStore.description || null,
-      bannerUrl: payload.bannerUrl !== undefined ? clean(payload.bannerUrl) : prevStore.bannerUrl || null,
-      socialLinks: payload.socialLinks ? cleanObj({ ...prevSocial, ...payload.socialLinks }) : prevSocial,
-      // Content arrays are replaced wholesale — a form always submits the full
-      // intended set, so patch-merging would only resurrect deleted slides.
-      heroSlides: payload.heroSlides !== undefined
-        ? payload.heroSlides.map((s) => cleanObj({ sortOrder: 0, isActive: true, ...s }))
-        : prevStore.heroSlides,
-      announcement: payload.announcement
-        ? cleanObj({ ...prevAnnouncement, ...payload.announcement })
-        : prevAnnouncement,
-      about: payload.about ? cleanObj({ ...prevAbout, ...payload.about }) : prevAbout,
-      highlights: payload.highlights !== undefined
-        ? payload.highlights.map(cleanObj)
-        : prevStore.highlights,
-      testimonials: payload.testimonials !== undefined
-        ? payload.testimonials.map(cleanObj)
-        : prevStore.testimonials,
-      contact: payload.contact
-        ? {
-          ...cleanObj({ ...prevContact, ...payload.contact }),
-          address: payload.contact.address
-            ? cleanObj({ ...(prevContact.address || {}), ...payload.contact.address })
-            : prevContact.address,
-        }
-        : prevContact,
-      seo: payload.seo ? cleanObj({ ...prevSeo, ...payload.seo }) : prevSeo,
-      footerText: payload.footerText !== undefined ? clean(payload.footerText) : prevStore.footerText || null,
-      featuredCategoryIds: payload.featuredCategoryIds !== undefined
+    // Merge on a POJO snapshot: live SingleNested instances do NOT survive
+    // wholesale parent replacement (they cast back as {}), which used to wipe
+    // about/socials/announcement/contact/seo on every unrelated card save.
+    const prevStore = tenant.store?.toObject?.() || {};
+    tenant.store = buildStoreUpdate(prevStore, payload, {
+      categoryIds: payload.featuredCategoryIds !== undefined
         ? await this.assertFeaturedIds(Category, payload.featuredCategoryIds, 'category')
-        : prevStore.featuredCategoryIds,
-      featuredBrandIds: payload.featuredBrandIds !== undefined
+        : undefined,
+      brandIds: payload.featuredBrandIds !== undefined
         ? await this.assertFeaturedIds(Brand, payload.featuredBrandIds, 'brand')
-        : prevStore.featuredBrandIds,
-    };
+        : undefined,
+    });
     if (payload.isPublished !== undefined) {
       const wantsPublish = Boolean(payload.isPublished);
       const alreadyPublished = Boolean(tenant.store?.isPublished);
