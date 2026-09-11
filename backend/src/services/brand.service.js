@@ -1,6 +1,7 @@
 import Brand from '../models/brand.model.js';
 import { notFound } from '../utils/ApiError.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
+import { serializeList } from '../utils/serialize.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import { BRAND_VERIFICATION_STATUS, ENTITY_STATUS } from '../constants/enums.js';
@@ -74,7 +75,7 @@ class BrandService {
     }
     const docs = await Brand.find(q).sort({ isFeatured: -1, sortOrder: 1, name: 1 }).skip((page - 1) * limit).limit(limit).lean();
     const total = await Brand.countDocuments(q);
-    return { items: docs, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+    return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
   async getById(id) {

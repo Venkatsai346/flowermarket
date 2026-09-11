@@ -5,6 +5,32 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
 
 ## [Unreleased] — Storefront content (brands, categories, rich store pages)
 
+### Fixed — storefront-content follow-ups
+- **Saved store content never appeared**: the Tenant `store` schema was missing
+  the rich-content paths, so Mongoose strict mode silently stripped hero
+  slides, highlights, testimonials, about, contact, SEO and announcement on
+  save (200 + success toast, nothing in the DB). The schema now carries every
+  path `updateStore` writes. NOTE: content saved before this fix was dropped
+  and must be re-saved once — it never reached the database.
+- **Stale storefront after save**: the global response cache (60s default, 5min
+  for taxonomy) was never invalidated — `invalidateCache` had zero callers.
+  Store saves now bust `/domains/bootstrap`, `/marketplace/stores/` and
+  `/catalog/store/`; brand/category writes bust the whole `/catalog/`
+  namespace. Saves appear on the next storefront load.
+- **Category edit failed** (`'id' with value 'undefined'`): admin list/tree
+  endpoints return `.lean()` rows, which skip the toJSON `_id → id` mapping.
+  `category.service` (list + tree) and `brand.service` (list) now serialize
+  through `serializeDoc`/`serializeList`, so every entity row carries a string
+  `id`. The admin category modal additionally resolves ids via `rid()` and
+  normalizes `parentId`, so it cannot aim at `undefined` even against an
+  id-less payload.
+- **Admin BrandsPage crashed** (`featured is not defined`): the featured/search
+  filter UI shipped without its state declarations and query params. Restored.
+- New pure gate `test:storefront-contracts` (59 checks, in `test` + `smoke:all`)
+  pins all of the above: schema paths, strict-mode round-trips, serializer
+  behaviour, Joi acceptance, and source-wiring invariants. The hermetic suite
+  gains section 5 asserting the admin list/tree id contract against a live DB.
+
 ### Added — public catalog
 - `GET /catalog/store/brands` — brands this store actually sells (scoped to the
   tenant's live listings), each with `productCount` + `fromPrice`, featured

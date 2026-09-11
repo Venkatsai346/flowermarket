@@ -11,6 +11,8 @@
  *      fail loudly; publicStoreShape() filters/sorts slides + gates the
  *      announcement + aliases contact for the storefront About page.
  *   4. Validators — oversized arrays rejected; rich brand/category fields accepted.
+ *   5. Admin id contract — brand/category list + tree rows carry string `id`
+ *      (no `_id`), so edit/verify/delete actions can never aim at `undefined`.
  */
 
 import './test-env-guard.js'; // FIRST import: hermetic env before dotenv (see test-env-guard.js)
@@ -248,6 +250,36 @@ async function main() {
     return null;
   }(enriched));
   eq('customer tree carries images now', rosesNode?.imageUrl, 'https://cdn.test/roses.jpg');
+
+  section('5. admin list/tree id contract — every entity row carries string id');
+  // -------------------------------------------------------------------------
+  // Regression: lean rows skipped the toJSON _id → id mapping, so the admin
+  // category edit modal sent `undefined` as the route param (VALIDATION_ERROR).
+  const adminBrands = await brandService.list({});
+  check('brand list non-empty', adminBrands.items.length >= 1);
+  check(
+    'brand rows carry string id, no _id',
+    adminBrands.items.every((b) => typeof b.id === 'string' && /^[0-9a-f]{24}$/.test(b.id) && !('_id' in b))
+  );
+  const adminCats = await categoryService.list({ includeInactive: true });
+  check(
+    'category list rows carry string id, no _id',
+    adminCats.items.length >= 1
+      && adminCats.items.every((c) => typeof c.id === 'string' && /^[0-9a-f]{24}$/.test(c.id) && !('_id' in c))
+  );
+  const adminTree = await categoryService.tree({ includeInactive: true });
+  const treeIds = [];
+  (function walk(nodes) {
+    for (const n of nodes || []) {
+      treeIds.push(n);
+      walk(n.children);
+    }
+  }(adminTree));
+  check(
+    'category tree nodes carry string id at every depth, no _id',
+    treeIds.length >= 1
+      && treeIds.every((n) => typeof n.id === 'string' && /^[0-9a-f]{24}$/.test(n.id) && !('_id' in n))
+  );
 
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`storefront content: ${passed} passed, ${failed} failed`);

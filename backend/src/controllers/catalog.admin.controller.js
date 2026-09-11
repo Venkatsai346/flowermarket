@@ -7,6 +7,17 @@ import catalogEventService from '../services/catalogEvent.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { notFound } from '../utils/ApiError.js';
+import { invalidateCache } from '../middleware/responseCache.js';
+
+/**
+ * Taxonomy writes shift public reads (global lists, store-scoped indexes,
+ * product facets/counts), all of which the response cache holds for up to
+ * 5 minutes. Bust the whole /catalog/ namespace on every write — writes are
+ * rare, rebuilds are indexed reads, and stale taxonomy is a storefront lie.
+ */
+function bustCatalogCache() {
+  invalidateCache('/catalog/');
+}
 
 /**
  * CatalogAdminController — central catalog-ops endpoints (ADMIN / SUPER_ADMIN).
@@ -16,11 +27,13 @@ class CatalogAdminController {
   // ---------------- categories ----------------
   createCategory = asyncHandler(async (req, res) => {
     const cat = await categoryService.create({ payload: req.body, actorId: req.auth.userId, req });
+    bustCatalogCache();
     res.status(201).json(created(cat, { message: 'Category created' }));
   });
 
   updateCategory = asyncHandler(async (req, res) => {
     const cat = await categoryService.update({ id: req.params.id, patch: req.body, actorId: req.auth.userId, req });
+    bustCatalogCache();
     res.status(200).json(success(cat, { message: 'Category updated' }));
   });
 
@@ -36,17 +49,20 @@ class CatalogAdminController {
 
   deleteCategory = asyncHandler(async (req, res) => {
     const result = await categoryService.remove({ id: req.params.id, actorId: req.auth.userId, req });
+    bustCatalogCache();
     res.status(200).json(success(result, { message: 'Category removed' }));
   });
 
   // ---------------- brands ----------------
   createBrand = asyncHandler(async (req, res) => {
     const brand = await brandService.create({ payload: req.body, actorId: req.auth.userId, req });
+    bustCatalogCache();
     res.status(201).json(created(brand, { message: 'Brand created' }));
   });
 
   updateBrand = asyncHandler(async (req, res) => {
     const brand = await brandService.update({ id: req.params.id, patch: req.body, actorId: req.auth.userId, req });
+    bustCatalogCache();
     res.status(200).json(success(brand, { message: 'Brand updated' }));
   });
 
@@ -54,6 +70,7 @@ class CatalogAdminController {
     const brand = await brandService.verify({
       id: req.params.id, verified: req.body.verified, note: req.body.note, actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
     res.status(200).json(success(brand, { message: `Brand ${req.body.verified ? 'verified' : 'unverified'}` }));
   });
 
@@ -64,6 +81,7 @@ class CatalogAdminController {
 
   deleteBrand = asyncHandler(async (req, res) => {
     const result = await brandService.remove({ id: req.params.id, actorId: req.auth.userId, req });
+    bustCatalogCache();
     res.status(200).json(success(result, { message: 'Brand removed' }));
   });
 

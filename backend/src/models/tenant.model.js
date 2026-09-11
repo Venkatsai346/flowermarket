@@ -166,7 +166,41 @@ const TenantSchema = new Schema(
         instagram: { type: String, default: null, trim: true },
         facebook: { type: String, default: null, trim: true },
         website: { type: String, default: null, trim: true },
+        youtube: { type: String, default: null, trim: true },
+        x: { type: String, default: null, trim: true },
+        whatsapp: { type: String, default: null, maxlength: 30, trim: true },
       },
+      // ---- rich storefront content (bounded arrays — see marketplace.validators.js) ----
+      heroSlides: { type: [HeroSlideSchema], default: [] },
+      announcement: {
+        text: { type: String, default: null, maxlength: 120, trim: true },
+        linkUrl: { type: String, default: null, maxlength: 300, trim: true },
+        isActive: { type: Boolean, default: true },
+      },
+      about: {
+        title: { type: String, default: null, maxlength: 120, trim: true },
+        content: { type: String, default: null, maxlength: 4000, trim: true },
+        imageUrl: { type: String, default: null, trim: true },
+        videoUrl: { type: String, default: null, trim: true },
+      },
+      highlights: { type: [HighlightSchema], default: [] },
+      testimonials: { type: [TestimonialSchema], default: [] },
+      contact: {
+        phone: { type: String, default: null, maxlength: 20, trim: true },
+        email: { type: String, default: null, trim: true },
+        address: { type: StoreAddressSchema, default: null },
+        hours: { type: String, default: null, maxlength: 200, trim: true },
+        whatsapp: { type: String, default: null, maxlength: 20, trim: true },
+        mapUrl: { type: String, default: null, trim: true },
+      },
+      seo: {
+        title: { type: String, default: null, maxlength: 70, trim: true },
+        description: { type: String, default: null, maxlength: 170, trim: true },
+      },
+      footerText: { type: String, default: null, maxlength: 300, trim: true },
+      // Merchant-curated homepage rails (validated live at write time).
+      featuredCategoryIds: [{ type: Schema.Types.ObjectId, ref: 'Category' }],
+      featuredBrandIds: [{ type: Schema.Types.ObjectId, ref: 'Brand' }],
       isPublished: { type: Boolean, default: false },
       onboardingStatus: {
         type: String,

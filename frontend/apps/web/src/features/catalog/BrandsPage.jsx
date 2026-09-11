@@ -137,6 +137,8 @@ export default function BrandsPage() {
   const [page, setPage] = useState(1);
   const [status, setStatus] = useState('');
   const [verified, setVerified] = useState('');
+  const [featured, setFeatured] = useState('');
+  const [q, setQ] = useState('');
   const [modal, setModal] = useState(null); // null | 'new' | brand
   const [verify, setVerify] = useState(null); // {brand, verified}
   const [note, setNote] = useState('');
@@ -149,8 +151,10 @@ export default function BrandsPage() {
         page, limit: 20,
         status: status || undefined,
         verified: verified === '' ? undefined : verified === 'true',
+        featured: featured === '' ? undefined : featured === 'true',
+        search: q.trim() || undefined,
       }),
-    [page, status, verified]
+    [page, status, verified, featured, q]
   );
 
   const doVerify = async () => {
