@@ -38,6 +38,7 @@ import Tenant from '../src/models/tenant.model.js';
 import Brand from '../src/models/brand.model.js';
 import Category from '../src/models/category.model.js';
 import { serializeDoc, serializeList } from '../src/utils/serialize.js';
+import { buildStoreUpdate, cleanStoreValue, cleanStoreObject } from '../src/services/store.service.js';
 import { storeUpdateSchema } from '../src/utils/validators/marketplace.validators.js';
 import { brandCreateSchema, categoryCreateSchema } from '../src/utils/validators/catalog.validators.js';
 
@@ -231,6 +232,65 @@ console.log('S8 · cache freshness wiring');
   check('credentialed requests bypass cache', cache.includes('req.headers.authorization || req.headers.cookie'));
   const marketplace = read('backend/src/controllers/marketplace.controller.js');
   check('store save busts owner GET + public stores', marketplace.includes("invalidateCache('/marketplace/store')"));
+}
+
+// ── S9 · store-merge fidelity: unrelated saves must not strip nested blocks ──
+// updateStore() wholesale-replaces tenant.store. The merge once ran on the
+// live subdocument, and re-parented SingleNested instances cast back as {} —
+// so saving highlights wiped about/socials/announcement/contact/seo while
+// arrays and scalars survived. The merge is now a pure POJO function;
+// these checks run it over a hydrated-then-dehydrated doc, exactly as the
+// service does (prev = tenant.store.toObject()).
+console.log('S9 · store-merge fidelity');
+{
+  const hydrated = new Tenant({
+    name: 'T', slug: 't',
+    store: {
+      tagline: 'hi', bannerUrl: 'https://b.jpg', isPublished: true,
+      socialLinks: { instagram: 'https://ig/x', x: 'https://x/y' },
+      about: { title: 'Story', content: 'Once upon', imageUrl: 'https://a.jpg' },
+      heroSlides: [{ imageUrl: 'https://s.jpg', title: 'S', sortOrder: 0, isActive: true }],
+      highlights: [{ icon: 'truck', title: 'H', text: 'fast' }],
+      testimonials: [{ name: 'Priya', text: 'Lovely', rating: 5 }],
+      contact: { phone: '+911', address: { city: 'Hyd' } },
+      seo: { title: 'Seo' },
+      announcement: { text: 'Old', isActive: true },
+    },
+  });
+  const prev = hydrated.store.toObject();
+
+  // Other-card save: only highlights in the payload.
+  const m1 = buildStoreUpdate(prev, { highlights: [{ icon: 'leaf', title: 'Fresh' }] }, {});
+  check('about survives other-card save', m1.about?.title === 'Story' && m1.about?.content === 'Once upon');
+  check('socials survive other-card save', m1.socialLinks?.instagram === 'https://ig/x');
+  check('slides survive other-card save', m1.heroSlides?.length === 1 && m1.heroSlides[0].imageUrl === 'https://s.jpg');
+  check('contact survives other-card save', m1.contact?.address?.city === 'Hyd');
+  check('seo survives other-card save', m1.seo?.title === 'Seo');
+  check('announcement survives other-card save', m1.announcement?.text === 'Old');
+  check('testimonials survive other-card save', m1.testimonials?.length === 1);
+  check('scalars survive other-card save', m1.tagline === 'hi' && m1.bannerUrl === 'https://b.jpg');
+  check('flags survive other-card save', m1.isPublished === true);
+  check('payload replaces wholesale', m1.highlights?.length === 1 && m1.highlights[0].title === 'Fresh');
+
+  // Nested objects merge; address merges one level deeper.
+  const m2 = buildStoreUpdate(prev, { about: { title: 'New' }, contact: { address: { city: 'Vja' } } }, {});
+  check('about merges (content kept)', m2.about?.title === 'New' && m2.about?.content === 'Once upon');
+  check('address merges (phone kept)', m2.contact?.address?.city === 'Vja' && m2.contact?.phone === '+911');
+
+  // Clearing semantics + featured-id pass-through.
+  const m3 = buildStoreUpdate(prev, { tagline: '' }, {});
+  check("'' cleans to null", m3.tagline === null);
+  const oid = String(new mongoose.Types.ObjectId());
+  const m4 = buildStoreUpdate(prev, {}, { categoryIds: [oid] });
+  check('featured ids applied', m4.featuredCategoryIds?.length === 1 && m4.featuredCategoryIds[0] === oid);
+  check('featured ids default to []', Array.isArray(m4.featuredBrandIds));
+  const m5 = buildStoreUpdate({ ...prev, featuredBrandIds: [oid] }, {}, {});
+  check('featured ids kept when absent', m5.featuredBrandIds?.length === 1);
+  const m6 = buildStoreUpdate({ ...prev, featuredBrandIds: [oid] }, {}, { brandIds: [] });
+  check('featured ids clearable with []', m6.featuredBrandIds?.length === 0);
+
+  check('cleanStoreValue passthrough', cleanStoreValue('x') === 'x' && cleanStoreValue(null) === null);
+  check('cleanStoreObject skips arrays', cleanStoreObject([1])?.length === 1);
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

@@ -187,7 +187,22 @@ async function main() {
   eq('seo round-trips', after.store.seo.title, 'Petal & Stem — Fresh Flowers');
   eq('youtube social persists', after.store.socialLinks.youtube, 'https://youtube.com/@petal');
 
-  const pub = storeService.publicStoreShape(after);
+  // Cross-card save: an unrelated slice must not strip nested blocks.
+  // (Regression: live SingleNested instances cast back as {} through the
+  // wholesale store replacement, wiping about/socials/announcement/contact/seo.)
+  await storeService.updateStore({
+    tenantId: tenant._id,
+    payload: { testimonials: [{ name: 'Ravi', text: 'Superb!', rating: 4 }] },
+  });
+  const afterX = await Tenant.findById(tenant._id).lean();
+  eq('about survives other-card save', afterX.store.about.title, 'Our farm story');
+  eq('socials survive other-card save', afterX.store.socialLinks.youtube, 'https://youtube.com/@petal');
+  eq('slides survive other-card save', afterX.store.heroSlides.length, 3);
+  eq('contact survives other-card save', afterX.store.contact.address.city, 'Kakinada');
+  eq('seo survives other-card save', afterX.store.seo.title, 'Petal & Stem — Fresh Flowers');
+  eq('new slice applied', afterX.store.testimonials.length, 1);
+
+  const pub = storeService.publicStoreShape(afterX);
   eq('public shape drops the paused slide', pub.heroSlides.length, 2);
   eq('public slides sort by sortOrder', pub.heroSlides[0].title, 'Second');
   eq('announcement gates on isActive+text', pub.announcement.text, 'Free delivery over ₹499');

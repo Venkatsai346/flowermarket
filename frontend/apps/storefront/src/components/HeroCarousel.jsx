@@ -81,7 +81,7 @@ export default function HeroCarousel({ slides = [], storeName, tagline, descript
         return (
           <div
             key={s.imageUrl || i}
-            className={cn('hero-slide absolute inset-0', active && 'hero-slide-active')}
+            className={cn('hero-slide hero-slide-media absolute inset-0', active && 'hero-slide-active')}
             aria-hidden={!active}
           >
             <picture>

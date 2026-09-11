@@ -56,6 +56,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/)
   for testing (backend ignores the header under real hostnames; the branch is
   `import.meta.env.DEV`-gated out of production builds).
 
+### Fixed — storefront-content round 4 (edit wipes + carousel)
+- **Saving one card wiped story/socials/contact/SEO**: `updateStore` merged on
+  the live Mongoose subdocument, and SingleNested instances cast back as `{}`
+  through the wholesale `tenant.store` replacement (arrays/scalars survived,
+  which is why only those blocks "stripped"). The merge is now a pure,
+  exported, contract-tested POJO function (`buildStoreUpdate`, prev =
+  `tenant.store.toObject()`), and the audit `before` snapshot is a POJO too
+  (it previously held live refs showing after-values). Any content wiped this
+  way must be re-entered once — the wipe wrote `{}` to the DB.
+- **Latent 500 on featured-id saves**: `updateStore` referenced `Category` /
+  `Brand` without importing them — fixed (the hermetic suite's
+  INVALID_FEATURED_IDS assertion exercises it).
+- **Carousel had no slide CSS**: `.hero-slide` / `.hero-slide-active` were
+  never defined, so all slides stacked fully visible with no crossfade; the
+  copy-rise animation class was missing too. Added, with a
+  `prefers-reduced-motion` guard. Slide frames also gained a brand-gradient
+  backdrop so a slow/failed image degrades elegantly, never to a hole.
+- NOTE on "banner overrides hero slides": no code path routes the banner into
+  slides — slide `<img>`s render only their own `imageUrl`, and the
+  banner/carousel branches are mutually exclusive. If banner pixels appear
+  where slides should be, the slide records themselves carry the banner URL
+  (the library picker lists every asset by design, so it is one click away)
+  — or the slides predate the schema fix and were never re-saved. Check the
+  bootstrap `heroSlides[].imageUrl` values to confirm in seconds.
+
 ### Added — public catalog
 - `GET /catalog/store/brands` — brands this store actually sells (scoped to the
   tenant's live listings), each with `productCount` + `fromPrice`, featured
