@@ -623,6 +623,10 @@ export const AUDIT_ACTION = Object.freeze({
   INVOICE_GENERATED: 'invoice_generated',
   INVOICE_PAID: 'invoice_paid',
   INVOICE_VOID: 'invoice_void',
+  INVOICE_AUTO_PAID: 'invoice_auto_paid', // zero-value invoice finalised at generation
+  COMMISSION_RATE_EFFECTIVE: 'commission_rate_effective', // pending rate went live on period advance
+  SUBSCRIPTION_STANDING: 'subscription_standing', // trial/active ↔ past_due transition
+  SUBSCRIPTION_STANDING_HEAL: 'subscription_standing_heal', // sweep self-heal pass
   SYNC_VENDOR_PRODUCTS: 'sync_vendor_products',
   PLATFORM_ROLLUP: 'platform_rollup',
   NIGHTLY: 'nightly',
@@ -868,6 +872,7 @@ export const INVOICE_LINE_TYPE = Object.freeze({
   SUBSCRIPTION: 'subscription',
   COMMISSION: 'commission',
   ADJUSTMENT: 'adjustment',
+  GST: 'gst', // GST on the platform's own services (fee + commission + adjustment)
 });
 
 export const STORE_ONBOARDING_STATUS = Object.freeze({
@@ -940,6 +945,7 @@ export const LEDGER_JOURNAL_KIND = Object.freeze({
   COD_RECEIVABLE_WAIVED: 'cod_receivable_waived',
   TDS_DEDUCTED: 'tds_deducted',
   COMMISSION_INVOICED: 'commission_invoiced',
+  INVOICE_PAID: 'invoice_paid',                 // tenant paid a platform invoice (fee + commission + GST)
   ADJUSTMENT: 'adjustment',             // manual, reason-coded, audited
   STATUTORY_DEPOSIT: 'statutory_deposit',       // TCS/TDS paid to the government
   STATUTORY_DEPOSIT_REVERTED: 'statutory_deposit_reverted', // operator correction,
@@ -967,6 +973,7 @@ export const LEDGER_ACCOUNT = Object.freeze({
   GATEWAY_CLEARING: 'gateway_clearing',                 // asset: captured by PSP, not yet settled
   BANK: 'bank',                                         // asset: our settlement account
   PLATFORM_COMMISSION_INCOME: 'platform_commission_income',
+  PLATFORM_SUBSCRIPTION_INCOME: 'platform_subscription_income', // plan-fee income (invoice_paid journals)
   TCS_PAYABLE: 'tcs_payable',                           // liability: collected u/s 52
   TDS_PAYABLE: 'tds_payable',                           // liability: deducted u/s 194-O
   CUSTOMER_WALLET_LIABILITY: 'customer_wallet_liability',

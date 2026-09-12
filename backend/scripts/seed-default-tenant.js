@@ -364,6 +364,15 @@ async function seed() {
       },
       priority: 'high',
     },
+    {
+      code: 'invoice_overdue', eventType: null, channels: ['push', 'email', 'sms'],
+      content: {
+        push: { subject: 'Platform invoice overdue', body: '{{storeName}}: invoice {{invoiceNumber}} for Rs.{{total}} was due {{dueDate}}. Pay it to resume checkouts.' },
+        email: { subject: 'Invoice {{invoiceNumber}} overdue — Rs.{{total}}', body: 'Hi,\n\n{{storeName}} has an overdue platform invoice:\n\nInvoice: {{invoiceNumber}}\nAmount: Rs.{{total}}\nDue: {{dueDate}}\n\nCustomer checkout is paused until this is settled. Pay from your console → Billing.' },
+        sms: { body: '{{storeName}}: invoice {{invoiceNumber}} Rs.{{total}} overdue since {{dueDate}}. Pay to resume checkouts.' },
+      },
+      priority: 'urgent',
+    },
   ];
   for (const t of defaults) {
     await NotificationTemplate.updateOne(

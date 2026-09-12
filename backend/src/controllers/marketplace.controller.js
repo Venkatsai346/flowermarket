@@ -23,6 +23,7 @@ import marketplaceAnalyticsService from '../services/marketplaceAnalytics.servic
 import maintenanceService from '../services/maintenance.service.js';
 import { renderInvoicePdf } from '../utils/invoicePdf.js';
 import { renderInvoiceHtml } from '../utils/invoiceHtml.js';
+import { toPaise } from '../utils/money.js';
 import Invoice from '../models/invoice.model.js';
 import { AppError, notFound } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -288,7 +289,7 @@ class MarketplaceController {
     if (!invoice) throw notFound('Invoice not found');
 
     const doc = {
-      docType: invoice.status === 'voided' ? 'credit_note' : 'invoice',
+      docType: invoice.status === 'void' ? 'credit_note' : 'invoice',
       number: invoice.number,
       orderNumber: `INV-${invoice.number}`,
       supplyDate: invoice.period?.from || invoice.createdAt,
@@ -299,17 +300,17 @@ class MarketplaceController {
         hsnCode: '--',
         qty: li.qty || 1,
         uom: 'NOS',
-        unitPricePaise: li.unitAmount || 0,
-        taxableValuePaise: li.amount || 0,
+        unitPricePaise: toPaise(li.unitAmount || 0),
+        taxableValuePaise: toPaise(li.amount || 0),
         rateBps: 0,
         cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
-        lineTotalPaise: li.amount || 0,
+        lineTotalPaise: toPaise(li.amount || 0),
       })),
       totals: {
-        taxableValuePaise: invoice.subtotal || 0,
+        taxableValuePaise: toPaise(invoice.subtotal || 0),
         cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
         roundOffPaise: 0,
-        grandTotalPaise: invoice.total || 0,
+        grandTotalPaise: toPaise(invoice.total || 0),
       },
       amountInWords: '',
     };
@@ -342,17 +343,17 @@ class MarketplaceController {
         hsnCode: '--',
         qty: li.qty || 1,
         uom: 'NOS',
-        unitPricePaise: li.unitAmount || 0,
-        taxableValuePaise: li.amount || 0,
+        unitPricePaise: toPaise(li.unitAmount || 0),
+        taxableValuePaise: toPaise(li.amount || 0),
         rateBps: 0,
         cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
-        lineTotalPaise: li.amount || 0,
+        lineTotalPaise: toPaise(li.amount || 0),
       })),
       totals: {
-        taxableValuePaise: invoice.subtotal || 0,
+        taxableValuePaise: toPaise(invoice.subtotal || 0),
         cgstPaise: 0, sgstPaise: 0, igstPaise: 0, cessPaise: 0,
         roundOffPaise: 0,
-        grandTotalPaise: invoice.total || 0,
+        grandTotalPaise: toPaise(invoice.total || 0),
       },
       amountInWords: '',
     };

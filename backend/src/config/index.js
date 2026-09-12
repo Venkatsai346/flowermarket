@@ -232,6 +232,11 @@ const config = {
     defaultCommissionBps: Number(process.env.MARKETPLACE_DEFAULT_COMMISSION_BPS) || 100, // 1%
     defaultTrialDays: Number(process.env.MARKETPLACE_TRIAL_DAYS) || 14,
     invoiceGraceDays: Number(process.env.MARKETPLACE_INVOICE_GRACE_DAYS) || 7,
+    // GST the platform charges on its own invoices (fee + commission + adjustment).
+    // Explicit 0 disables the GST line (inter-state/exempt handling lands later).
+    invoiceGstBps: Number.isFinite(Number(process.env.MARKETPLACE_INVOICE_GST_BPS))
+      ? Number(process.env.MARKETPLACE_INVOICE_GST_BPS)
+      : 1800,
     // Phase 6.4: these are now DNS labels too, so the list must also cover
     // infrastructure hostnames — a store called "mail" would hijack MX-adjacent
     // traffic and a store called "status" would shadow the status page.
