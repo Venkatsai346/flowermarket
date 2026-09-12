@@ -14,13 +14,18 @@ import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import { pick } from '../utils/catalog/diff.js';
 import { titleSimilarity, DUPLICATE_TITLE_THRESHOLD } from '../utils/catalog/similarity.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
-import { badRequest, notFound, conflict } from '../utils/ApiError.js';
+import { badRequest, notFound } from '../utils/ApiError.js';
 import { AppError } from '../utils/ApiError.js';
 import {
   PRODUCT_MASTER_STATUS,
   TENANT_LISTING_STATUS,
   ENTITY_STATUS,
 } from '../constants/enums.js';
+import {
+  assertChangeRequestPlan,
+  assertMasterReviewable,
+  assertMasterDeprecatable,
+} from '../utils/catalogGuards.js';
 
 const GLOBAL_FIELDS = [
   'skuGlobal', 'type', 'title', 'slug', 'shortDescription', 'description',
@@ -138,7 +143,18 @@ class ProductMasterService {
   }
 
   /** Tenant proposes a brand-new global SKU -> master PENDING_REVIEW + change request. */
+  /**
+   * Tenant proposes a brand-new global SKU (paid plans only — same citizenship
+   * rule as change requests: free tenants list from the catalog, they don't
+   * mint it). Creates the master as PENDING_REVIEW plus its create_master
+   * request; listings may stage onto it immediately but stay invisible and
+   * unpurchasable until approval (search + cart both require ACTIVE).
+   */
   async proposeMaster({ payload, tenantId, actorId = null, req = null }) {
+    const { default: entitlementService } = await import('./entitlement.service.js');
+    const { code: planCode } = await entitlementService.planForTenant(tenantId);
+    assertChangeRequestPlan({ planCode });
+
     const master = await this.createMaster({
       payload, actorId, status: PRODUCT_MASTER_STATUS.PENDING_REVIEW, req,
     });
@@ -159,18 +175,28 @@ class ProductMasterService {
     return { master, changeRequest };
   }
 
-  /** Admin decision on a proposed (PENDING_REVIEW) master. */
+  /**
+   * Admin decision on a proposed (PENDING_REVIEW) master. Guarded claim: two
+   * admins deciding together cannot both win — the loser gets 409
+   * NOT_PENDING_REVIEW instead of overwriting the winner's decision.
+   */
   async reviewCreateMaster({ masterId, decision, actorId = null, note = null, req = null }) {
-    const master = await ProductMaster.findById(masterId);
-    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
-    if (master.status !== PRODUCT_MASTER_STATUS.PENDING_REVIEW) {
-      throw conflict('Master is not pending review', 'NOT_PENDING_REVIEW');
+    const current = await ProductMaster.findById(masterId).lean();
+    assertMasterReviewable(current);
+    const toStatus = decision === 'approve' ? PRODUCT_MASTER_STATUS.ACTIVE : PRODUCT_MASTER_STATUS.REJECTED;
+    const master = await ProductMaster.findOneAndUpdate(
+      { _id: masterId, status: PRODUCT_MASTER_STATUS.PENDING_REVIEW },
+      {
+        $set: { status: toStatus, review: { ...(current.review || {}), reviewedBy: actorId, reviewedAt: new Date(), note: note || null } },
+        $inc: { version: 1 }, // any mutation bumps version (stale clients fail fast)
+      },
+      { new: true }
+    );
+    if (!master) {
+      const reread = await ProductMaster.findById(masterId).lean();
+      assertMasterReviewable(reread);
     }
     if (decision === 'approve') {
-      master.status = PRODUCT_MASTER_STATUS.ACTIVE;
-      master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
-      master.version += 1; // any mutation bumps version (stale clients fail fast)
-      await master.save();
       await auditService.record({
         action: 'approve', entityType: 'product_master', entityId: master.id,
         actorId, actorType: 'admin', after: { status: master.status }, meta: { note }, req,
@@ -181,9 +207,6 @@ class ProductMasterService {
       });
       return master;
     }
-    master.status = PRODUCT_MASTER_STATUS.REJECTED;
-    master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
-    await master.save();
     await auditService.record({
       action: 'reject', entityType: 'product_master', entityId: master.id,
       actorId, actorType: 'admin', after: { status: master.status }, meta: { note }, req,
@@ -332,16 +355,30 @@ class ProductMasterService {
   }
 
   /** Admin deprecates a master globally; cascades tenant listings to INACTIVE. */
+  /**
+   * Soft-remove a master globally; every tenant's listings on it cascade to
+   * INACTIVE. Guarded claim: only the winner cascades, audits and emits —
+   * a concurrent second call gets 409 ALREADY_DEPRECATED, never a double
+   * cascade or a duplicated deprecation event.
+   */
   async deprecate({ id, actorId = null, note = null, req = null }) {
-    const master = await ProductMaster.findById(id);
-    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
-    if (master.status === PRODUCT_MASTER_STATUS.DEPRECATED) {
-      throw conflict('Master is already deprecated', 'ALREADY_DEPRECATED');
+    const current = await ProductMaster.findById(id).lean();
+    assertMasterDeprecatable(current);
+    const master = await ProductMaster.findOneAndUpdate(
+      { _id: id, status: { $ne: PRODUCT_MASTER_STATUS.DEPRECATED } },
+      {
+        $set: {
+          status: PRODUCT_MASTER_STATUS.DEPRECATED,
+          review: { ...(current.review || {}), reviewedBy: actorId, reviewedAt: new Date(), note: note || null },
+        },
+        $inc: { version: 1 },
+      },
+      { new: true }
+    );
+    if (!master) {
+      const reread = await ProductMaster.findById(id).lean();
+      assertMasterDeprecatable(reread);
     }
-    master.status = PRODUCT_MASTER_STATUS.DEPRECATED;
-    master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
-    master.version += 1;
-    await master.save();
 
     await TenantProduct.updateMany(
       { productMasterId: master.id, status: { $ne: TENANT_LISTING_STATUS.INACTIVE } },

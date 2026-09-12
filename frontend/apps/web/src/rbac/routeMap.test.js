@@ -20,8 +20,11 @@ describe('console RBAC route map', () => {
     for (const path of ['/vendor', '/vendor/products', '/vendor/payouts', '/vendor/payout-account']) {
       assert.deepEqual(ROUTE_ROLES[path], ['vendor'], `${path} must be vendor only`);
     }
-    for (const path of ['/catalog', '/orders', '/inventory', '/billing', '/tax']) {
+    for (const path of ['/catalog', '/catalog/ops', '/orders', '/inventory', '/billing', '/tax']) {
       assert.deepEqual(ROUTE_ROLES[path], ['admin', 'super_admin'], `${path} must be store owner + platform`);
+    }
+    for (const path of ['/catalog/masters', '/catalog/categories', '/catalog/brands']) {
+      assert.deepEqual(ROUTE_ROLES[path], ['super_admin'], `${path} must be platform only`);
     }
     assert.ok(ROUTE_ROLES['/rider'].includes('rider'));
   });

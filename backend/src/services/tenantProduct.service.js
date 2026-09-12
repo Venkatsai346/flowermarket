@@ -15,11 +15,11 @@ import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../ut
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import {
   TENANT_LISTING_STATUS,
-  PRODUCT_MASTER_STATUS,
   PRICE_CHANGE_REASON,
   PRICE_CHANGE_SOURCE,
   ENTITY_STATUS,
 } from '../constants/enums.js';
+import { assertMasterListable } from '../utils/catalogGuards.js';
 
 /**
  * TenantProductService — tenant-scoped sellable listings.
@@ -52,10 +52,7 @@ class TenantProductService {
 
   async createListing({ tenantId, payload, actorId = null, req = null }) {
     const master = await ProductMaster.findById(payload.productMasterId);
-    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
-    if (![PRODUCT_MASTER_STATUS.ACTIVE, PRODUCT_MASTER_STATUS.PENDING_REVIEW].includes(master.status)) {
-      throw badRequest('Master is not available for listing', 'MASTER_NOT_AVAILABLE');
-    }
+    assertMasterListable(master);
 
     const variantId = payload.variantId || null;
     await this.assertVariantListable(master.id, variantId);
@@ -129,10 +126,7 @@ class TenantProductService {
    */
   async bulkCreateListings({ tenantId, productMasterId, selections = [], selectAll = false, defaults = {}, onConflict = 'skip', actorId = null, req = null }) {
     const master = await ProductMaster.findById(productMasterId);
-    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
-    if (![PRODUCT_MASTER_STATUS.ACTIVE, PRODUCT_MASTER_STATUS.PENDING_REVIEW].includes(master.status)) {
-      throw badRequest('Master is not available for listing', 'MASTER_NOT_AVAILABLE');
-    }
+    assertMasterListable(master);
 
     let rows = Array.isArray(selections) ? [...selections] : [];
     if (selectAll) {
@@ -303,6 +297,12 @@ class TenantProductService {
     if (status === TENANT_LISTING_STATUS.ACTIVE && listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
       const { default: entitlementService } = await import('./entitlement.service.js');
       await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
+      // No zombie listings: a master deprecated (or rejected) after the
+      // listing was staged must fail ACTIVATION loudly (409) instead of
+      // producing an active-but-invisible, unpurchasable listing. Same rule
+      // as creation — ACTIVE or PENDING_REVIEW (staged) only.
+      const master = await ProductMaster.findById(listing.productMasterId).select('status').lean();
+      assertMasterListable(master);
     }
 
     await updateWithVersion(listing, expectedVersion, { status, lastStatusChangedAt: new Date() });

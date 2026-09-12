@@ -3,6 +3,46 @@
 All notable changes to the API are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/)
 
+## [Unreleased] — Catalog governance: global-plane lockdown, atomic reviews, paid-plan gating
+
+### Security — store owners could rewrite the shared catalog
+- **Every store owner (`role: 'admin'`) could CRUD global masters, categories,
+  brands, and self-approve change requests**: `/catalog/admin/*` allowed
+  `ADMIN` with no scope check, and services added no role checks. The whole
+  global router is now `SUPER_ADMIN`-only (403 `FORBIDDEN` otherwise), matching
+  every other global router. See `docs/catalog-governance.md`.
+
+### Fixed — review races and stranded approvals
+- **Double-approve race**: two simultaneous approvals both passed the
+  read-then-save status check and applied twice (duplicate variants).
+  `review`, `reviewCreateMaster`, `deprecate`, `cancel`, and `revise` now
+  claim their row with a guarded atomic update; exactly one wins and the loser
+  gets the precise terminal-state error (`REQUEST_ALREADY_REVIEWED`,
+  `NOT_PENDING_REVIEW`, `ALREADY_DEPRECATED`, …).
+- **Approved-but-never-applied stranding**: if the apply threw after the
+  verdict was saved, the CR sat `approved` forever with no effect. Apply
+  failures now revert the claim to `pending` with `applyAttempts + 1`,
+  `lastApplyError`, and a `change_request_apply_failed` audit entry —
+  retryable, never stranded.
+- **Zombie listings**: a listing created on an ACTIVE master could be
+  activated AFTER the master was deprecated. Activation re-checks the master
+  (409 `MASTER_NOT_AVAILABLE`).
+- **Change requests filed against missing/dead masters** (404/400
+  `MASTER_NOT_AVAILABLE` / `MASTER_NOT_ACTIVE` at submit, except
+  `create_master` which creates its target).
+- **`revise` mutated silently** — it now records a `change_request_revised`
+  audit entry.
+
+### Changed — review work is a paid-plan feature
+- Filing change requests and proposing masters now require a paid plan
+  (`pro`/`business`, checked live per request): 402 `PLAN_UPGRADE_REQUIRED`
+  with `details.feature: 'catalog_change_requests'` otherwise. Existing
+  requests are grandfathered — `revise`/`cancel` stay available on any plan.
+- Console mirrors the split: global catalog pages (masters, categories,
+  brands) are platform-only in nav + route map, and the Deep-admin page shows
+  store owners only the tenant-scoped tabs (listings, bulk); review/audit/
+  events are platform-only.
+
 ## [Unreleased] — Billing hardening: dunning integrity, GST, invoice journals
 
 ### Fixed — the collection loopholes are closed

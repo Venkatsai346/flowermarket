@@ -53,6 +53,14 @@ const ProductChangeRequestSchema = new Schema(
       index: true,
     },
     review: { type: ReviewSchema, default: () => ({}) },
+    // Apply-failure accounting: when an approved apply throws, review() reverts
+    // the claim to PENDING and records the attempt here — retryable, honest,
+    // and visible in the review queue (never stranded approved-but-unapplied).
+    applyAttempts: { type: Number, default: 0, min: 0 },
+    lastApplyError: {
+      message: { type: String, default: null, maxlength: 500 },
+      at: { type: Date, default: null },
+    },
     submittedAt: { type: Date, default: Date.now },
   },
   { collection: 'productchangerequests' }

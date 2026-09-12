@@ -88,10 +88,14 @@ export const GROUPS = {
   catalog: {
     label: 'Catalog',
     items: [
+      // Deep admin mixes tenant tabs (listings, bulk) with platform tabs
+      // (review, audit, events) — the page itself gates tabs by role.
       { to: '/catalog/ops', label: 'Deep admin', icon: Zap, keys: [] },
-      { to: '/catalog/masters', label: 'Masters', icon: Package, keys: [] },
-      { to: '/catalog/categories', label: 'Categories', icon: FolderTree, keys: [] },
-      { to: '/catalog/brands', label: 'Brands', icon: Truck, keys: [] },
+      // Global catalog ops: platform-only (the API enforces super_admin;
+      // hiding the entries keeps tenant admins from opening dead pages).
+      { to: '/catalog/masters', label: 'Masters', icon: Package, keys: [], roles: ['super_admin'] },
+      { to: '/catalog/categories', label: 'Categories', icon: FolderTree, keys: [], roles: ['super_admin'] },
+      { to: '/catalog/brands', label: 'Brands', icon: Truck, keys: [], roles: ['super_admin'] },
     ],
   },
   vendor: {
@@ -138,9 +142,15 @@ export function groupsForRole(role) {
   return [];
 }
 
+/** Items of a nav group visible to a role (no `roles` = every group member). */
+export function itemsForRole(role, group) {
+  const items = GROUPS[group]?.items || [];
+  return items.filter((item) => !item.roles || item.roles.includes(role));
+}
+
 export function commandsForRole(role) {
   return groupsForRole(role).flatMap((g) =>
-    GROUPS[g].items.map((item) => ({ ...item, group: GROUPS[g].label }))
+    itemsForRole(role, g).map((item) => ({ ...item, group: GROUPS[g].label }))
   );
 }
 

@@ -52,7 +52,7 @@ async function main() {
     AuditLog.init(), CatalogEvent.init(),
   ]);
 
-  const tenant = await Tenant.create({ name: 'Flower Market', slug: 'flower-market', status: 'active' });
+  const tenant = await Tenant.create({ name: 'Flower Market', slug: 'flower-market', status: 'active', plan: 'pro' });
   await TenantAuthConfig.create({ tenantId: tenant.id });
 
   // users: super admin + tenant customer
@@ -79,12 +79,12 @@ async function main() {
   const port = server.address().port;
   const base = `http://127.0.0.1:${port}/api/v1`;
 
-  const call = async (path, { method = 'GET', body, token, raw = false } = {}) => {
+  const call = async (path, { method = 'GET', body, token, tenantId = null, raw = false } = {}) => {
     const res = await fetch(base + path, {
       method,
       headers: {
         'content-type': 'application/json',
-        'x-tenant-id': tenant.id,
+        'x-tenant-id': tenantId || tenant.id,
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -323,6 +323,115 @@ async function main() {
   assert.equal((await catalogEventService.drain({ limit: 500 })).failed, 0, 'deprecate drain must not fail');
   r = await call('/catalog?search=roses');
   assert.equal(r.body.data.length, 0, 'deprecated master products must vanish from customer view');
+
+  // ================= 12. catalog governance: roles, plans, races =================
+  const owner = await User.create({
+    tenantId: tenant.id, email: { address: 'owner@flowermarket.in', verified: true },
+    role: 'admin', status: 'active',
+  });
+  const ownerTok = (await AuthService.issueTokens(owner)).accessToken;
+
+  // 12a. a store owner (role admin) is locked out of EVERY global-catalog op —
+  // the guard fires before any logic (even on already-decided rows).
+  const lockedOut = [
+    ['/catalog/admin/masters', { method: 'POST', body: { skuGlobal: 'OWN-1', type: 'fresh_flower', title: 'Owned', categoryId: catId } }],
+    [`/catalog/admin/categories/${catId}`, { method: 'PATCH', body: { name: 'Renamed' } }],
+    [`/catalog/admin/categories/${catId}`, { method: 'DELETE' }],
+    [`/catalog/admin/brands/${brandId}`, { method: 'PATCH', body: { name: 'Renamed' } }],
+    [`/catalog/admin/brands/${brandId}/verify`, { method: 'PATCH', body: { verified: true } }],
+    [`/catalog/admin/masters/${masterId}/deprecate`, { method: 'POST', body: {} }],
+    ['/catalog/admin/change-requests', {}],
+    [`/catalog/admin/change-requests/${crId2}/review`, { method: 'POST', body: { decision: 'approve' } }],
+  ];
+  for (const [path, opts] of lockedOut) {
+    r = await call(path, { token: ownerTok, ...opts });
+    assert.equal(r.status, 403, `store owner must be locked out of ${path}`);
+    assert.equal(r.body.code, 'FORBIDDEN');
+  }
+
+  // fresh ACTIVE master for the plan/race/revert cases below
+  r = await call('/catalog/admin/masters', {
+    method: 'POST', token: adminTok,
+    body: {
+      skuGlobal: 'GOV-1', type: 'fresh_flower', title: 'Governance Lily',
+      categoryId: catId, brandId,
+      attributes: [{ key: 'vase_life_days', value: '7' }, { key: 'color', value: 'white' }],
+    },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const masterGovId = r.body.data.id;
+
+  // 12b. free-plan tenants cannot file change requests or propose masters (402)
+  const tenantB = await Tenant.create({ name: 'Free Store', slug: 'free-store', status: 'active', plan: 'free' });
+  await TenantAuthConfig.create({ tenantId: tenantB.id });
+  const vendorB = await User.create({
+    tenantId: tenantB.id, phone: { number: '9876500003', verified: true }, status: 'active', role: 'vendor',
+  });
+  const vendBTok = (await AuthService.issueTokens(vendorB)).accessToken;
+  r = await call('/catalog/tenant/masters/propose', {
+    method: 'POST', token: vendBTok, tenantId: tenantB.id,
+    body: {
+      skuGlobal: 'FREE-1', type: 'fresh_flower', title: 'Free Rose',
+      categoryId: catId, brandId,
+      attributes: [{ key: 'vase_life_days', value: '5' }, { key: 'color', value: 'red' }],
+    },
+  });
+  assert.equal(r.status, 402, 'free plan must not propose masters');
+  assert.equal(r.body.code, 'PLAN_UPGRADE_REQUIRED');
+  assert.equal(r.body.details.feature, 'catalog_change_requests');
+  r = await call('/catalog/tenant/change-requests', {
+    method: 'POST', token: vendBTok, tenantId: tenantB.id,
+    body: { type: 'update_global_fields', productMasterId: masterGovId, diff: { after: { title: 'Hacked' } } },
+  });
+  assert.equal(r.status, 402, 'free plan must not file change requests');
+  assert.equal(r.body.code, 'PLAN_UPGRADE_REQUIRED');
+
+  // 12c. double-approve race: exactly one wins, single apply (no dup variants)
+  r = await call('/catalog/tenant/change-requests', {
+    method: 'POST', token: vendTok,
+    body: { type: 'add_variant', productMasterId: masterGovId, payload: { variant: { variantType: 'stem_count', value: '20' } } },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const raceId = r.body.data.id;
+  const [a1, a2] = await Promise.all([
+    call(`/catalog/admin/change-requests/${raceId}/review`, { method: 'POST', token: adminTok, body: { decision: 'approve' } }),
+    call(`/catalog/admin/change-requests/${raceId}/review`, { method: 'POST', token: adminTok, body: { decision: 'approve' } }),
+  ]);
+  assert.deepEqual([a1.status, a2.status].sort(), [200, 409], 'one approve wins, the other 409s');
+  const loser = a1.status === 409 ? a1 : a2;
+  assert.equal(loser.body.code, 'REQUEST_ALREADY_REVIEWED');
+  const variantCount = await ProductVariant.countDocuments({ productMasterId: masterGovId, value: '20' });
+  assert.equal(variantCount, 1, 'race must apply exactly once (no duplicate variant)');
+
+  // 12d. apply failure reverts to PENDING (retryable, never stranded approved)
+  r = await call('/catalog/tenant/change-requests', {
+    method: 'POST', token: vendTok,
+    body: { type: 'update_global_fields', productMasterId: masterGovId, diff: { after: { title: 'Doomed Title' } } },
+  });
+  const doomedId = r.body.data.id;
+  r = await call('/catalog/tenant/listings', {
+    method: 'POST', token: vendTok, body: { productMasterId: masterGovId, status: 'draft' },
+  });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const stagedId = r.body.data.id;
+  r = await call(`/catalog/admin/masters/${masterGovId}/deprecate`, { method: 'POST', token: adminTok, body: {} });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  r = await call(`/catalog/admin/change-requests/${doomedId}/review`, {
+    method: 'POST', token: adminTok, body: { decision: 'approve' },
+  });
+  assert.equal(r.status, 400, 'applying onto a deprecated master must fail');
+  assert.equal(r.body.code, 'MASTER_NOT_AVAILABLE');
+  const doomed = await ProductChangeRequest.findById(doomedId);
+  assert.equal(doomed.status, 'pending', 'failed apply reverts the claim to PENDING');
+  assert.equal(doomed.applyAttempts, 1);
+  assert.ok(doomed.lastApplyError?.message, 'apply failure is recorded for the queue');
+
+  // 12e. no zombie listings: activating onto a deprecated master 409s
+  r = await call(`/catalog/tenant/listings/${stagedId}/status`, {
+    method: 'PATCH', token: vendTok, body: { status: 'active', expectedVersion: 1 },
+  });
+  assert.equal(r.status, 409, 'activation onto a deprecated master must fail loudly');
+  assert.equal(r.body.code, 'MASTER_NOT_AVAILABLE');
 
   console.log('✅ ALL CATALOG SMOKE TESTS PASSED');
 

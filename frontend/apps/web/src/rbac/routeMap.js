@@ -10,9 +10,11 @@ export const ROUTE_ROLES = {
   '/': ['admin', 'super_admin'],
   '/no-access': ['customer', 'vendor', 'admin', 'rider', 'super_admin'],
   '/catalog': ['admin', 'super_admin'],
-  '/catalog/masters': ['admin', 'super_admin'],
-  '/catalog/categories': ['admin', 'super_admin'],
-  '/catalog/brands': ['admin', 'super_admin'],
+  // Global catalog ops (masters, taxonomy) are platform-only — store owners
+  // manage listings via /catalog and /catalog/ops (role-gated tabs inside).
+  '/catalog/masters': ['super_admin'],
+  '/catalog/categories': ['super_admin'],
+  '/catalog/brands': ['super_admin'],
   '/catalog/ops': ['admin', 'super_admin'],
   '/orders': ['admin', 'super_admin'],
   '/fulfillment': ['admin', 'super_admin'],
