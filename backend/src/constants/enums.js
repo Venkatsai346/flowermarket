@@ -45,7 +45,7 @@ export const TENANT_STATUS = Object.freeze({
 export const USER_ROLES = Object.freeze({
   CUSTOMER: 'customer', // default — same semantics as BigBasket end user
   VENDOR: 'vendor', // future: sell on the market (part of multi-tenant roadmap)
-  ADMIN: 'admin', // platform / tenant admin
+  ADMIN: 'admin', // tenant (store) admin — owns ONE store; platform-global writes require super_admin (see docs/catalog-governance.md)
   SUPER_ADMIN: 'super_admin', // platform operator across tenants
   PICKER: 'picker', // dark-store picker (fulfillment)
   RIDER: 'rider', // delivery rider
@@ -596,6 +596,7 @@ export const AUDIT_ACTION = Object.freeze({
   APPROVE: 'approve',
   REJECT: 'reject',
   DEPRECATE: 'deprecate',
+  CHANGE_REQUEST_APPLY_FAILED: 'change_request_apply_failed',
   VERIFY: 'verify',
   IMPORT: 'import',
   RESERVE: 'reserve',

@@ -3,7 +3,7 @@ import { Flower2, LogOut } from 'lucide-react';
 import { useAuthStore } from '@flower-market/shared';
 import { ROLE_META, initials, titleCase } from '@flower-market/shared';
 import { cn } from '../../lib/utils.js';
-import { GROUPS, groupsForRole } from '../../lib/nav.js';
+import { GROUPS, groupsForRole, itemsForRole } from '../../lib/nav.js';
 import Badge from '../ui/Badge.jsx';
 
 function SidebarNav() {
@@ -18,7 +18,7 @@ function SidebarNav() {
             {GROUPS[g].label}
           </p>
           <div className="space-y-0.5">
-            {GROUPS[g].items.map((item) => (
+            {itemsForRole(role, g).map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

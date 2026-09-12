@@ -32,9 +32,16 @@ import {
 const router = Router();
 
 /**
- * /catalog/admin — CENTRAL CATALOG OPS (ADMIN + SUPER_ADMIN).
+ * /catalog/admin — CENTRAL CATALOG OPS (SUPER_ADMIN ONLY).
+ *
+ * Everything behind this router mutates PLATFORM-GLOBAL state: masters,
+ * categories, brands and the change-request review queue carry no tenantId,
+ * so a single write here affects every store on the platform. Store owners
+ * (role `admin`) manage their own listings through /catalog/tenant and
+ * propose catalog changes through change requests — they must never reach
+ * these routes. See docs/catalog-governance.md for the access matrix.
  */
-router.use(authenticate, authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN));
+router.use(authenticate, authorize(USER_ROLES.SUPER_ADMIN));
 
 // ---- taxonomy ----
 router.post('/categories', validate(categoryCreateSchema), CatalogAdminController.createCategory);

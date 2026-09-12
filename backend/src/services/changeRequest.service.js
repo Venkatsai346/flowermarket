@@ -6,8 +6,15 @@ import ProductAttributeValue from '../models/productAttributeValue.model.js';
 import productMasterService from './productMaster.service.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
-import { badRequest, notFound, conflict, forbidden } from '../utils/ApiError.js';
-import { CHANGE_REQUEST_STATUS, CHANGE_REQUEST_TYPE } from '../constants/enums.js';
+import { badRequest, notFound } from '../utils/ApiError.js';
+import { CHANGE_REQUEST_STATUS, CHANGE_REQUEST_TYPE, PRODUCT_MASTER_STATUS } from '../constants/enums.js';
+import {
+  assertChangeRequestPlan,
+  assertReviewable,
+  assertCancellable,
+  assertRevisable,
+  assertMasterListable,
+} from '../utils/catalogGuards.js';
 
 /**
  * ChangeRequestService — the field-ownership approval workflow.
@@ -17,15 +24,36 @@ import { CHANGE_REQUEST_STATUS, CHANGE_REQUEST_TYPE } from '../constants/enums.j
  * Tenants may CANCELL their own pending requests.
  */
 class ChangeRequestService {
-  /** Submit a change request on behalf of a tenant. */
+  /**
+   * Submit a change request on behalf of a tenant.
+   *
+   * Paid plans only (Pro/Business → 402 otherwise): free tenants manage
+   * listings, catalog citizenship — proposing SKUs, spending review-queue
+   * time — is a paid feature. Unknown plan codes fail safe to free, i.e.
+   * gated (fail CLOSED for a paid feature). Non-create types also fail fast
+   * on a dead target instead of queueing a request that can never apply.
+   */
   async submit({ type, tenantId, actorId, productMasterId = null, payload = null, diff = null, note = null, req = null }) {
     if (!Object.values(CHANGE_REQUEST_TYPE).includes(type)) {
       throw badRequest('Invalid change request type', 'INVALID_REQUEST_TYPE');
     }
+    const { default: entitlementService } = await import('./entitlement.service.js');
+    const { code: planCode } = await entitlementService.planForTenant(tenantId);
+    assertChangeRequestPlan({ planCode });
+
     if (type === CHANGE_REQUEST_TYPE.CREATE_MASTER) {
       if (!payload?.title) throw badRequest('payload.title is required for create_master', 'PAYLOAD_INVALID');
-    } else if (!productMasterId) {
-      throw badRequest('productMasterId is required', 'PRODUCT_MASTER_REQUIRED');
+    } else {
+      if (!productMasterId) throw badRequest('productMasterId is required', 'PRODUCT_MASTER_REQUIRED');
+      const master = await ProductMaster.findById(productMasterId).select('status').lean();
+      if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+      if (type === CHANGE_REQUEST_TYPE.DEACTIVATE_MASTER) {
+        if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+          throw badRequest('Only an active master can be deactivated', 'MASTER_NOT_ACTIVE');
+        }
+      } else {
+        assertMasterListable(master);
+      }
     }
 
     const cr = await ProductChangeRequest.create({
@@ -49,24 +77,36 @@ class ChangeRequestService {
 
   /**
    * Admin review decision. On APPROVE, applies the request to the master.
+   *
+   * Race-proof in both directions:
+   * - CLAIM: PENDING → <decision> is ONE guarded update. Two admins acting
+   *   together cannot both win — the loser re-reads a non-pending row and
+   *   gets 409 REQUEST_ALREADY_REVIEWED instead of double-applying (which
+   *   would duplicate variants/images on the master).
+   * - REVERT: if the apply throws (target deleted or moved mid-flight), the
+   *   claim rolls back to PENDING with the failure recorded — retryable and
+   *   honest, instead of stranded as approved-but-unapplied (a lie the queue
+   *   cannot see, since nothing ever re-runs applies).
    */
   async review({ requestId, decision, actorId = null, note = null, req = null }) {
-    const cr = await ProductChangeRequest.findById(requestId);
-    if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
-    if (cr.status !== CHANGE_REQUEST_STATUS.PENDING) {
-      throw conflict(`Request is already ${cr.status}`, 'REQUEST_ALREADY_REVIEWED');
-    }
     if (!['approve', 'reject', 'needs_changes'].includes(decision)) {
       throw badRequest('Invalid decision', 'INVALID_DECISION');
     }
-
-    cr.status = {
+    const toStatus = {
       approve: CHANGE_REQUEST_STATUS.APPROVED,
       reject: CHANGE_REQUEST_STATUS.REJECTED,
       needs_changes: CHANGE_REQUEST_STATUS.NEEDS_CHANGES,
     }[decision];
-    cr.review = { reviewedBy: actorId, reviewedAt: new Date(), note };
-    await cr.save();
+
+    const cr = await ProductChangeRequest.findOneAndUpdate(
+      { _id: requestId, status: CHANGE_REQUEST_STATUS.PENDING },
+      { $set: { status: toStatus, review: { reviewedBy: actorId, reviewedAt: new Date(), note: note || null } } },
+      { new: true }
+    );
+    if (!cr) {
+      const current = await ProductChangeRequest.findById(requestId).select('status').lean();
+      assertReviewable(current); // throws NOT_FOUND or ALREADY_REVIEWED with the exact status
+    }
 
     await auditService.record({
       action: decision === 'approve' ? 'approve' : 'reject', entityType: 'product_change_request', entityId: cr.id,
@@ -75,7 +115,24 @@ class ChangeRequestService {
     });
 
     if (decision === 'approve') {
-      await this.applyRequest(cr, { actorId, req });
+      try {
+        await this.applyRequest(cr, { actorId, req });
+      } catch (err) {
+        await ProductChangeRequest.updateOne(
+          { _id: cr._id, status: CHANGE_REQUEST_STATUS.APPROVED },
+          {
+            $set: { status: CHANGE_REQUEST_STATUS.PENDING, lastApplyError: { message: err?.message || String(err), at: new Date() } },
+            $inc: { applyAttempts: 1 },
+          }
+        );
+        await auditService.record({
+          action: 'change_request_apply_failed', entityType: 'product_change_request', entityId: cr.id,
+          tenantId: cr.tenantId, actorId, actorType: 'admin',
+          before: { status: 'approved' }, after: { status: 'pending' },
+          meta: { error: err?.message || String(err), code: err?.code || null }, req,
+        });
+        throw err;
+      }
     }
 
     await catalogEventService.publish({
@@ -85,18 +142,23 @@ class ChangeRequestService {
     return cr;
   }
 
-  /** Tenant cancels their own pending request. */
+  /**
+   * Tenant cancels their own pending request. Guarded claim: a cancel racing
+   * an admin review cannot silently win — the loser re-derives the exact
+   * cause (already reviewed) instead of resurrecting or duplicating work.
+   */
   async cancel({ requestId, tenantId, actorId = null, req = null }) {
-    const cr = await ProductChangeRequest.findById(requestId);
-    if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
-    if (String(cr.tenantId) !== String(tenantId)) {
-      throw forbidden('Not your change request', 'FORBIDDEN');
+    const current = await ProductChangeRequest.findById(requestId).select('status tenantId').lean();
+    assertCancellable({ cr: current, tenantId });
+    const cr = await ProductChangeRequest.findOneAndUpdate(
+      { _id: requestId, tenantId, status: CHANGE_REQUEST_STATUS.PENDING },
+      { $set: { status: CHANGE_REQUEST_STATUS.CANCELLED } },
+      { new: true }
+    );
+    if (!cr) {
+      const reread = await ProductChangeRequest.findById(requestId).select('status tenantId').lean();
+      assertCancellable({ cr: reread, tenantId });
     }
-    if (cr.status !== CHANGE_REQUEST_STATUS.PENDING) {
-      throw conflict('Only pending requests can be cancelled', 'REQUEST_NOT_PENDING');
-    }
-    cr.status = CHANGE_REQUEST_STATUS.CANCELLED;
-    await cr.save();
     await auditService.record({
       action: 'update', entityType: 'product_change_request', entityId: cr.id,
       tenantId, actorId, actorType: 'tenant',
@@ -105,20 +167,32 @@ class ChangeRequestService {
     return cr;
   }
 
-  /** Tenant revises a NEEDS_CHANGES request (updates payload/diff, back to PENDING). */
+  /**
+   * Tenant revises a NEEDS_CHANGES request (updates payload/diff, back to
+   * PENDING). Same guarded-claim discipline as cancel; grandfathered for any
+   * plan — lifecycle on an already-filed request is never paywalled.
+   */
   async revise({ requestId, tenantId, actorId = null, payload = null, diff = null, note = null, req = null }) {
-    const cr = await ProductChangeRequest.findById(requestId);
-    if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
-    if (String(cr.tenantId) !== String(tenantId)) throw forbidden('Not your change request', 'FORBIDDEN');
-    if (cr.status !== CHANGE_REQUEST_STATUS.NEEDS_CHANGES) {
-      throw conflict('Only needs_changes requests can be revised', 'REQUEST_NOT_REVISABLE');
+    const current = await ProductChangeRequest.findById(requestId).select('status tenantId').lean();
+    assertRevisable({ cr: current, tenantId });
+    const $set = { status: CHANGE_REQUEST_STATUS.PENDING, review: {} };
+    if (payload) $set.payload = payload;
+    if (diff) $set.diff = diff;
+    if (note) $set.note = note;
+    const cr = await ProductChangeRequest.findOneAndUpdate(
+      { _id: requestId, tenantId, status: CHANGE_REQUEST_STATUS.NEEDS_CHANGES },
+      { $set },
+      { new: true }
+    );
+    if (!cr) {
+      const reread = await ProductChangeRequest.findById(requestId).select('status tenantId').lean();
+      assertRevisable({ cr: reread, tenantId });
     }
-    if (payload) cr.payload = payload;
-    if (diff) cr.diff = diff;
-    if (note) cr.note = note;
-    cr.status = CHANGE_REQUEST_STATUS.PENDING;
-    cr.review = {};
-    await cr.save();
+    await auditService.record({
+      action: 'update', entityType: 'product_change_request', entityId: cr.id,
+      tenantId, actorId, actorType: 'tenant',
+      before: { status: 'needs_changes' }, after: { status: cr.status }, req,
+    });
     return cr;
   }
 
@@ -140,6 +214,14 @@ class ChangeRequestService {
   // ---------------- apply approved requests ----------------
 
   async applyRequest(cr, { actorId = null, req = null } = {}) {
+    // Re-verify the target at apply time: the master may have been deprecated
+    // or deleted while the request sat in the queue. A throw here drives the
+    // review() revert (back to PENDING, attempt recorded) instead of patching
+    // a dead master or stranding an approved-but-unapplied request.
+    if (cr.type !== CHANGE_REQUEST_TYPE.CREATE_MASTER) {
+      const master = await ProductMaster.findById(cr.productMasterId).select('status').lean();
+      assertMasterListable(master);
+    }
     switch (cr.type) {
       case CHANGE_REQUEST_TYPE.CREATE_MASTER: {
         await productMasterService.reviewCreateMaster({
