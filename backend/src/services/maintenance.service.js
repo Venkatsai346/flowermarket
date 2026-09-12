@@ -101,6 +101,18 @@ class MaintenanceService {
       out.ledgerBackfill = { error: err?.message || String(err) };
     }
 
+    // 7b. Billing hardening — post any invoice_paid journal the pay path could
+    //     not write (crash, non-strict failure, or an invoice predating the
+    //     journal). Idempotent; zero-value invoices are skipped by design.
+    try {
+      out.invoiceBackfill = await ledgerPostingService.backfillInvoicePayments({
+        tenantId,
+        limit: opts.ledgerBackfillLimit || 500,
+      });
+    } catch (err) {
+      out.invoiceBackfill = { error: err?.message || String(err) };
+    }
+
     // 8. Phase 6.2 — retry IRN registration for documents the IRP rejected or
     //    that were issued while the GSP was unreachable. A document is legally
     //    issued the moment it is numbered, so this is a follow-up, never a

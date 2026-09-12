@@ -1,3 +1,4 @@
+import Invoice from '../models/invoice.model.js';
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
 import Vendor from '../models/vendor.model.js';
@@ -13,6 +14,8 @@ import {
   PAYMENT_METHOD,
   PAYMENT_PROVIDER,
   REFUND_DESTINATION,
+  INVOICE_LINE_TYPE,
+  INVOICE_STATUS,
 } from '../constants/enums.js';
 
 /**
@@ -118,6 +121,34 @@ export function isProgrammerError(err) {
     || err instanceof RangeError
     || err instanceof SyntaxError
   );
+}
+
+/**
+ * Split a paid platform invoice into journal legs. PURE: plain values in,
+ * paise out — `scripts/billing-calc.test.js` proves the split without a DB.
+ *
+ * The signed adjustment is DERIVED (total − fee − commission − GST) rather
+ * than read: adjustment LINES are display-only absolutes, while the invoice
+ * total carries the sign. The adjustment attributes to the subscription leg,
+ * floored at zero — an oversized credit eats the commission leg next — so
+ * every leg is non-negative and the legs always sum to the total exactly.
+ * Pre-GST invoices (no GST line) split identically with gstPaise 0.
+ */
+export function splitInvoicePaise({ lineItems = [], total = 0 } = {}) {
+  let feePaise = 0;
+  let commissionPaise = 0;
+  let gstPaise = 0;
+  for (const li of lineItems || []) {
+    const amt = toPaise(li?.amount ?? 0);
+    if (li?.type === INVOICE_LINE_TYPE.SUBSCRIPTION) feePaise += amt;
+    else if (li?.type === INVOICE_LINE_TYPE.COMMISSION) commissionPaise += amt;
+    else if (li?.type === INVOICE_LINE_TYPE.GST) gstPaise += amt;
+  }
+  const totalPaise = toPaise(total ?? 0);
+  const adjustmentSignedPaise = totalPaise - feePaise - commissionPaise - gstPaise;
+  const subscriptionPaise = Math.max(0, feePaise + adjustmentSignedPaise);
+  const commissionLegPaise = Math.max(0, totalPaise - gstPaise - subscriptionPaise);
+  return { totalPaise, subscriptionPaise, commissionPaise: commissionLegPaise, gstPaise, adjustmentSignedPaise };
 }
 
 export function isCodPayment(payment, order = null) {
@@ -338,6 +369,87 @@ class LedgerPostingService {
   }
 
   /**
+   * Post `invoice_paid` for a settled platform invoice. Idempotent on the
+   * invoice id, so a webhook replay, a saga retry or the backfill all converge.
+   *
+   *   DR  gateway_clearing                   invoice.total
+   *       CR  platform_subscription_income   fee + signed adjustment
+   *       CR  platform_commission_income     commission
+   *       CR  gst_output_payable:platform    GST on the platform's services
+   *
+   * The debit is gateway_clearing (not bank) for the same reason as sales: at
+   * capture time a PSP holds the money and settlement into `bank` is proven
+   * separately by the bank-statement reconciliation. Zero-value invoices post
+   * NOTHING (no money moved) and report `created:false` — the backfill skips
+   * them the same way.
+   */
+  async postInvoicePaid({ invoice, postedBy = null }) {
+    const split = splitInvoicePaise({ lineItems: invoice.lineItems, total: invoice.total });
+    if (split.totalPaise <= 0) return { journal: null, created: false, reason: 'zero_value' };
+
+    const lines = [
+      {
+        accountCode: ledgerAccounts.gatewayClearing(),
+        debitPaise: split.totalPaise,
+        refType: 'invoice',
+        refId: invoice._id,
+        memo: `invoice ${invoice.number} paid`,
+      },
+    ];
+    if (split.subscriptionPaise > 0) {
+      lines.push({
+        accountCode: ledgerAccounts.subscriptionIncome(),
+        creditPaise: split.subscriptionPaise,
+        refType: 'invoice',
+        refId: invoice._id,
+        memo: `plan fee${split.adjustmentSignedPaise !== 0 ? ' + adjustment' : ''}`,
+      });
+    }
+    if (split.commissionPaise > 0) {
+      lines.push({
+        accountCode: ledgerAccounts.commissionIncome(),
+        creditPaise: split.commissionPaise,
+        refType: 'invoice',
+        refId: invoice._id,
+        memo: 'commission on GMV',
+      });
+    }
+    if (split.gstPaise > 0) {
+      lines.push({
+        accountCode: ledgerAccounts.gstOutputPayable('platform'),
+        creditPaise: split.gstPaise,
+        refType: 'invoice',
+        refId: invoice._id,
+        memo: 'GST on platform services',
+      });
+    }
+
+    const creditsPaise = sumPaise(split.subscriptionPaise, split.commissionPaise, split.gstPaise);
+    if (creditsPaise !== split.totalPaise) {
+      throw new AppError(
+        `Invoice total (${fromPaise(split.totalPaise)}) does not match the sum of its legs (${fromPaise(creditsPaise)})`,
+        {
+          status: 422,
+          code: 'LEDGER_INVOICE_TOTAL_MISMATCH',
+          details: { invoiceId: String(invoice._id), ...split },
+        }
+      );
+    }
+
+    return ledgerService.post({
+      kind: LEDGER_JOURNAL_KIND.INVOICE_PAID,
+      idempotencyKey: this.invoicePaidKey(invoice._id),
+      lines,
+      refType: 'invoice',
+      refId: invoice._id,
+      tenantId: invoice.tenantId,
+      occurredAt: invoice.paidAt || new Date(),
+      postedBy,
+      meta: { number: invoice.number, total: invoice.total },
+    });
+  }
+
+  /**
    * Post `refund_issued` by reversing a proportional slice of the sale journal.
    *
    * We deliberately do NOT recompute which accounts to touch: we reverse what
@@ -397,6 +509,11 @@ class LedgerPostingService {
   }
   codDepositKey(paymentId) {
     return `cod_deposit:payment:${paymentId}`;
+  }
+
+  /** Canonical idempotency key for a platform-invoice payment journal. */
+  invoicePaidKey(invoiceId) {
+    return `${LEDGER_JOURNAL_KIND.INVOICE_PAID}:invoice:${invoiceId}`;
   }
 
   /**
@@ -695,6 +812,49 @@ class LedgerPostingService {
     }
 
     return { scanned: orders.length, posted, skipped, failures };
+  }
+
+  /**
+   * Post `invoice_paid` for settled platform invoices the live path missed
+   * (crash, non-strict failure, or an invoice predating the journal).
+   * Idempotent on the invoice id. Zero-value invoices are skipped by design —
+   * they have no journal because no money moved.
+   */
+  async backfillInvoicePayments({ from = null, to = null, limit = 500, tenantId = null } = {}) {
+    const q = {
+      status: INVOICE_STATUS.PAID,
+      total: { $gt: 0 },
+    };
+    if (tenantId) q.tenantId = tenantId;
+    if (from || to) {
+      q.paidAt = {
+        ...(from ? { $gte: new Date(from) } : {}),
+        ...(to ? { $lte: new Date(to) } : {}),
+      };
+    }
+
+    const invoices = await Invoice.find(q).sort({ paidAt: 1 }).limit(limit);
+    let posted = 0;
+    let skipped = 0;
+    const failures = [];
+
+    for (const invoice of invoices) {
+      const key = this.invoicePaidKey(invoice._id);
+      // sequential on purpose: the idempotency check must precede its own post
+      // eslint-disable-next-line no-await-in-loop
+      const exists = await LedgerJournal.exists({ idempotencyKey: key });
+      if (exists) { skipped += 1; continue; }
+      try {
+        // sequential on purpose: posts commit in turn so a failure is attributable per invoice
+        // eslint-disable-next-line no-await-in-loop
+        const { created } = await this.postInvoicePaid({ invoice });
+        if (created) posted += 1; else skipped += 1;
+      } catch (err) {
+        failures.push({ invoiceId: String(invoice._id), number: invoice.number, error: err.message, code: err.code });
+      }
+    }
+
+    return { scanned: invoices.length, posted, skipped, failures };
   }
 
   /**

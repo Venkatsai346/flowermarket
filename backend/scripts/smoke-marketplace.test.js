@@ -48,7 +48,7 @@ async function main() {
     'device.model.js', 'notificationTemplate.model.js', 'notification.model.js', 'exportJob.model.js', 'exportArtifact.model.js',
     // ---- Phase 5 ----
     'plan.model.js', 'subscription.model.js', 'tenantSubscription.model.js', 'invoice.model.js', 'vendorApplication.model.js', 'vendor.model.js',
-    'platformDaily.model.js', 'counter.model.js',
+    'platformDaily.model.js', 'counter.model.js', 'ledgerJournal.model.js',
   ];
   const models = await Promise.all(modelFiles.map((f) => import(`../src/models/${f}`)));
   const M = {};
@@ -407,14 +407,19 @@ async function main() {
   assert.equal(subLine.amount, 999, 'pro plan fee');
   const expectedComm = Math.round(gmvA * 0.01 * 100) / 100; // 100bps = 1%
   assert.equal(commLine.amount, expectedComm, `commission = 1% of GMV (${gmvA})`);
-  assert.equal(invA.total, Math.round((999 + expectedComm) * 100) / 100, 'total = fee + commission');
+  const gstLine = invA.lineItems.find((l) => l.type === 'gst');
+  const expectedGst = Math.round((999 + expectedComm) * 0.18 * 100) / 100; // 1800bps = 18%
+  assert.ok(gstLine, 'gst line present');
+  assert.equal(gstLine.amount, expectedGst, `gst = 18% of taxable (${999 + expectedComm})`);
+  assert.equal(invA.subtotal, Math.round((999 + expectedComm) * 100) / 100, 'subtotal = taxable (fee + commission)');
+  assert.equal(invA.total, Math.round((999 + expectedComm + expectedGst) * 100) / 100, 'total = fee + commission + GST');
   // cycle idempotent: re-run creates nothing new for the same period
   const invCountBefore = await M.Invoice.countDocuments({ tenantId: tenantA.id });
   r = await call('/marketplace/admin/billing/cycle', { method: 'POST', token: platTok });
   assert.equal(r.status, 200);
   const invCountAfter = await M.Invoice.countDocuments({ tenantId: tenantA.id });
   assert.equal(invCountAfter, invCountBefore, 'no duplicate invoices');
-  ok(`billing: invoice = ₹999 + 1% commission (${expectedComm}), cycle idempotent`);
+  ok(`billing: invoice = ₹999 + 1% commission (${expectedComm}) + 18% GST (${expectedGst}), cycle idempotent`);
 
   // plan change mid-period → prorated adjustment on the NEXT invoice
   r = await call('/marketplace/store/plan', { method: 'PATCH', token: ownerATok, body: { planCode: 'business' } });
@@ -471,6 +476,43 @@ async function main() {
   assert.equal(r.body.data.invoice.status, 'paid');
   r = await call(`/marketplace/store/invoices/${ownOpen.id}/pay`, { method: 'POST', token: ownerATok });
   assert.equal(r.body.data.status, 'already_paid', 'owner pay idempotent');
+
+  // ---- 5c. standing needs ZERO delinquents: one remaining overdue keeps the block ----
+  const subA5 = await M.TenantSubscription.findById(subAFresh.id);
+  assert.equal(subA5.status, 'active', 'all invoices paid → standing back to active');
+  // two fresh due periods → two fresh open invoices
+  subA5.periodStart = new Date(Date.now() - 60 * 86400000);
+  subA5.periodEnd = new Date(Date.now() - 30 * 86400000);
+  await subA5.save();
+  r = await call('/marketplace/admin/billing/cycle', { method: 'POST', token: platTok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const subA6 = await M.TenantSubscription.findById(subAFresh.id);
+  subA6.periodStart = new Date(Date.now() - 30 * 86400000);
+  subA6.periodEnd = new Date(Date.now() - 86400000);
+  await subA6.save();
+  r = await call('/marketplace/admin/billing/cycle', { method: 'POST', token: platTok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  const fresh2 = await M.Invoice.find({ tenantId: tenantA.id, status: 'open' }).sort({ createdAt: -1 }).limit(2);
+  assert.equal(fresh2.length, 2, 'two fresh open invoices');
+  await M.Invoice.updateMany({ _id: { $in: fresh2.map((i) => i._id) } }, { $set: { dueAt: new Date(Date.now() - 86400000) } });
+  r = await call('/marketplace/admin/billing/overdue-sweep', { method: 'POST', token: platTok });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.data.markedOverdue >= 2, `both invoices flagged overdue (${r.body.data.markedOverdue})`);
+  const subA7 = await M.TenantSubscription.findById(subAFresh.id);
+  assert.equal(subA7.status, 'past_due', 'two overdues → past_due');
+  // pay ONE of the two → still blocked (the closed loophole)
+  r = await call(`/marketplace/store/invoices/${fresh2[0].id}/pay`, { method: 'POST', token: ownerATok });
+  assert.equal(r.body.data.status, 'paid');
+  const subA8 = await M.TenantSubscription.findById(subAFresh.id);
+  assert.equal(subA8.status, 'past_due', 'one remaining overdue keeps past_due');
+  // pay the last one → unblocked, and an invoice_paid journal exists for each
+  r = await call(`/marketplace/store/invoices/${fresh2[1].id}/pay`, { method: 'POST', token: ownerATok });
+  assert.equal(r.body.data.status, 'paid');
+  const subA9 = await M.TenantSubscription.findById(subAFresh.id);
+  assert.equal(subA9.status, 'active', 'zero delinquents → active');
+  const journals = await M.LedgerJournal.countDocuments({ idempotencyKey: { $in: fresh2.map((i) => `invoice_paid:invoice:${i._id}`) } });
+  assert.equal(journals, 2, 'one invoice_paid journal per settled invoice');
+  ok('billing: standing needs zero delinquents; invoice_paid journals posted');
   // usage snapshot: business plan caps vs live counts
   r = await call('/marketplace/store/usage', { token: ownerATok });
   assert.equal(r.status, 200, JSON.stringify(r.body));

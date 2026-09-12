@@ -3,10 +3,22 @@
  *
  * - One live subscription per tenant (partial unique index).
  * - Invoices unique per (tenant, period.from, period.to) → the billing cycle
- *   is idempotent; re-running a period never duplicates.
+ *   is idempotent; re-running a period never duplicates (the unique index is
+ *   the backstop — generateInvoice() treats a duplicate-key race as
+ *   "someone else just created it" and returns the existing row).
  * - Plan change mid-period writes a pro-rata pendingAdjustment applied to the
  *   next invoice (then cleared). Pricing is snapshotted — history never mutates.
- * - Payments go through billingProvider (mock default).
+ * - Commission-rate changes are EFFECTIVE NEXT PERIOD (pendingCommissionRateBps,
+ *   applied on period advance): the current period always bills at the rate in
+ *   force when its sales happened. Only the fee difference is pro-rated now.
+ * - Invoice totals are SIGNED-correct: total = fee + commission + adjustment
+ *   (adjustment may be a credit) + GST on the taxable value.
+ * - Standing (trial/active/past_due) has ONE choke point: refreshStanding().
+ *   Paying clears past_due only when ZERO delinquent invoices remain; voiding
+ *   re-evaluates the same way. The overdue sweep additionally self-heals any
+ *   drift (an OVERDUE invoice whose subscription is not past_due).
+ * - Payments go through billingProvider (mock default). Zero-value invoices
+ *   never touch the gateway — they auto-finalise as paid at generation.
  */
 
 import TenantSubscription from '../models/tenantSubscription.model.js';
@@ -34,6 +46,62 @@ function addMonths(d, n = 1) {
   const nd = new Date(d);
   nd.setUTCMonth(nd.getUTCMonth() + n);
   return nd;
+}
+
+/** Live-subscription statuses — the only rows the cycle, sweep and guard read. */
+export const LIVE_SUB_STATUSES = Object.freeze([
+  TENANT_SUBSCRIPTION_STATUS.TRIAL,
+  TENANT_SUBSCRIPTION_STATUS.ACTIVE,
+  TENANT_SUBSCRIPTION_STATUS.PAST_DUE,
+]);
+
+/**
+ * Is this invoice delinquent RIGHT NOW? PURE: plain object + date in, boolean out.
+ *
+ * Delinquent = OVERDUE, or OPEN with its due date reached. An OPEN invoice whose
+ * due date is still in the future is a scheduled payment, not a debt — dunning
+ * must never fire on it. PAID/VOID/DRAFT are never delinquent.
+ * `scripts/billing-calc.test.js` locks every branch without a database.
+ */
+export function isInvoiceDelinquent(invoice, now = new Date()) {
+  if (!invoice) return false;
+  if (invoice.status === INVOICE_STATUS.OVERDUE) return true;
+  if (invoice.status !== INVOICE_STATUS.OPEN) return false;
+  if (!invoice.dueAt) return false;
+  return new Date(invoice.dueAt).getTime() <= new Date(now).getTime();
+}
+
+/**
+ * Standing transition for a delinquency count. PURE.
+ *
+ * - debt appears (count > 0) on a trial/active subscription → past_due.
+ * - debt fully clears (count == 0) on a past_due subscription → active.
+ * - everything else (incl. cancelled) is untouched: cancelling with debt does
+ *   NOT forgive the debt, and paying can never resurrect a cancelled row.
+ */
+export function standingFor({ currentStatus, delinquentCount }) {
+  if (delinquentCount > 0) {
+    if (currentStatus === TENANT_SUBSCRIPTION_STATUS.TRIAL || currentStatus === TENANT_SUBSCRIPTION_STATUS.ACTIVE) {
+      return TENANT_SUBSCRIPTION_STATUS.PAST_DUE;
+    }
+    return currentStatus;
+  }
+  if (currentStatus === TENANT_SUBSCRIPTION_STATUS.PAST_DUE) return TENANT_SUBSCRIPTION_STATUS.ACTIVE;
+  return currentStatus;
+}
+
+/**
+ * Invoice totals from signed components. PURE.
+ *
+ * The adjustment is SIGNED (a downgrade pro-rata is a credit): the taxable
+ * value is fee + commission + adjustment, floored at zero, and GST applies to
+ * that taxable value. Total = taxable + GST. Every figure is rounded to paise
+ * at the boundary so the journaliser never sees float dust.
+ */
+export function computeInvoiceTotals({ fee = 0, commission = 0, adjustmentSigned = 0, gstBps = 0 } = {}) {
+  const taxable = roundMoney(Math.max(0, (Number(fee) || 0) + (Number(commission) || 0) + (Number(adjustmentSigned) || 0)));
+  const gst = roundMoney((taxable * (Number(gstBps) || 0)) / 10000);
+  return { taxable, gst, total: roundMoney(taxable + gst) };
 }
 
 /**
@@ -103,7 +171,7 @@ class BillingService {
   async ensureSubscription({ tenantId, planCode, commissionRateBps = null, trialDays = 0, actorId = null, session = null }) {
     assertTenantSubscriptionSchema();
     const plan = await planService.getByCode(planCode);
-    const lookup = TenantSubscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
+    const lookup = TenantSubscription.findOne({ tenantId, status: { $in: LIVE_SUB_STATUSES } });
     if (session) lookup.session(session);
     const existing = await lookup;
     if (existing) return { subscription: existing, created: false };
@@ -132,18 +200,18 @@ class BillingService {
   }
 
   async currentSubscription({ tenantId }) {
-    return TenantSubscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } }).lean();
+    return TenantSubscription.findOne({ tenantId, status: { $in: LIVE_SUB_STATUSES } }).lean();
   }
 
   async subscriptionsForTenants(tenantIds) {
     if (!tenantIds.length) return [];
-    return TenantSubscription.find({ tenantId: { $in: tenantIds }, status: { $in: ['trial', 'active', 'past_due'] } }).lean();
+    return TenantSubscription.find({ tenantId: { $in: tenantIds }, status: { $in: LIVE_SUB_STATUSES } }).lean();
   }
 
   /** Plan change: snapshot updates now, price difference applies from next period. */
   async changePlan({ tenantId, planCode, actorId = null, req = null }) {
     const plan = await planService.getActiveByCode(planCode);
-    let sub = await TenantSubscription.findOne({ tenantId, status: { $in: ['trial', 'active', 'past_due'] } });
+    let sub = await TenantSubscription.findOne({ tenantId, status: { $in: LIVE_SUB_STATUSES } });
     if (!sub) {
       // existing store joining the marketplace: create its first subscription
       const res = await this.ensureSubscription({
@@ -178,7 +246,16 @@ class BillingService {
 
     sub.planCode = plan.code;
     sub.planSnapshot = { name: plan.name, priceMonthly: plan.priceMonthly };
-    sub.commissionRateBps = plan.commissionRateBps;
+    // Rate effective-dating: the CURRENT period keeps billing at the rate in
+    // force when its sales happened. Rewriting commissionRateBps here would
+    // retroactively re-price the whole period's GMV (upgrade on day 29 to halve
+    // the month's commission, or a downgrade that doubles it). The new rate
+    // waits in pendingCommissionRateBps and the cycle applies it when the
+    // period advances; last change in a period wins. Only the fee difference
+    // is pro-rated immediately, via pendingAdjustment.
+    if ((plan.commissionRateBps ?? null) !== (sub.commissionRateBps ?? null)) {
+      sub.pendingCommissionRateBps = plan.commissionRateBps ?? null;
+    }
     sub.pendingAdjustment = {
       amount: roundMoney((sub.pendingAdjustment?.amount || 0) + prorated),
       label: `Plan change ${before.planCode} → ${plan.code} (pro-rata)`,
@@ -198,9 +275,23 @@ class BillingService {
     await auditService.record({
       action: 'plan_change', entityType: 'subscription', entityId: sub._id,
       tenantId, actorId, actorType: 'admin',
-      before, after: { planCode: plan.code, priceMonthly: plan.priceMonthly, prorated }, req,
+      before,
+      after: {
+        planCode: plan.code,
+        priceMonthly: plan.priceMonthly,
+        prorated,
+        commissionRateBps: sub.commissionRateBps,
+        pendingCommissionRateBps: sub.pendingCommissionRateBps ?? null,
+        rateEffective: sub.pendingCommissionRateBps != null ? 'next_period' : 'unchanged',
+      },
+      req,
     }).catch(() => {});
-    return { subscription: sub, changed: true, prorated };
+    return {
+      subscription: sub,
+      changed: true,
+      prorated,
+      rateEffective: sub.pendingCommissionRateBps != null ? 'next_period' : 'unchanged',
+    };
   }
 
   // ---------------- invoices ----------------
@@ -241,7 +332,21 @@ class BillingService {
     return roundMoney(agg?.gmv || 0);
   }
 
-  /** Generate (or fetch) the invoice for a tenant's current period. Idempotent. */
+  /**
+   * Generate (or fetch) the invoice for a tenant's current period. Idempotent.
+   *
+   * Totals are signed-correct: taxable = fee + commission + adjustment (the
+   * adjustment may be a downgrade CREDIT), GST applies to the taxable value,
+   * total = taxable + GST. Line amounts stay non-negative for display — the
+   * sign lives in the label and in the totals math, never in a negative
+   * unitAmount (the schema forbids it, and a negative unit once crashed the
+   * whole cycle on downgrades).
+   *
+   * Race-proof: the unique (tenant, period.from, period.to) index is the real
+   * guard — two overlapping cycle runs (nightly + a manual admin trigger) both
+   * pass the findOne check, one wins the insert, and the loser catches the
+   * duplicate key and returns the winner's row instead of double-invoicing.
+   */
   async generateInvoice({ tenantId, sub, actorId = null, req = null }) {
     const from = sub.periodStart;
     const to = sub.periodEnd;
@@ -253,16 +358,17 @@ class BillingService {
     const lineItems = [];
 
     // 1. subscription fee (waived while the whole period was inside the trial)
-    const subFee = inTrial ? 0 : (sub.planSnapshot.priceMonthly || 0);
+    const subFee = inTrial ? 0 : (sub.planSnapshot?.priceMonthly || 0);
     lineItems.push({
       type: INVOICE_LINE_TYPE.SUBSCRIPTION,
-      label: inTrial ? `${sub.planSnapshot.name} — trial period (no charge)` : `${sub.planSnapshot.name} plan — monthly`,
+      label: inTrial ? `${sub.planSnapshot?.name || sub.planCode} — trial period (no charge)` : `${sub.planSnapshot?.name || sub.planCode} plan — monthly`,
       qty: 1,
       unitAmount: subFee,
       amount: subFee,
     });
 
-    // 2. platform commission on period GMV
+    // 2. platform commission on period GMV (at the CURRENT-period rate — a
+    // mid-period plan change never rewrites this; see changePlan)
     const commission = roundMoney((gmv * (sub.commissionRateBps || 0)) / 10000);
     lineItems.push({
       type: INVOICE_LINE_TYPE.COMMISSION,
@@ -272,92 +378,311 @@ class BillingService {
       amount: commission,
     });
 
-    // 3. pending adjustment (plan change pro-rata), then clear
-    if (sub.pendingAdjustment?.amount) {
+    // 3. pending adjustment (plan change pro-rata, signed), then clear
+    const adjustmentSigned = roundMoney(sub.pendingAdjustment?.amount || 0);
+    if (adjustmentSigned !== 0) {
+      const base = sub.pendingAdjustment.label || 'Adjustment';
       lineItems.push({
         type: INVOICE_LINE_TYPE.ADJUSTMENT,
-        label: sub.pendingAdjustment.label || 'Adjustment',
+        label: adjustmentSigned < 0 ? `${base} (credit)` : `${base} (charge)`,
         qty: 1,
-        unitAmount: sub.pendingAdjustment.amount,
-        amount: Math.abs(sub.pendingAdjustment.amount),
+        unitAmount: Math.abs(adjustmentSigned),
+        amount: Math.abs(adjustmentSigned),
       });
     }
 
-    const subtotal = roundMoney(lineItems.reduce((a, l) => a + l.amount, 0));
-    const total = roundMoney(subtotal + (sub.pendingAdjustment?.amount || 0)); // signed adjustment
-    const invoice = await Invoice.create({
-      tenantId,
-      number: await nextInvoiceNumber(),
-      period: { from, to },
-      dueAt: new Date(to.getTime() + config.marketplace.invoiceGraceDays * 86400000),
-      lineItems,
-      subtotal,
-      total: Math.max(0, total),
-      status: INVOICE_STATUS.OPEN,
-      generatedBy: actorId || null,
-    });
+    // 4. GST on the platform's own services (fee + commission + adjustment)
+    const gstBps = config.marketplace.invoiceGstBps || 0;
+    const { taxable, gst, total } = computeInvoiceTotals({ fee: subFee, commission, adjustmentSigned, gstBps });
+    if (gst > 0) {
+      lineItems.push({
+        type: INVOICE_LINE_TYPE.GST,
+        label: `GST ${(gstBps / 100).toFixed(0)}% on ${taxable.toFixed(2)}`,
+        qty: 1,
+        unitAmount: gst,
+        amount: gst,
+      });
+    }
+
+    // Zero-value invoices (full trial, or credits covering everything) never
+    // touch the gateway — a ₹0 Razorpay order would be rejected, and there is
+    // nothing to collect. They finalise as paid at birth, like Stripe's $0
+    // invoices. No ledger journal: no money moved, so there is nothing to book.
+    const zeroValue = total <= 0;
+    let invoice;
+    try {
+      invoice = await Invoice.create({
+        tenantId,
+        number: await nextInvoiceNumber(),
+        period: { from, to },
+        dueAt: new Date(to.getTime() + config.marketplace.invoiceGraceDays * 86400000),
+        lineItems,
+        subtotal: taxable,
+        total,
+        status: zeroValue ? INVOICE_STATUS.PAID : INVOICE_STATUS.OPEN,
+        paidAt: zeroValue ? new Date() : null,
+        paymentRef: zeroValue ? 'zero_value' : null,
+        generatedBy: actorId || null,
+      });
+    } catch (err) {
+      if (err?.code === 11000) {
+        const raced = await Invoice.findOne({ tenantId, 'period.from': from, 'period.to': to });
+        if (raced) return { invoice: raced, created: false };
+      }
+      throw err;
+    }
 
     // clear the applied adjustment
-    if (sub.pendingAdjustment?.amount) {
+    if (adjustmentSigned !== 0) {
       sub.pendingAdjustment = { amount: 0, label: null };
       await sub.save();
     }
 
     await auditService.record({
-      action: 'invoice_generated', entityType: 'invoice', entityId: invoice._id,
+      action: zeroValue ? 'invoice_auto_paid' : 'invoice_generated', entityType: 'invoice', entityId: invoice._id,
       tenantId, actorId, actorType: actorId ? 'admin' : 'system',
-      after: { number: invoice.number, total: invoice.total, gmv }, req,
+      after: { number: invoice.number, total: invoice.total, gmv, taxable, gst, zeroValue }, req,
     }).catch(() => {});
     return { invoice, created: true };
   }
 
-  /** Billing cycle: rollover statuses → invoice due periods → advance periods. */
+  /**
+   * Billing cycle: rollover statuses → invoice due periods → advance periods.
+   *
+   * Runs over a CURSOR (never a materialised array — the tenant table is
+   * unbounded) and isolates failures per subscription: one poisoned row is
+   * reported in `failures` and the cycle continues, so a single bad tenant
+   * can never starve every other tenant's invoicing again.
+   */
   async runBillingCycle({ tenantId = null, period = null, actorId = null, req = null } = {}) {
-    const q = { status: { $in: ['trial', 'active', 'past_due'] } };
+    const q = { status: { $in: LIVE_SUB_STATUSES } };
     if (tenantId) q.tenantId = tenantId;
-    const subs = await TenantSubscription.find(q);
+    const now = period ? new Date(period) : new Date();
 
+    let scanned = 0;
     let invoicesCreated = 0;
     let periodsAdvanced = 0;
+    const failures = [];
     const out = [];
-    for (const sub of subs) {
-      const due = sub.periodEnd <= (period ? new Date(period) : new Date());
-      if (!due) continue;
+    const cursor = TenantSubscription.find(q).cursor();
+    for await (const sub of cursor) {
+      scanned += 1;
+      try {
+        const due = sub.periodEnd <= now;
+        if (!due) continue;
 
-      const { created } = await this.generateInvoice({ tenantId: sub.tenantId, sub, actorId, req });
-      if (created) invoicesCreated += 1;
+        // sequential on purpose: per-tenant invoicing stays isolated so one poisoned row cannot starve the rest
+        // eslint-disable-next-line no-await-in-loop
+        const { created } = await this.generateInvoice({ tenantId: sub.tenantId, sub, actorId, req });
+        if (created) invoicesCreated += 1;
 
-      // advance the period
-      sub.periodStart = sub.periodEnd;
-      sub.periodEnd = addMonths(sub.periodEnd, 1);
-      // trial rollover: after the trial period, the subscription becomes active
-      if (sub.status === TENANT_SUBSCRIPTION_STATUS.TRIAL && sub.trialEndsAt && sub.trialEndsAt <= new Date()) {
-        sub.status = TENANT_SUBSCRIPTION_STATUS.ACTIVE;
+        // advance the period
+        sub.periodStart = sub.periodEnd;
+        sub.periodEnd = addMonths(sub.periodEnd, 1);
+        // a mid-period plan change takes its commission rate live NOW, on the
+        // fresh period — the closed period billed at the old rate (see
+        // changePlan's effective-dating note).
+        if (sub.pendingCommissionRateBps != null) {
+          const before = { commissionRateBps: sub.commissionRateBps };
+          sub.commissionRateBps = sub.pendingCommissionRateBps;
+          sub.pendingCommissionRateBps = null;
+          // sequential on purpose: the audit follows its own rate activation inside the same per-tenant step
+          // eslint-disable-next-line no-await-in-loop
+          await auditService.record({
+            action: 'commission_rate_effective', entityType: 'subscription', entityId: sub._id,
+            tenantId: sub.tenantId, actorId, actorType: actorId ? 'admin' : 'system',
+            before, after: { commissionRateBps: sub.commissionRateBps }, req,
+          }).catch(() => {});
+        }
+        // trial rollover: after the trial period, the subscription becomes active
+        if (sub.status === TENANT_SUBSCRIPTION_STATUS.TRIAL && sub.trialEndsAt && sub.trialEndsAt <= now) {
+          sub.status = TENANT_SUBSCRIPTION_STATUS.ACTIVE;
+        }
+        if (sub.cancelAtPeriodEnd) {
+          sub.status = TENANT_SUBSCRIPTION_STATUS.CANCELLED;
+          sub.cancelAtPeriodEnd = false;
+        }
+        // sequential on purpose: the period advance must persist after its invoice in the same per-tenant step
+        // eslint-disable-next-line no-await-in-loop
+        await sub.save();
+        periodsAdvanced += 1;
+        out.push({ tenantId: sub.tenantId, invoiceCreated: created, advanced: true });
+      } catch (err) {
+        failures.push({ tenantId: String(sub.tenantId), error: err?.message || String(err), code: err?.code || null });
       }
-      if (sub.cancelAtPeriodEnd) {
-        sub.status = TENANT_SUBSCRIPTION_STATUS.CANCELLED;
-        sub.cancelAtPeriodEnd = false;
-      }
-      await sub.save();
-      periodsAdvanced += 1;
-      out.push({ tenantId: sub.tenantId, invoiceCreated: created, advanced: true });
     }
-    return { scanned: subs.length, invoicesCreated, periodsAdvanced, out };
+    return { scanned, invoicesCreated, periodsAdvanced, failures, out };
   }
 
-  /** Overdue sweep: open invoices past due+grace → overdue; subscriptions → past_due. */
-  async overdueSweep({ req = null } = {}) {
-    const cutoff = new Date(Date.now() - config.marketplace.invoiceGraceDays * 86400000);
-    const overdue = await Invoice.find({ status: INVOICE_STATUS.OPEN, dueAt: { $lte: cutoff } });
-    for (const inv of overdue) {
-      inv.status = INVOICE_STATUS.OVERDUE;
-      await inv.save();
-      await TenantSubscription.updateOne(
-        { tenantId: inv.tenantId, status: { $in: ['trial', 'active'] } },
-        { $set: { status: TENANT_SUBSCRIPTION_STATUS.PAST_DUE, changedAt: new Date() } }
-      );
+  /**
+   * Every delinquent invoice for a tenant (OVERDUE, or OPEN past its due date).
+   * Lean rows: callers only ever need the count, the total owed, and the ids.
+   */
+  async delinquentInvoices({ tenantId, now = new Date() }) {
+    return Invoice.find({
+      tenantId,
+      $or: [
+        { status: INVOICE_STATUS.OVERDUE },
+        { status: INVOICE_STATUS.OPEN, dueAt: { $lte: now } },
+      ],
+    }).select('_id number total status dueAt').lean();
+  }
+
+  /**
+   * THE standing choke point — the ONLY writer of trial/active ↔ past_due.
+   *
+   * Recomputes a tenant's standing from the CURRENT delinquency count and
+   * transitions it via standingFor(): debt appears → past_due; debt FULLY
+   * clears → active. Paying one invoice while older ones stay overdue therefore
+   * keeps the block — the loophole where ANY single payment cleared past_due
+   * is closed here, once, for every caller (pay confirm, webhook confirm, void,
+   * sweep). Transitions are audited with the before/after and the amount owed.
+   */
+  async refreshStanding({ tenantId, actorId = null, actorType = 'system', reason = null, req = null }) {
+    const now = new Date();
+    const delinquent = await this.delinquentInvoices({ tenantId, now });
+    const delinquentTotal = roundMoney(delinquent.reduce((a, d) => a + (Number(d.total) || 0), 0));
+    const sub = await TenantSubscription.findOne({ tenantId, status: { $in: LIVE_SUB_STATUSES } });
+    if (!sub) return { status: null, changed: false, delinquentCount: delinquent.length, delinquentTotal };
+    const next = standingFor({ currentStatus: sub.status, delinquentCount: delinquent.length });
+    if (next === sub.status) {
+      return { status: sub.status, changed: false, delinquentCount: delinquent.length, delinquentTotal };
     }
-    return { markedOverdue: overdue.length };
+    const before = sub.status;
+    sub.status = next;
+    sub.changedAt = now;
+    await sub.save();
+    await auditService.record({
+      action: 'subscription_standing', entityType: 'subscription', entityId: sub._id,
+      tenantId, actorId, actorType,
+      before: { status: before },
+      after: { status: next, delinquentCount: delinquent.length, delinquentTotal, reason }, req,
+    }).catch(() => {});
+    return { status: next, changed: true, delinquentCount: delinquent.length, delinquentTotal };
+  }
+
+  /**
+   * Overdue sweep, in two passes (both idempotent, both bounded):
+   *
+   * 1. TRANSITIONS — OPEN invoices whose due date has passed flip to OVERDUE
+   *    and the owner gets ONE dunning notice per invoice (dedupeKey-keyed, so
+   *    re-runs never double-notify). Single grace: the invoice's own dueAt
+   *    (period end + invoiceGraceDays) is the deadline — the sweep no longer
+   *    stacks a second hidden grace window on top of it.
+   * 2. SELF-HEAL — any tenant holding an OVERDUE invoice whose subscription is
+   *    not past_due is moved there (covers pre-hardening rows and any drift:
+   *    after this pass, "OVERDUE invoice ⇒ past_due subscription" holds
+   *    platform-wide, always).
+   *
+   * Standing itself is written only through refreshStanding().
+   */
+  async overdueSweep({ req = null, limit = 2000 } = {}) {
+    const now = new Date();
+    let markedOverdue = 0;
+    let notified = 0;
+    const touched = new Set();
+    const failures = [];
+
+    const cursor = Invoice.find({ status: INVOICE_STATUS.OPEN, dueAt: { $lte: now } })
+      .select('_id tenantId number total dueAt')
+      .limit(limit)
+      .cursor();
+    for await (const inv of cursor) {
+      try {
+        // atomic guard: a concurrent pay-confirm may have just taken it
+        // sequential on purpose: guarded flips commit in turn per invoice; the cursor keeps it bounded
+        // eslint-disable-next-line no-await-in-loop
+        const flipped = await Invoice.updateOne(
+          { _id: inv._id, status: INVOICE_STATUS.OPEN },
+          { $set: { status: INVOICE_STATUS.OVERDUE } }
+        );
+        if (flipped.modifiedCount === 0) continue; // paid/voided under us — not ours to flag
+        markedOverdue += 1;
+        touched.add(String(inv.tenantId));
+        // sequential on purpose: one dunning notice per flipped invoice, in turn
+        // eslint-disable-next-line no-await-in-loop
+        const sent = await this.notifyInvoiceOverdue({ invoice: inv }).catch(() => false);
+        if (sent) {
+          notified += 1;
+          // sequential on purpose: stamps the notice just sent for this invoice
+          // eslint-disable-next-line no-await-in-loop
+          await Invoice.updateOne({ _id: inv._id }, { $set: { lastReminderAt: now } }).catch(() => {});
+        }
+      } catch (err) {
+        failures.push({ invoiceId: String(inv._id), error: err?.message || String(err) });
+      }
+    }
+
+    let transitions = 0;
+    for (const tenantId of touched) {
+      try {
+        // sequential on purpose: standing transitions commit one tenant at a time
+        // eslint-disable-next-line no-await-in-loop
+        const r = await this.refreshStanding({ tenantId, reason: 'overdue_sweep', req });
+        if (r.changed) transitions += 1;
+      } catch (err) {
+        failures.push({ tenantId, error: err?.message || String(err) });
+      }
+    }
+
+    // pass 2 — self-heal: OVERDUE invoices must imply past_due, no exceptions
+    let healed = 0;
+    try {
+      const holders = await Invoice.aggregate([
+        { $match: { status: INVOICE_STATUS.OVERDUE } },
+        { $group: { _id: '$tenantId' } },
+        { $limit: 10000 },
+      ]);
+      const holderIds = holders.map((h) => h._id);
+      if (holderIds.length) {
+        const res = await TenantSubscription.updateMany(
+          { tenantId: { $in: holderIds }, status: { $in: [TENANT_SUBSCRIPTION_STATUS.TRIAL, TENANT_SUBSCRIPTION_STATUS.ACTIVE] } },
+          { $set: { status: TENANT_SUBSCRIPTION_STATUS.PAST_DUE, changedAt: now } }
+        );
+        healed = res.modifiedCount || 0;
+        if (healed > 0) {
+          await auditService.record({
+            action: 'subscription_standing_heal', entityType: 'subscription', entityId: null,
+            tenantId: null, actorId: null, actorType: 'system',
+            after: { healed, reason: 'overdue_sweep_self_heal' }, req,
+          }).catch(() => {});
+        }
+      }
+    } catch (err) {
+      failures.push({ tenantId: '*', error: err?.message || String(err) });
+    }
+
+    return { markedOverdue, notified, transitions, healed, failures };
+  }
+
+  /**
+   * ONE dunning notice per invoice to the store owner (template `invoice_overdue`,
+   * platform default; a tenant may override the copy). Never throws — a
+   * notification failure must not fail the sweep — and reports whether this
+   * run actually created the notice (re-runs dedupe to `duplicate`).
+   */
+  async notifyInvoiceOverdue({ invoice }) {
+    try {
+      const tenant = await Tenant.findById(invoice.tenantId).select('ownerUserId name slug').lean();
+      const ownerUserId = tenant?.ownerUserId;
+      if (!ownerUserId) return false;
+      const { default: notificationService } = await import('./notification.service.js');
+      const r = await notificationService.dispatch({
+        tenantId: invoice.tenantId,
+        userId: ownerUserId,
+        templateCode: 'invoice_overdue',
+        data: {
+          storeName: tenant?.name || tenant?.slug || 'your store',
+          invoiceNumber: invoice.number,
+          total: Number(invoice.total || 0).toFixed(2),
+          dueDate: invoice.dueAt ? new Date(invoice.dueAt).toISOString().slice(0, 10) : '',
+        },
+        dedupeKey: `invoice_overdue:${invoice._id}`,
+      });
+      return r.created === true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -407,21 +732,53 @@ class BillingService {
     return { status: 'paid', invoice, alreadyPaid: false, pending: false };
   }
 
-  /** Mark an invoice paid (shared by sync charge + async webhook confirm). */
+  /**
+   * Mark an invoice paid (shared by sync charge + async webhook confirm).
+   *
+   * Concurrency-proof: the status flip is ONE guarded update, so two racing
+   * confirms (webhook retry + owner re-pay) cannot both "win" — the loser
+   * re-reads, sees PAID, and returns idempotently. Ordering is deliberate:
+   * money-state first, standing second, books third. The journal post can only
+   * fail on something the nightly `backfillInvoicePayments()` repairs, while a
+   * standing update skipped by a throw would strand a paying tenant in
+   * past_due — so standing refreshes BEFORE the journal is attempted.
+   */
   async confirmInvoicePayment({ invoice, paymentRef }) {
-    if (invoice.status === INVOICE_STATUS.PAID) return invoice;
+    if (invoice.status === INVOICE_STATUS.PAID) {
+      await this.refreshStanding({ tenantId: invoice.tenantId, reason: 'invoice_reconfirm' }).catch(() => {});
+      return invoice;
+    }
     if (invoice.status === INVOICE_STATUS.VOID) throw conflict('Void invoice cannot be paid', 'INVOICE_VOID');
-    invoice.status = INVOICE_STATUS.PAID;
-    invoice.paidAt = new Date();
-    invoice.paymentRef = paymentRef || invoice.paymentRef;
-    await invoice.save();
 
-    // paying clears past_due
-    await TenantSubscription.updateOne(
-      { tenantId: invoice.tenantId, status: TENANT_SUBSCRIPTION_STATUS.PAST_DUE },
-      { $set: { status: TENANT_SUBSCRIPTION_STATUS.ACTIVE, changedAt: new Date() } }
+    const now = new Date();
+    const won = await Invoice.updateOne(
+      { _id: invoice._id, status: { $in: [INVOICE_STATUS.OPEN, INVOICE_STATUS.OVERDUE] } },
+      { $set: { status: INVOICE_STATUS.PAID, paidAt: now, paymentRef: paymentRef || invoice.paymentRef || null } }
     );
-    return invoice;
+    let fresh = await Invoice.findById(invoice._id);
+    if (won.modifiedCount === 0) {
+      // lost the race — whoever won defines the outcome, we just report it
+      if (fresh?.status === INVOICE_STATUS.PAID) {
+        await this.refreshStanding({ tenantId: fresh.tenantId, reason: 'invoice_reconfirm' }).catch(() => {});
+        return fresh;
+      }
+      throw conflict('Invoice is no longer payable', 'INVOICE_RACE', { status: fresh?.status || null });
+    }
+
+    // standing BEFORE books (see the ordering note above): the block lifts
+    // only when this was the LAST delinquent invoice.
+    await this.refreshStanding({ tenantId: fresh.tenantId, reason: 'invoice_paid' }).catch(() => {});
+
+    // recognise the money: DR gateway_clearing / CR subscription + commission
+    // income + platform GST. Idempotent on the invoice id; safePost keeps a
+    // transient ledger failure from failing an already-captured payment, and
+    // the nightly backfill posts whatever the live path missed.
+    const { default: ledgerPostingService } = await import('./ledgerPosting.service.js');
+    await ledgerPostingService.safePost('invoice_paid', () =>
+      ledgerPostingService.postInvoicePaid({ invoice: fresh })
+    );
+
+    return fresh;
   }
 
   async voidInvoice({ invoiceId, actorId = null, req = null }) {
@@ -430,10 +787,14 @@ class BillingService {
     if (invoice.status === INVOICE_STATUS.PAID) throw conflict('Paid invoices cannot be voided', 'INVOICE_PAID');
     invoice.status = INVOICE_STATUS.VOID;
     await invoice.save();
+    // voiding forgives THIS invoice's debt, so standing must be re-derived:
+    // voiding the last delinquent invoice unblocks checkout, voiding one of
+    // several keeps the block. Same choke point as payment — no special cases.
+    const standing = await this.refreshStanding({ tenantId: invoice.tenantId, actorId, actorType: 'admin', reason: 'invoice_void', req }).catch(() => null);
     await auditService.record({
       action: 'invoice_void', entityType: 'invoice', entityId: invoice._id,
       tenantId: invoice.tenantId, actorId, actorType: 'admin',
-      after: { number: invoice.number }, req,
+      after: { number: invoice.number, standing: standing?.status || null }, req,
     }).catch(() => {});
     return invoice;
   }
@@ -477,7 +838,7 @@ class BillingService {
   /** MRR: sum of live subscriptions' snapshot price. */
   async mrr() {
     const [agg] = await TenantSubscription.aggregate([
-      { $match: { status: { $in: ['trial', 'active', 'past_due'] } } },
+      { $match: { status: { $in: LIVE_SUB_STATUSES } } },
       { $group: { _id: null, mrr: { $sum: '$planSnapshot.priceMonthly' } } },
     ]);
     return roundMoney(agg?.mrr || 0);

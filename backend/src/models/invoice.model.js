@@ -45,6 +45,7 @@ const InvoiceSchema = new Schema(
     paidAt: { type: Date, default: null },
     paymentRef: { type: String, default: null },
     generatedBy: { type: Types.ObjectId, ref: 'User', default: null },
+    lastReminderAt: { type: Date, default: null }, // dunning: last overdue notice dispatch
   },
   { collection: 'invoices' }
 );

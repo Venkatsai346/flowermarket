@@ -3,6 +3,62 @@
 All notable changes to the API are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/)
 
+## [Unreleased] — Billing hardening: dunning integrity, GST, invoice journals
+
+### Fixed — the collection loopholes are closed
+- **Paying ANY one invoice cleared `past_due`, even with older overdues
+  outstanding** — and the sweep only fired on OPEN→OVERDUE transitions, so the
+  block never came back. Standing now has ONE choke point
+  (`refreshStanding()`): the block lifts if and only if ZERO delinquent
+  invoices remain, for pay-confirms, webhook confirms, and voids alike.
+- **Voiding an overdue invoice left the subscription `past_due` forever.**
+  Void now re-derives standing: voiding the last delinquent unblocks,
+  voiding one of several keeps the block.
+- **Double grace window**: the sweep stacked a second 7-day lag on top of the
+  invoice's own `dueAt` (period end + 7d), so "due Apr 8" really meant
+  "flagged ~Apr 15". Single explicit grace now: anything past `dueAt` is
+  flagged on the next nightly run.
+- **Upgrade pro-rata was double-charged** (`total = subtotal + signed`
+  counted a +₹200 adjustment twice) and **downgrade pro-rata crashed invoice
+  creation** (negative `unitAmount` vs the schema's `min: 0`, aborting the
+  whole cycle). Totals are signed-correct
+  (`taxable = fee + commission + adjustment`, GST on taxable), and the cycle
+  isolates failures per subscription over a cursor.
+- **Mid-period plan changes retroactively re-priced the whole period's GMV**
+  (upgrade on day 29 to halve the month's commission). Commission rates are
+  now effective NEXT period (`pendingCommissionRateBps`, applied on advance);
+  only the fee difference is pro-rated immediately.
+- **Concurrent cycle runs could double-invoice a period** (findOne→create
+  race). The unique (tenant, period) index is now the backstop: the loser
+  catches the duplicate key and returns the winner's row.
+- **Platform invoice/credit-note PDFs rendered 1/100th amounts** (rupee
+  floats passed into `*Paise` fields) and never detected void invoices
+  (`'voided'` vs the enum's `'void'`). Both fixed.
+- `POST /cart/checkout` now trips on TWO wires: `past_due` subscription OR
+  any delinquent invoice — so cancelled-with-debt, pre-hardening, and drifted
+  rows still block.
+
+### Added
+- **GST on platform invoices**: `GST` line at `MARKETPLACE_INVOICE_GST_BPS`
+  (default 1800 = 18%, 0 disables) on fee + commission + adjustment; trial
+  commission is taxed, waived fees are not. Totals, PDFs, journals, and the
+  marketplace smoke all cover it.
+- **`invoice_paid` ledger journals**: every settlement posts
+  DR gateway_clearing / CR subscription income + commission income +
+  `gst_output_payable:platform` (new `platform_subscription_income` account),
+  idempotent per invoice, with nightly `backfillInvoicePayments()` repair.
+  Zero-value invoices auto-finalise as paid (no gateway, no journal).
+- **Dunning notices**: the overdue sweep dispatches ONE `invoice_overdue`
+  notice per invoice to the store owner (dedupe-keyed; new platform-default
+  template, tenant-overridable) and stamps `lastReminderAt`.
+- **Sweep self-heal**: after flagging transitions, the sweep enforces
+  "OVERDUE invoice ⇒ past_due subscription" platform-wide, healing drift.
+- New pure gate `test:billing` (14 checks, in `test` + `test:unit` +
+  `smoke:all`) locks invoice totals, the delinquency predicate, standing
+  transitions, and journal splits without a database; the marketplace smoke
+  gains section 5c (two overdues → pay one → still blocked → pay all →
+  active + journals).
+
 ## [Unreleased] — Storefront content (brands, categories, rich store pages)
 
 ### Fixed — storefront-content follow-ups

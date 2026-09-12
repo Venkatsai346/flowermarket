@@ -29,6 +29,7 @@ const TenantSubscriptionSchema = new Schema(
       priceMonthly: { type: Number, default: 0, min: 0 },
     },
     commissionRateBps: { type: Number, default: 100, min: 0, max: 10000 },
+    pendingCommissionRateBps: { type: Number, default: null, min: 0, max: 10000 }, // next-period rate: changePlan never rewrites the current period's rate
     currency: { type: String, default: 'INR' },
 
     status: {
