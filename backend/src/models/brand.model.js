@@ -9,7 +9,7 @@ import mongoose from 'mongoose';
 import { softDeletePlugin, auditPlugin, toJSONPlugin } from './plugins/index.js';
 import { ENTITY_STATUS, BRAND_VERIFICATION_STATUS } from '../constants/enums.js';
 
-const { Schema, Types } = mongoose;
+const { Schema } = mongoose;
 
 const ComplianceDocSchema = new Schema(
   {
@@ -49,7 +49,11 @@ const BrandSchema = new Schema(
   { collection: 'brands' }
 );
 
-BrandSchema.index({ slug: 1 }, { unique: true });
+// Soft-delete-aware: a deleted brand releases its slug (migration 003).
+BrandSchema.index(
+  { slug: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 BrandSchema.index({ status: 1, 'verification.isVerified': 1 });
 
 BrandSchema.plugin(auditPlugin);

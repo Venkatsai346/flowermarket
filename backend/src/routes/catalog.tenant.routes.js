@@ -14,6 +14,8 @@ import {
   changeRequestCreateSchema,
   changeRequestQuerySchema,
   idParamSchema,
+  stockSetSchema,
+  stockAdjustSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -44,11 +46,16 @@ router.patch('/listings/:id/status', validate(idParamSchema, 'params'), validate
 router.post('/listings/:id/deactivate', validate(idParamSchema, 'params'), CatalogTenantController.deactivateListing);
 
 // ---- inventory ----
+// NOTE (F-12): the tenant-facing reserve/release endpoints were removed.
+// `qtyReserved` is display/hold state — but the checkout saga commits
+// directly against `qtyOnHand` (see inventoryService.commitForOrder), so a
+// tenant-writable reservation with no order linkage or TTL let a store pin
+// arbitrary stock and make displayed availability diverge from what
+// checkout can actually sell. The service-level reserve/release remain for
+// internal (order-driven) use; expose them again only with hold expiry.
 router.get('/listings/:id/stock', validate(idParamSchema, 'params'), CatalogTenantController.getStock);
-router.put('/listings/:id/stock', validate(idParamSchema, 'params'), CatalogTenantController.setStock);
-router.patch('/listings/:id/stock', validate(idParamSchema, 'params'), CatalogTenantController.adjustStock);
-router.post('/listings/:id/stock/reserve', validate(idParamSchema, 'params'), CatalogTenantController.reserveStock);
-router.post('/listings/:id/stock/release', validate(idParamSchema, 'params'), CatalogTenantController.releaseStock);
+router.put('/listings/:id/stock', validate(idParamSchema, 'params'), validate(stockSetSchema), CatalogTenantController.setStock);
+router.patch('/listings/:id/stock', validate(idParamSchema, 'params'), validate(stockAdjustSchema), CatalogTenantController.adjustStock);
 
 // ---- change requests ----
 router.post('/change-requests', validate(changeRequestCreateSchema), CatalogTenantController.submitChangeRequest);

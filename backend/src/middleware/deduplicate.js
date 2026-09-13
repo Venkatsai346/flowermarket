@@ -4,13 +4,21 @@
  * Problem: mobile networks can retry POST requests on timeout, causing
  * duplicate orders, payments, or other side effects.
  *
- * Solution: for write requests (POST/PUT/PATCH), check an idempotency key.
- * If a request with the same key is already in-flight, return the cached
- * response. If it completed, return the cached result.
+ * Strategies:
+ *   1. Idempotency-Key header (explicit — client sends a UUID): applies to
+ *      every write method. The client is ASKING for idempotency semantics.
+ *   2. Content fingerprint (implicit — hash of scope+method+path+body):
+ *      applies to POST ONLY. Rationale: the classic blind-retry failure is a
+ *      duplicated CREATE; PUT/PATCH are either naturally idempotent (set) or
+ *      deliberately repeatable (a second +10 stock adjustment is real intent,
+ *      not a retry), so silently returning the first response there would be
+ *      a lost update, not a protection.
  *
- * Two strategies:
- *   1. Idempotency-Key header (explicit — client sends a UUID)
- *   2. Content fingerprint (implicit — hash of method+path+body)
+ * SCOPING (cross-tenant safety): the key space is scoped by host + tenant
+ * header + a hash of the Authorization header. Two different tenants (or two
+ * different users of the same tenant) can never collide on each other's
+ * cached responses — a shared key would have returned tenant A's create
+ * response (with A's ids) to tenant B.
  *
  * Storage: in-memory Map with TTL. For multi-process deployments,
  * swap to Redis (the interface is identical: get/set/delete with TTL).
@@ -34,6 +42,19 @@ const inflight = new Map();
 const SKIP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const SKIP_PATHS = /^\/(healthz|readyz|metrics|api\/v1\/health)/;
 
+/** Per-actor key prefix: host + tenant header + auth hash. */
+function scopePrefix(req) {
+  const host = String(req.headers.host || '');
+  const tenantHeader = String(req.headers['x-tenant-id'] || req.headers['x-tenant-slug'] || '');
+  const auth = typeof req.headers.authorization === 'string' ? req.headers.authorization : '';
+  const scope = crypto
+    .createHash('sha256')
+    .update(`${host}|${tenantHeader}|${auth}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `s:${scope}`;
+}
+
 /**
  * Deduplication middleware.
  *
@@ -51,25 +72,31 @@ export function deduplicate(opts = {}) {
     if (SKIP_PATHS.test(req.path)) return next();
 
     // Find idempotency key from headers
-    let key = null;
+    let explicit = null;
     for (const h of headers) {
       const v = req.headers[h];
       if (v && typeof v === 'string' && v.length <= 200) {
-        key = v;
+        explicit = v;
         break;
       }
     }
 
-    // Fallback: content fingerprint (no key header)
-    if (!key) {
+    // Implicit fingerprint: POST only (see strategy 2 in the file header).
+    let fingerprint = null;
+    if (!explicit && req.method === 'POST') {
       const body = req.body ? JSON.stringify(req.body) : '';
-      const hash = crypto
+      fingerprint = crypto
         .createHash('sha256')
         .update(`${req.method}:${req.originalUrl}:${body}`)
         .digest('hex')
         .slice(0, 16);
-      key = `fp:${hash}`;
     }
+
+    // No explicit key and no eligible method → nothing to dedup.
+    let key = null;
+    if (explicit) key = `${scopePrefix(req)}:k:${explicit}`;
+    else if (fingerprint) key = `${scopePrefix(req)}:fp:${fingerprint}`;
+    if (!key) return next();
 
     // Check for completed response
     const cached = cache.get(key);

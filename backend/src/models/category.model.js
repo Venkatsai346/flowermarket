@@ -62,7 +62,12 @@ const CategorySchema = new Schema(
   { collection: 'categories' }
 );
 
-CategorySchema.index({ slug: 1 }, { unique: true });
+// Soft-delete-aware: a deleted category releases its slug (migration 003
+// drops the legacy full-unique index).
+CategorySchema.index(
+  { slug: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 CategorySchema.index({ status: 1, parentId: 1, sortOrder: 1 });
 
 CategorySchema.plugin(auditPlugin);

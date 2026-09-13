@@ -90,11 +90,23 @@ const ProductMasterSchema = new Schema(
   { collection: 'productmasters' }
 );
 
-ProductMasterSchema.index({ skuGlobal: 1 }, { unique: true });
-ProductMasterSchema.index({ slug: 1 }, { unique: true });
+// Unique constraints are SOFT-DELETE-AWARE (partial on isDeleted: false): a
+// soft-deleted row releases its key, so a deleted master can be re-created
+// with the same SKU/slug. Migration 003 drops the legacy full-unique indexes.
+ProductMasterSchema.index(
+  { skuGlobal: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
+ProductMasterSchema.index(
+  { slug: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 ProductMasterSchema.index(
   { barcode: 1 },
-  { unique: true, partialFilterExpression: { barcode: { $type: 'string' } } }
+  {
+    unique: true,
+    partialFilterExpression: { $and: [{ barcode: { $type: 'string' } }, { isDeleted: false }] },
+  }
 );
 ProductMasterSchema.index({ categoryId: 1, status: 1 });
 ProductMasterSchema.index({ brandId: 1, status: 1 });

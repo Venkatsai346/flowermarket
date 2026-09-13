@@ -1,7 +1,7 @@
 import TokenService from '../utils/jwt.js';
 import { unauthorized } from '../utils/ApiError.js';
 import User from '../models/user.model.js';
-import { USER_STATUS } from '../constants/enums.js';
+import { USER_STATUS, USER_ROLES } from '../constants/enums.js';
 
 /**
  * authenticate — validates the Bearer access token and loads the user.
@@ -28,24 +28,32 @@ export async function authenticate(req, res, next) {
 
     // Super-admin is platform-scoped: they can still act after suspending
     // the tenant their token was minted on (admin header stays alive).
-    if (
-      payload.tenant
-      && req.tenantId
-      && String(payload.tenant) !== String(req.tenantId)
-      && payload.role !== 'super_admin'
-    ) {
-      throw unauthorized('Token does not belong to this tenant', 'TENANT_MISMATCH');
-    }
-
+    // Checked against the LIVE role below (a demoted super_admin loses the
+    // exemption immediately), falling back to the token claim only when the
+    // user doc lacks a role field.
     const user = await User.findById(payload.sub).select('+isDeleted');
     if (!user) throw unauthorized('Account not found', 'USER_NOT_FOUND');
     if (user.status === USER_STATUS.BLOCKED) throw unauthorized('Account is blocked', 'ACCOUNT_BLOCKED');
     if (user.status === USER_STATUS.DELETED || user.isDeleted) throw unauthorized('Account no longer exists', 'ACCOUNT_DELETED');
 
+    // RBAC runs on the LIVE role, not the role frozen into the JWT:
+    // a demoted admin is demoted on the very next request, without waiting
+    // for token expiry. (The token claim remains the fallback for docs
+    // without a role field, and the exemption check uses the same live value.)
+    const liveRole = user.role || payload.role || null;
+    if (
+      payload.tenant
+      && req.tenantId
+      && String(payload.tenant) !== String(req.tenantId)
+      && liveRole !== USER_ROLES.SUPER_ADMIN
+    ) {
+      throw unauthorized('Token does not belong to this tenant', 'TENANT_MISMATCH');
+    }
+
     req.auth = {
       userId: payload.sub,
       tenantId: payload.tenant || null,
-      role: payload.role || null,
+      role: liveRole,
       iat: payload.iat || null,
     };
     req.user = user;

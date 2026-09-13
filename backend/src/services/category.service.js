@@ -34,6 +34,50 @@ class CategoryService {
     return cat;
   }
 
+  /**
+   * Walk UP from `startId` through parentId refs; returns true if we reach
+   * `targetId` — i.e. targetId is startId's ancestor (or startId itself).
+   * Bounded: a pre-existing (legacy) cycle in the data must not loop the
+   * checker forever — the visited set makes it terminate.
+   */
+  async isAncestorOrSelf(startId, targetId, { maxHops = 100 } = {}) {
+    let cur = startId;
+    const seen = new Set();
+    for (let hop = 0; hop <= maxHops && cur; hop += 1) {
+      const key = String(cur);
+      if (seen.has(key)) return false; // legacy cycle — stop
+      seen.add(key);
+      if (key === String(targetId)) return true;
+      const row = await Category.findById(cur).select('parentId').lean();
+      cur = row?.parentId || null;
+    }
+    return false;
+  }
+
+  /** Recompute denormalized `level` for `id` and every descendant (BFS). */
+  async recomputeLevels(id, baseLevel = 0) {
+    let frontier = [{ _id: id, level: baseLevel }];
+    let processed = 0;
+    while (frontier.length) {
+      const next = [];
+      // eslint-disable-next-line no-await-in-loop
+      const rows = await Category.find({
+        parentId: { $in: frontier.map((f) => f._id) },
+      }).select('_id parentId').lean();
+      const levelOf = new Map(frontier.map((f) => [String(f._id), f.level]));
+      for (const r of rows) {
+        const lvl = (levelOf.get(String(r.parentId)) ?? 0) + 1;
+        // eslint-disable-next-line no-await-in-loop
+        await Category.updateOne({ _id: r._id }, { $set: { level: lvl } });
+        processed += 1;
+        next.push({ _id: r._id, level: lvl });
+      }
+      frontier = next;
+      if (processed > 10_000) break; // pathological guard
+    }
+    return processed;
+  }
+
   async update({ id, patch, actorId = null, req = null }) {
     const cat = await Category.findById(id);
     if (!cat) throw notFound('Category not found', 'CATEGORY_NOT_FOUND');
@@ -43,8 +87,12 @@ class CategoryService {
     if (patch.parentId && String(patch.parentId) !== String(cat.parentId || '')) {
       const parent = await Category.findById(patch.parentId);
       if (!parent) throw notFound('Parent category not found', 'CATEGORY_NOT_FOUND');
-      if (String(parent.parentId || '') === String(id)) {
-        throw badRequest('Cannot move a category under its own child', 'CATEGORY_CYCLE');
+      // FULL ancestor walk (the old check only caught DIRECT children):
+      // moving a node under ANY of its descendants — or under itself —
+      // creates a cycle that made the public category tree 500 (infinite
+      // recursion) and the admin tree vanish.
+      if (await this.isAncestorOrSelf(patch.parentId, id)) {
+        throw badRequest('Cannot move a category under itself or its own descendant', 'CATEGORY_CYCLE');
       }
       patch.level = (parent.level || 0) + 1;
     }
@@ -53,8 +101,13 @@ class CategoryService {
       patch.level = 0;
     }
 
+    const oldParentKey = cat.parentId ? String(cat.parentId) : '';
     Object.assign(cat, patch);
     await cat.save();
+    const newParentKey = cat.parentId ? String(cat.parentId) : '';
+    // A reparented subtree carries STALE `level` values on every descendant
+    // (level is denormalized depth) — recompute the whole subtree.
+    if (oldParentKey !== newParentKey) await this.recomputeLevels(id, cat.level || 0);
     await auditService.record({
       action: 'update', entityType: 'category', entityId: cat.id,
       actorId, actorType: 'admin', before, after: { name: cat.name, slug: cat.slug, status: cat.status }, req,
@@ -76,7 +129,12 @@ class CategoryService {
     return { items: docs, meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
-  /** Full tree (bounded recursion via parent refs). */
+  /**
+   * Full tree (bounded recursion via parent refs).
+   * Cycle-safe: legacy data could contain a parent cycle (pre-fix moves);
+   * the visited set guarantees termination — a cyclic branch is pruned
+   * instead of taking the endpoint down.
+   */
   async tree({ includeInactive = false } = {}) {
     const q = {};
     if (!includeInactive) q.status = { $ne: 'inactive' };
@@ -87,11 +145,16 @@ class CategoryService {
       if (!byParent.has(key)) byParent.set(key, []);
       byParent.get(key).push(c);
     }
-    const attach = (cat) => {
+    const attach = (cat, seen) => {
       const children = byParent.get(String(cat._id)) || [];
-      return { ...cat, children: children.map(attach) };
+      const visited = new Set(seen);
+      visited.add(String(cat._id));
+      return {
+        ...cat,
+        children: children.filter((ch) => !visited.has(String(ch._id))).map((ch) => attach(ch, visited)),
+      };
     };
-    return (byParent.get('root') || []).map(attach);
+    return (byParent.get('root') || []).map((c) => attach(c, new Set()));
   }
 
   async getById(id) {

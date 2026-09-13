@@ -1,21 +1,89 @@
 import ProductChangeRequest from '../models/productChangeRequest.model.js';
 import ProductMaster from '../models/productMaster.model.js';
-import ProductVariant from '../models/productVariant.model.js';
-import ProductImage from '../models/productImage.model.js';
-import ProductAttributeValue from '../models/productAttributeValue.model.js';
 import productMasterService from './productMaster.service.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import { badRequest, notFound, conflict, forbidden } from '../utils/ApiError.js';
-import { CHANGE_REQUEST_STATUS, CHANGE_REQUEST_TYPE } from '../constants/enums.js';
+import {
+  CHANGE_REQUEST_STATUS,
+  CHANGE_REQUEST_TYPE,
+  VARIANT_TYPE,
+} from '../constants/enums.js';
 
 /**
  * ChangeRequestService — the field-ownership approval workflow.
  *
  * Flow: tenant submits request (PENDING) -> admin approves (applies diff) /
- * rejects (reason) / needs_changes (tenant revises & resubmits).
- * Tenants may CANCELL their own pending requests.
+ * rejects (reason) / needs_changes (tenant revises & resubmit).
+ * Tenants may CANCEL their own pending requests.
+ *
+ * REVIEW SAFETY (the two failure modes this workflow must never have):
+ *   1. DOUBLE APPLY — two admins click Approve concurrently (or a webhook
+ *      retries). The decision is claimed with an ATOMIC
+ *      findOneAndUpdate({ _id, status: PENDING }); exactly one caller can
+ *      claim, the loser gets REQUEST_ALREADY_REVIEWED. (The catalog outbox
+ *      in the same codebase uses the same leased-claim pattern.)
+ *   2. APPROVED-BUT-NOT-APPLIED — the apply step throws after the decision
+ *      is stored. We therefore claim FIRST, apply SECOND, and on apply
+ *      failure COMPENSATE: the request returns to PENDING with
+ *      lastApplyError set, so the admin sees why and can re-decide. A
+ *      successful apply stamps `appliedAt`, and a re-approval of an
+ *      already-applied request SKIPS the apply (idempotent — an image set
+ *      is never added twice).
+ *
+ * PAYLOAD TRUST: tenants submit `payload`/`diff` as free-form JSON (it is
+ * their proposal). Every apply branch therefore re-validates the exact
+ * shape it consumes BEFORE touching the master; the master itself only ever
+ * receives whitelisted global fields (see applyGlobalPatch).
  */
+
+/** Shape guards for tenant-submitted apply payloads (fail fast, 400-able). */
+const ATTR_KEY_RX = /^[a-z0-9_]+$/;
+
+function assertAttributesShape(attrs) {
+  if (!Array.isArray(attrs)) throw badRequest('payload.attributes must be an array', 'PAYLOAD_INVALID');
+  if (attrs.length > 40) throw badRequest('At most 40 attributes per master', 'PAYLOAD_INVALID');
+  for (const a of attrs) {
+    if (!a || typeof a !== 'object' || typeof a.key !== 'string' || !ATTR_KEY_RX.test(a.key)
+      || typeof a.value !== 'string' || !a.value.length || a.value.length > 200) {
+      throw badRequest('Each attribute needs { key: a-z0-9_ , value: non-empty string ≤200 }', 'PAYLOAD_INVALID');
+    }
+    if (a.unit !== undefined && a.unit !== null && typeof a.unit !== 'string') {
+      throw badRequest('attribute.unit must be a string', 'PAYLOAD_INVALID');
+    }
+  }
+}
+
+function assertVariantShape(variant) {
+  if (!variant || typeof variant !== 'object' || Array.isArray(variant)) {
+    throw badRequest('payload.variant must be an object', 'PAYLOAD_INVALID');
+  }
+  if (typeof variant.variantType !== 'string' || !Object.values(VARIANT_TYPE).includes(variant.variantType)) {
+    throw badRequest('payload.variant.variantType is invalid', 'PAYLOAD_INVALID');
+  }
+  if (typeof variant.value !== 'string' || !variant.value.trim() || variant.value.length > 80) {
+    throw badRequest('payload.variant.value must be a non-empty string ≤80', 'PAYLOAD_INVALID');
+  }
+  if (variant.images !== undefined && !Array.isArray(variant.images)) {
+    throw badRequest('payload.variant.images must be an array', 'PAYLOAD_INVALID');
+  }
+  for (const img of variant.images || []) {
+    assertImageShape(img);
+  }
+}
+
+function assertImageShape(img) {
+  if (!img || typeof img !== 'object' || Array.isArray(img)) {
+    throw badRequest('Each image must be an object', 'PAYLOAD_INVALID');
+  }
+  if (typeof img.url !== 'string' || !img.url.trim()) {
+    throw badRequest('Each image needs a non-empty url', 'PAYLOAD_INVALID');
+  }
+  if (img.altText !== undefined && img.altText !== null && (typeof img.altText !== 'string' || img.altText.length > 200)) {
+    throw badRequest('image.altText must be a string ≤200', 'PAYLOAD_INVALID');
+  }
+}
+
 class ChangeRequestService {
   /** Submit a change request on behalf of a tenant. */
   async submit({ type, tenantId, actorId, productMasterId = null, payload = null, diff = null, note = null, req = null }) {
@@ -49,40 +117,82 @@ class ChangeRequestService {
 
   /**
    * Admin review decision. On APPROVE, applies the request to the master.
+   *
+   * Atomic claim + compensating rollback — see the class doc.
    */
   async review({ requestId, decision, actorId = null, note = null, req = null }) {
-    const cr = await ProductChangeRequest.findById(requestId);
-    if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
-    if (cr.status !== CHANGE_REQUEST_STATUS.PENDING) {
-      throw conflict(`Request is already ${cr.status}`, 'REQUEST_ALREADY_REVIEWED');
-    }
     if (!['approve', 'reject', 'needs_changes'].includes(decision)) {
       throw badRequest('Invalid decision', 'INVALID_DECISION');
     }
-
-    cr.status = {
+    const decided = {
       approve: CHANGE_REQUEST_STATUS.APPROVED,
       reject: CHANGE_REQUEST_STATUS.REJECTED,
       needs_changes: CHANGE_REQUEST_STATUS.NEEDS_CHANGES,
     }[decision];
-    cr.review = { reviewedBy: actorId, reviewedAt: new Date(), note };
-    await cr.save();
 
-    await auditService.record({
-      action: decision === 'approve' ? 'approve' : 'reject', entityType: 'product_change_request', entityId: cr.id,
-      tenantId: cr.tenantId, actorId, actorType: 'admin',
-      before: { status: 'pending' }, after: { status: cr.status }, meta: { note, type: cr.type }, req,
-    });
-
-    if (decision === 'approve') {
-      await this.applyRequest(cr, { actorId, req });
+    // ---- ATOMIC CLAIM: exactly one concurrent reviewer can win ----
+    const claimed = await ProductChangeRequest.findOneAndUpdate(
+      { _id: requestId, status: CHANGE_REQUEST_STATUS.PENDING },
+      { $set: { status: decided, review: { reviewedBy: actorId, reviewedAt: new Date(), note } } },
+      { new: true }
+    );
+    if (!claimed) {
+      const existing = await ProductChangeRequest.findById(requestId);
+      if (!existing) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
+      throw conflict(`Request is already ${existing.status}`, 'REQUEST_ALREADY_REVIEWED');
     }
 
-    await catalogEventService.publish({
-      eventType: 'change_request_reviewed', entityType: 'product_change_request', entityId: cr.id,
-      tenantId: cr.tenantId, payload: { id: cr.id, decision, status: cr.status, type: cr.type },
+    if (decision === 'reject' && claimed.type === CHANGE_REQUEST_TYPE.CREATE_MASTER && claimed.productMasterId) {
+      // Mirror the rejection onto the proposed master — otherwise a rejected
+      // proposal would linger PENDING_REVIEW forever (its listings staged by
+      // the tenant could even be activated). Tolerate the master having
+      // already left PENDING_REVIEW (e.g. admin reviewed it directly first).
+      try {
+        await productMasterService.reviewCreateMaster({
+          masterId: claimed.productMasterId, decision: 'reject', actorId, note: claimed.review?.note, req,
+        });
+      } catch (err) {
+        if (err?.code !== 'NOT_PENDING_REVIEW') throw err;
+      }
+    }
+
+    if (decision === 'approve') {
+      try {
+        await this.applyRequest(claimed, { actorId, req });
+        // Idempotency stamp: a later re-approval must never apply twice.
+        await ProductChangeRequest.updateOne(
+          { _id: claimed.id, status: CHANGE_REQUEST_STATUS.APPROVED },
+          { $set: { appliedAt: new Date(), lastApplyError: null } }
+        );
+      } catch (err) {
+        // COMPENSATE: the master was (partially) not updated; give the
+        // decision back to the queue with the reason so it is retryable
+        // instead of stuck in APPROVED-never-applied.
+        await ProductChangeRequest.updateOne(
+          { _id: claimed.id, status: CHANGE_REQUEST_STATUS.APPROVED },
+          {
+            $set: {
+              status: CHANGE_REQUEST_STATUS.PENDING,
+              lastApplyError: String(err?.code || err?.message || err).slice(0, 500),
+              review: { reviewedBy: null, reviewedAt: null, note: null },
+            },
+          }
+        ).catch(() => {});
+        throw err;
+      }
+    }
+
+    await auditService.record({
+      action: decision === 'approve' ? 'approve' : 'reject', entityType: 'product_change_request', entityId: claimed.id,
+      tenantId: claimed.tenantId, actorId, actorType: 'admin',
+      before: { status: 'pending' }, after: { status: claimed.status }, meta: { note, type: claimed.type }, req,
     });
-    return cr;
+
+    await catalogEventService.publish({
+      eventType: 'change_request_reviewed', entityType: 'product_change_request', entityId: claimed.id,
+      tenantId: claimed.tenantId, payload: { id: claimed.id, decision, status: claimed.status, type: claimed.type },
+    });
+    return claimed;
   }
 
   /** Tenant cancels their own pending request. */
@@ -92,34 +202,42 @@ class ChangeRequestService {
     if (String(cr.tenantId) !== String(tenantId)) {
       throw forbidden('Not your change request', 'FORBIDDEN');
     }
-    if (cr.status !== CHANGE_REQUEST_STATUS.PENDING) {
-      throw conflict('Only pending requests can be cancelled', 'REQUEST_NOT_PENDING');
-    }
-    cr.status = CHANGE_REQUEST_STATUS.CANCELLED;
-    await cr.save();
+    // Same atomic-claim discipline as review: only one actor can flip it.
+    const claimed = await ProductChangeRequest.findOneAndUpdate(
+      { _id: requestId, status: CHANGE_REQUEST_STATUS.PENDING },
+      { $set: { status: CHANGE_REQUEST_STATUS.CANCELLED } },
+      { new: true }
+    );
+    if (!claimed) throw conflict('Only pending requests can be cancelled', 'REQUEST_NOT_PENDING');
     await auditService.record({
       action: 'update', entityType: 'product_change_request', entityId: cr.id,
       tenantId, actorId, actorType: 'tenant',
-      before: { status: 'pending' }, after: { status: cr.status }, req,
+      before: { status: 'pending' }, after: { status: claimed.status }, req,
     });
-    return cr;
+    return claimed;
   }
 
   /** Tenant revises a NEEDS_CHANGES request (updates payload/diff, back to PENDING). */
+  // eslint-disable-next-line no-unused-vars -- actorId/req kept for call-site symmetry with the other CR verbs
   async revise({ requestId, tenantId, actorId = null, payload = null, diff = null, note = null, req = null }) {
     const cr = await ProductChangeRequest.findById(requestId);
     if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
     if (String(cr.tenantId) !== String(tenantId)) throw forbidden('Not your change request', 'FORBIDDEN');
-    if (cr.status !== CHANGE_REQUEST_STATUS.NEEDS_CHANGES) {
-      throw conflict('Only needs_changes requests can be revised', 'REQUEST_NOT_REVISABLE');
-    }
-    if (payload) cr.payload = payload;
-    if (diff) cr.diff = diff;
-    if (note) cr.note = note;
-    cr.status = CHANGE_REQUEST_STATUS.PENDING;
-    cr.review = {};
-    await cr.save();
-    return cr;
+    const claimed = await ProductChangeRequest.findOneAndUpdate(
+      { _id: requestId, status: CHANGE_REQUEST_STATUS.NEEDS_CHANGES },
+      {
+        $set: {
+          ...(payload ? { payload } : {}),
+          ...(diff ? { diff } : {}),
+          ...(note ? { note } : {}),
+          status: CHANGE_REQUEST_STATUS.PENDING,
+          review: {},
+        },
+      },
+      { new: true }
+    );
+    if (!claimed) throw conflict('Only needs_changes requests can be revised', 'REQUEST_NOT_REVISABLE');
+    return claimed;
   }
 
   async list({ tenantId = null, query = {}, isAdmin = false } = {}) {
@@ -139,7 +257,14 @@ class ChangeRequestService {
 
   // ---------------- apply approved requests ----------------
 
+  /**
+   * Apply the request to the master. Idempotent across re-approval: if
+   * `appliedAt` is already set, the apply step is a no-op.
+   * Every branch validates the tenant-supplied payload shape first.
+   */
   async applyRequest(cr, { actorId = null, req = null } = {}) {
+    if (cr.appliedAt) return; // already applied (re-approval after rollback)
+
     switch (cr.type) {
       case CHANGE_REQUEST_TYPE.CREATE_MASTER: {
         await productMasterService.reviewCreateMaster({
@@ -148,19 +273,26 @@ class ChangeRequestService {
         break;
       }
       case CHANGE_REQUEST_TYPE.UPDATE_GLOBAL_FIELDS: {
+        if (!cr.diff?.after || typeof cr.diff.after !== 'object') {
+          throw badRequest('update_global_fields requires diff.after', 'PAYLOAD_INVALID');
+        }
         const master = await ProductMaster.findById(cr.productMasterId);
         if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
-        await productMasterService.applyGlobalPatch(master, cr.diff?.after || {}, { actorId, note: cr.review?.note, req });
+        await productMasterService.applyGlobalPatch(master, cr.diff.after, { actorId, note: cr.review?.note, req });
         break;
       }
       case CHANGE_REQUEST_TYPE.UPDATE_ATTRIBUTES: {
+        assertAttributesShape(cr.payload?.attributes);
         await productMasterService.setAttributes({
-          id: cr.productMasterId, attributes: cr.payload?.attributes || [], viaRequest: true, actorId, req,
+          id: cr.productMasterId, attributes: cr.payload.attributes, viaRequest: true, actorId, req,
         });
         break;
       }
       case CHANGE_REQUEST_TYPE.UPDATE_IMAGES: {
-        for (const img of cr.payload?.images || []) {
+        if (!Array.isArray(cr.payload?.images)) throw badRequest('payload.images must be an array', 'PAYLOAD_INVALID');
+        for (const img of cr.payload.images) assertImageShape(img);
+        for (const img of cr.payload.images) {
+          // eslint-disable-next-line no-await-in-loop
           await productMasterService.addImage({
             id: cr.productMasterId, payload: img, viaRequest: true, actorId, req,
           });
@@ -168,8 +300,9 @@ class ChangeRequestService {
         break;
       }
       case CHANGE_REQUEST_TYPE.ADD_VARIANT: {
+        assertVariantShape(cr.payload?.variant);
         await productMasterService.addVariant({
-          id: cr.productMasterId, payload: cr.payload?.variant || {}, viaRequest: true, actorId, req,
+          id: cr.productMasterId, payload: cr.payload.variant, viaRequest: true, actorId, req,
         });
         break;
       }

@@ -222,28 +222,30 @@ async function main() {
   assert.ok(historyCount >= 1, 'price history must be recorded');
 
   // ================= 7. atomic inventory reserve / release =================
+  // NOTE: the tenant-facing reserve/release HTTP endpoints were removed
+  // (F-12) — checkout commits straight against qtyOnHand. The ATOMIC guard
+  // itself is exercised here at the service level, the way order-saga code
+  // actually uses it.
+  const { default: inventoryService } = await import('../src/services/inventory.service.js');
   const inv = await Inventory.findOne({ tenantProductId: listingId });
   assert.ok(inv, 'inventory row must exist');
   assert.equal(inv.qtyOnHand, 50);
 
   // reserve 10 -> available 40
-  r = await call(`/catalog/tenant/listings/${listingId}/stock/reserve`, {
-    method: 'POST', token: vendTok, body: { qty: 10, orderRef: 'TEST-ORDER-1' },
-  });
-  assert.equal(r.status, 200, JSON.stringify(r.body));
+  await inventoryService.reserve({ tenantId: tenant.id, listingId, qty: 10, orderRef: 'TEST-ORDER-1' });
+  const invMid = await Inventory.findOne({ tenantProductId: listingId });
+  assert.equal(invMid.qtyReserved, 10);
+  assert.equal(invMid.qtyOnHand, 50);
 
   // over-reserve must fail atomically
-  r = await call(`/catalog/tenant/listings/${listingId}/stock/reserve`, {
-    method: 'POST', token: vendTok, body: { qty: 999, orderRef: 'TEST-ORDER-2' },
-  });
-  assert.equal(r.status, 409, 'over-reservation must fail');
-  assert.equal(r.body.code, 'INSUFFICIENT_STOCK');
+  await assert.rejects(
+    () => inventoryService.reserve({ tenantId: tenant.id, listingId, qty: 999, orderRef: 'TEST-ORDER-2' }),
+    (e) => e.code === 'INSUFFICIENT_STOCK',
+    'over-reservation must fail'
+  );
 
   // release 10 -> available back to 50
-  r = await call(`/catalog/tenant/listings/${listingId}/stock/release`, {
-    method: 'POST', token: vendTok, body: { qty: 10, orderRef: 'TEST-ORDER-1' },
-  });
-  assert.equal(r.status, 200, JSON.stringify(r.body));
+  await inventoryService.release({ tenantId: tenant.id, listingId, qty: 10, orderRef: 'TEST-ORDER-1' });
 
   const invAfter = await Inventory.findOne({ tenantProductId: listingId });
   assert.equal(invAfter.qtyReserved, 0);
