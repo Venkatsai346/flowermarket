@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BadgeCheck, Pencil, Plus, ShieldCheck, Trash2, Truck } from 'lucide-react';
+import { BadgeCheck, Pencil, Plus, ShieldCheck, Trash2, Truck, Search } from 'lucide-react';
 import {
   BRAND_VERIFICATION_META,
   ENTITY_STATUS_META,
