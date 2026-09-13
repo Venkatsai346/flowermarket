@@ -31,10 +31,18 @@ const ProductVariantSchema = new Schema(
   { collection: 'productvariants' }
 );
 
-ProductVariantSchema.index({ productMasterId: 1, variantType: 1, value: 1 }, { unique: true });
+// Soft-delete-aware (migration 003): a deleted variant releases its SKU,
+// and the (master, type, value) key is re-usable after deletion.
+ProductVariantSchema.index(
+  { productMasterId: 1, variantType: 1, value: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 ProductVariantSchema.index(
   { sku: 1 },
-  { unique: true, partialFilterExpression: { sku: { $type: 'string' } } }
+  {
+    unique: true,
+    partialFilterExpression: { $and: [{ sku: { $type: 'string' } }, { isDeleted: false }] },
+  }
 );
 
 ProductVariantSchema.plugin(auditPlugin);

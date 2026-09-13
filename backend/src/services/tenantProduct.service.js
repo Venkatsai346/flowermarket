@@ -5,8 +5,6 @@ import ProductVariant from '../models/productVariant.model.js';
 import ProductImage from '../models/productImage.model.js';
 import Inventory from '../models/inventory.model.js';
 import PriceHistory from '../models/priceHistory.model.js';
-import Category from '../models/category.model.js';
-import Brand from '../models/brand.model.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
@@ -63,11 +61,20 @@ class TenantProductService {
       this.assertPriceValid(payload.price);
     }
 
+    const creatingActive = (payload.status || TENANT_LISTING_STATUS.DRAFT) === TENANT_LISTING_STATUS.ACTIVE;
+    if (creatingActive) {
+      // A listing goes LIVE the moment it is created: it must have a real
+      // price and a live master (the model contract "ACTIVE requires price
+      // set + master ACTIVE" — previously unenforced; a priceless listing is
+      // otherwise orderable at ₹0 via the cart's `sellingPrice ?? 0`).
+      this.assertActivatable({ listing: { price: payload.price || {} }, master });
+    }
+
     // Plan entitlement: the products cap counts ACTIVE listings. Drafts are
     // always creatable (merchants stage freely); the cap bites on activation.
     // Bulk inherits this per row — excess rows land in `skipped`, never 402
     // the whole batch (see bulkCreateListings partial-success contract).
-    if ((payload.status || TENANT_LISTING_STATUS.DRAFT) === TENANT_LISTING_STATUS.ACTIVE) {
+    if (creatingActive) {
       const { default: entitlementService } = await import('./entitlement.service.js');
       await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
     }
@@ -293,8 +300,18 @@ class TenantProductService {
     const listing = await this.getListing({ tenantId, listingId });
     this.assertTransition(listing, status);
 
+    const activating = status === TENANT_LISTING_STATUS.ACTIVE && listing.status !== TENANT_LISTING_STATUS.ACTIVE;
+    if (activating) {
+      // Going live requires a real price AND a live master. Re-checked at
+      // activation (not just creation): the master may have been rejected or
+      // deprecated after the listing was staged, and the price may still be
+      // unset on a DRAFT row.
+      const master = await ProductMaster.findById(listing.productMasterId);
+      this.assertActivatable({ listing, master });
+    }
+
     // Activating past the plan's products cap is a 402 (deactivations always pass).
-    if (status === TENANT_LISTING_STATUS.ACTIVE && listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
+    if (activating) {
       const { default: entitlementService } = await import('./entitlement.service.js');
       await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
       // No zombie listings: a master deprecated (or rejected) after the
@@ -355,7 +372,7 @@ class TenantProductService {
     pipeline.push({ $unwind: { path: '$variant', preserveNullAndEmptyArrays: true } });
 
     if (query.search) {
-      const rx = new RegExp(query.search, 'i');
+      const rx = literalRegex(query.search); // escaped — raw input must never reach new RegExp
       pipeline.push({ $match: { $or: [{ 'master.title': rx }, { 'master.searchText': rx }] } });
     }
     if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': query.categoryId } });
@@ -449,6 +466,24 @@ class TenantProductService {
   assertPriceValid(price) {
     if (price.sellingPrice != null && price.mrp != null && Number(price.sellingPrice) > Number(price.mrp)) {
       throw badRequest('sellingPrice cannot exceed mrp', 'PRICE_INVALID');
+    }
+  }
+
+  /**
+   * Preconditions for a listing to be ACTIVE (sellable). Enforced at both
+   * creation-as-active and DRAFT/INACTIVE/OUT_OF_STOCK → ACTIVE.
+   * @param {{ listing: {price?: object}, master?: object|null }} args
+   */
+  assertActivatable({ listing, master }) {
+    const sellingPrice = listing?.price?.sellingPrice;
+    if (sellingPrice === null || sellingPrice === undefined) {
+      throw badRequest('Set a selling price before activating this listing', 'PRICE_REQUIRED');
+    }
+    if (typeof sellingPrice !== 'number' || !Number.isFinite(sellingPrice) || sellingPrice < 0) {
+      throw badRequest('sellingPrice must be a non-negative number', 'PRICE_REQUIRED');
+    }
+    if (!master || master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+      throw conflict('The product master is not active — it must be approved first', 'MASTER_NOT_ACTIVE');
     }
   }
 

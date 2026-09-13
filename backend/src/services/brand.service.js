@@ -4,7 +4,7 @@ import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { serializeList } from '../utils/serialize.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
-import { BRAND_VERIFICATION_STATUS, ENTITY_STATUS } from '../constants/enums.js';
+import { BRAND_VERIFICATION_STATUS } from '../constants/enums.js';
 
 /**
  * BrandService — global brand registry (admin-owned).
@@ -84,13 +84,21 @@ class BrandService {
     return brand;
   }
 
+  /**
+   * Remove a brand — soft delete + outbox event, the same contract as
+   * category removal (previously this only flipped status, left the row
+   * in every "all brands" scan, and emitted no event).
+   */
   async remove({ id, actorId = null, req = null }) {
     const brand = await this.getById(id);
-    brand.status = ENTITY_STATUS.INACTIVE;
-    await brand.save();
+    await brand.softDelete({ by: actorId });
     await auditService.record({
       action: 'delete', entityType: 'brand', entityId: brand.id,
       actorId, actorType: 'admin', before: { name: brand.name }, req,
+    });
+    await catalogEventService.publish({
+      eventType: 'brand_updated', entityType: 'brand', entityId: brand.id,
+      payload: { id: brand.id, name: brand.name, status: 'deleted' },
     });
     return { deleted: true };
   }

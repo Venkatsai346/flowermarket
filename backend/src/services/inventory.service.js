@@ -1,5 +1,6 @@
 import Inventory from '../models/inventory.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
+import ProductMaster from '../models/productMaster.model.js';
 import PriceHistory from '../models/priceHistory.model.js'; // eslint-disable-line no-unused-vars
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
@@ -31,38 +32,70 @@ class InventoryService {
     return row;
   }
 
-  /** Set absolute on-hand quantity (manual stock-count). */
+  /**
+   * Set absolute on-hand quantity (manual stock-count).
+   * Atomic: a single upserting `findOneAndUpdate` — no read-modify-write, so
+   * concurrent counts cannot clobber each other.
+   */
   async setStock({ tenantId, listingId, qty, warehouseId = null, actorId = null, req = null }) {
     const listing = await TenantProduct.findOne({ _id: listingId, tenantId });
     if (!listing) throw notFound('Listing not found', 'LISTING_NOT_FOUND');
-    if (qty < 0) throw badRequest('Quantity cannot be negative', 'INVALID_QTY');
+    if (!Number.isInteger(qty) || qty < 0) throw badRequest('Quantity must be a non-negative integer', 'INVALID_QTY');
 
-    const row = await this.getRow({ tenantId, listingId, warehouseId, createIfMissing: true });
-    const before = row.qtyOnHand;
-    row.qtyOnHand = qty;
-    row.lastUpdatedAt = new Date();
-    await row.save();
-
+    const filter = { tenantId, tenantProductId: listingId, warehouseId: warehouseId || null };
+    const row = await Inventory.findOneAndUpdate(
+      filter,
+      { $set: { qtyOnHand: qty, lastUpdatedAt: new Date() } },
+      { new: true, upsert: true }
+    );
+    const before = row.qtyOnHand - qty; // pre-value: upsert insert → 0, else (new - set)
     await this.refreshListingStock(listing, row);
     await this.logOp({ tenantId, listingId, op: INVENTORY_OP_TYPE.ADJUSTMENT, qty, before, after: qty, actorId, req });
     return row;
   }
 
-  /** Signed adjustment (delta). */
+  /**
+   * Signed adjustment (delta).
+   * Atomic: `$inc` with a floor guard in the filter — concurrent adjustments
+   * cannot lose updates (the old read-modify-write let two +10s become +10),
+   * and a stock-driving-negative race fails cleanly instead of writing NaN.
+   */
   async adjustStock({ tenantId, listingId, delta, warehouseId = null, actorId = null, req = null }) {
     const listing = await TenantProduct.findOne({ _id: listingId, tenantId });
     if (!listing) throw notFound('Listing not found', 'LISTING_NOT_FOUND');
-    const row = await this.getRow({ tenantId, listingId, warehouseId, createIfMissing: true });
-    const next = row.qtyOnHand + Number(delta);
-    if (next < 0) throw badRequest('Adjustment would make stock negative', 'INVALID_QTY');
+    if (!Number.isInteger(delta) || delta === 0) throw badRequest('Delta must be a non-zero integer', 'INVALID_QTY');
 
-    const before = row.qtyOnHand;
-    row.qtyOnHand = next;
-    row.lastUpdatedAt = new Date();
-    await row.save();
-
+    const filter = {
+      tenantId,
+      tenantProductId: listingId,
+      warehouseId: warehouseId || null,
+      // floor guard: the update may only apply while onHand + delta >= 0
+      $expr: { $gte: [{ $add: ['$qtyOnHand', delta] }, 0] },
+    };
+    const row = await Inventory.findOneAndUpdate(
+      filter,
+      { $inc: { qtyOnHand: delta }, $set: { lastUpdatedAt: new Date() } },
+      { new: true }
+    );
+    if (!row) {
+      const exists = await Inventory.exists({ tenantId, tenantProductId: listingId, warehouseId: warehouseId || null });
+      if (!exists && delta > 0) {
+        // No row yet: a positive delta creates it — a single upserting $inc
+        // (atomic in one round-trip; default 0s come from the schema).
+        const created = await Inventory.findOneAndUpdate(
+          { tenantId, tenantProductId: listingId, warehouseId: warehouseId || null },
+          { $inc: { qtyOnHand: delta }, $set: { lastUpdatedAt: new Date() } },
+          { new: true, upsert: true }
+        );
+        await this.refreshListingStock(listing, created);
+        await this.logOp({ tenantId, listingId, op: INVENTORY_OP_TYPE.ADJUSTMENT, delta, before: 0, after: delta, actorId, req });
+        return created;
+      }
+      throw badRequest('Adjustment would make stock negative', 'INVALID_QTY');
+    }
+    const before = row.qtyOnHand - delta;
     await this.refreshListingStock(listing, row);
-    await this.logOp({ tenantId, listingId, op: INVENTORY_OP_TYPE.ADJUSTMENT, delta, before, after: next, actorId, req });
+    await this.logOp({ tenantId, listingId, op: INVENTORY_OP_TYPE.ADJUSTMENT, delta, before, after: row.qtyOnHand, actorId, req });
     return row;
   }
 
@@ -190,6 +223,23 @@ class InventoryService {
    * fails, the caller must compensate (restore committed + refund).
    * The guard `$expr qtyOnHand >= qty` makes the final stock race safe.
    */
+  /**
+   * Bump the master's denormalized soldCount (popularity sort + ranking
+   * signal — previously never written, so both were permanently 0).
+   * Ranking hint only: a failure here must never fail the sale.
+   */
+  async bumpSoldCount(listing, qty, sign = 1) {
+    if (!listing?.productMasterId || !Number.isInteger(qty) || qty <= 0) return;
+    try {
+      await ProductMaster.updateOne(
+        { _id: listing.productMasterId },
+        { $inc: { soldCount: sign * qty } }
+      );
+    } catch {
+      /* ranking hint only — never fail the sale */
+    }
+  }
+
   async commitForOrder({ tenantId, items }) {
     const committed = [];
     const failed = [];
@@ -206,7 +256,10 @@ class InventoryService {
       if (row) {
         committed.push({ listingId: it.listingId, qty: it.qty, row });
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
-        if (listing) await this.refreshListingStock(listing, row);
+        if (listing) {
+          await this.refreshListingStock(listing, row);
+          await this.bumpSoldCount(listing, it.qty, 1);
+        }
       } else {
         failed.push({ listingId: it.listingId, qty: it.qty, reason: 'insufficient_stock' });
       }
@@ -214,7 +267,7 @@ class InventoryService {
     return { committed, failed };
   }
 
-  /** COMPENSATION — restore qtyOnHand for items that were committed. */
+  /** COMPENSATION — restore qtyOnHand (and undo the soldCount bump) for items that were committed. */
   async restoreForOrder({ tenantId, items }) {
     for (const it of items) {
       const row = await Inventory.findOneAndUpdate(
@@ -224,7 +277,10 @@ class InventoryService {
       );
       if (row) {
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
-        if (listing) await this.refreshListingStock(listing, row);
+        if (listing) {
+          await this.refreshListingStock(listing, row);
+          await this.bumpSoldCount(listing, it.qty, -1);
+        }
       }
     }
     return { restored: items.length };

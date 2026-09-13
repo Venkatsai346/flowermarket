@@ -2,14 +2,24 @@
  * AdminCatalogService — read-side dashboard views over the catalog
  * (Phase 4). Writes stay in the Phase-2 catalog admin surface; this service
  * only joins masters → listings → inventory for the admin dashboard + CSV.
+ *
+ * `list()` is a SINGLE Mongo aggregation (no in-memory joins): listings are
+ * grouped per master in-database, then masters + the primary listing's
+ * inventory are $lookup-ed. The whole tenant catalogue is scanned by index,
+ * but only the GROUPED (one row per master) set is projected/sorted/paginated
+ * — memory stays O(masters) regardless of listing count.
+ *
+ * "Primary listing" per master: the OLDEST listing (deterministic — the
+ * original master-level row), whose price is presented as the master's.
  */
 
 import ProductMaster from '../models/productMaster.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
 import Inventory from '../models/inventory.model.js';
 import PriceHistory from '../models/priceHistory.model.js';
-import Category from '../models/category.model.js';
+import mongoose from 'mongoose';
 import { serializeList } from '../utils/serialize.js';
+import { literalRegex } from '../utils/regex.js';
 import { INVENTORY_HEALTH } from '../constants/enums.js';
 
 const healthOf = (inv) => {
@@ -18,13 +28,13 @@ const healthOf = (inv) => {
   return INVENTORY_HEALTH.IN_STOCK; // low-stock is decided by the caller's threshold
 };
 
+const toObjectId = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoose.Types.ObjectId(v));
+
 export class AdminCatalogService {
   /**
-   * Master-level list joined with listing + inventory.
-   * NOTE: ProductMaster is the SHARED catalog (no tenantId) — the tenant
-   * scope comes from TenantProduct. So we resolve listings first, then their
-   * masters (like the customer catalog does).
-   * Filters: search (title/sku), categoryId, status, health, threshold, pagination.
+   * Master-level list joined with listing + inventory — one aggregation.
+   * Filters: search (title/sku), categoryId, status (master), health,
+   * lowStockThreshold, pagination.
    */
   async list({ tenantId, query = {} }) {
     const page = Math.max(1, Number(query.page) || 1);
@@ -33,74 +43,99 @@ export class AdminCatalogService {
       ? Math.max(0, Number(query.lowStockThreshold))
       : 5;
 
-    // ---- tenant-scoped listings first ----
-    const listingFilter = { tenantId, isDeleted: { $ne: true } };
-    if (query.categoryId) {
-      const masterIds = (await ProductMaster.find({ categoryId: query.categoryId }).select('_id').lean()).map((m) => m._id);
-      if (!masterIds.length) return { items: [], meta: { page, limit, total: 0, totalPages: 0, hasMore: false } };
-      listingFilter.productMasterId = { $in: masterIds };
-    }
-    let listings = await TenantProduct.find(listingFilter).lean();
+    const pipeline = [
+      { $match: { tenantId: toObjectId(tenantId), isDeleted: { $ne: true } } },
+      { $lookup: { from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master' } },
+      { $unwind: { path: '$master', preserveNullAndEmptyArrays: false } },
+      // updateMany/aggregate lookups are not soft-delete-filtered — explicit.
+      { $match: { 'master.isDeleted': { $ne: true } } },
+    ];
+    if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': toObjectId(query.categoryId) } });
+    if (query.status) pipeline.push({ $match: { 'master.status': query.status } });
     if (query.search) {
-      const rx = new RegExp(query.search, 'i');
-      const masterIds = (await ProductMaster.find({ $or: [{ title: rx }, { skuGlobal: rx }] }).select('_id').lean()).map((m) => m._id);
-      const listingIds = (await TenantProduct.find({ tenantId, productMasterId: { $in: masterIds } }).select('_id').lean()).map((l) => l._id);
-      listings = listings.filter((l) => listingIds.includes(String(l._id)));
+      const rx = literalRegex(query.search); // escaped — raw input never reaches new RegExp
+      pipeline.push({ $match: { $or: [{ 'master.title': rx }, { 'master.skuGlobal': rx }] } });
     }
+    // Deterministic primary per master: oldest listing first.
+    pipeline.push({ $sort: { createdAt: 1 } });
+    pipeline.push({
+      $group: {
+        _id: '$productMasterId',
+        listingsCount: { $sum: 1 },
+        primaryListingId: { $first: '$_id' },
+        primaryPrice: { $first: '$price' },
+        updatedAt: { $max: { $ifNull: ['$master.updatedAt', '$updatedAt'] } },
+      },
+    });
+    pipeline.push({ $lookup: { from: 'productmasters', localField: '_id', foreignField: '_id', as: 'master' } });
+    pipeline.push({ $unwind: { path: '$master', preserveNullAndEmptyArrays: false } });
+    pipeline.push({ $lookup: { from: 'inventories', localField: 'primaryListingId', foreignField: 'tenantProductId', as: 'inv' } });
+    pipeline.push({ $unwind: { path: '$inv', preserveNullAndEmptyArrays: true } });
+    pipeline.push({
+      $addFields: {
+        qtyOnHand: { $ifNull: ['$inv.qtyOnHand', 0] },
+        qtyReserved: { $ifNull: ['$inv.qtyReserved', 0] },
+        available: {
+          $max: [0, { $subtract: [{ $ifNull: ['$inv.qtyOnHand', 0] }, { $ifNull: ['$inv.qtyReserved', 0] }] }],
+        },
+      },
+    });
+    pipeline.push({
+      $addFields: {
+        health: {
+          $switch: {
+            branches: [
+              { case: { $lte: ['$available', 0] }, then: INVENTORY_HEALTH.OUT_OF_STOCK },
+              { case: { $lte: ['$available', threshold] }, then: INVENTORY_HEALTH.LOW_STOCK },
+            ],
+            default: INVENTORY_HEALTH.IN_STOCK,
+          },
+        },
+      },
+    });
+    if (query.health) pipeline.push({ $match: { health: query.health } });
+    pipeline.push({ $sort: { updatedAt: -1 } });
 
-    // ---- masters for those listings (shared catalog) ----
-    const masterIds = [...new Set(listings.map((l) => String(l.productMasterId)).filter(Boolean))];
-    const masters = masterIds.length
-      ? await ProductMaster.find({ _id: { $in: masterIds } }).lean()
-      : [];
-    const masterById = new Map(masters.map((m) => [String(m._id), m]));
+    const [facet] = await TenantProduct.aggregate([
+      ...pipeline,
+      {
+        $facet: {
+          items: [
+            { $skip: (page - 1) * limit },
+            { $limit: limit },
+            {
+              $project: {
+                _id: 0,
+                id: { $toString: '$_id' },
+                skuGlobal: '$master.skuGlobal',
+                title: '$master.title',
+                type: '$master.type',
+                categoryId: '$master.categoryId',
+                status: '$master.status',
+                listingsCount: 1,
+                listingId: { $toString: '$primaryListingId' },
+                price: '$primaryPrice',
+                stock: {
+                  qtyOnHand: '$qtyOnHand',
+                  qtyReserved: '$qtyReserved',
+                  available: '$available',
+                  health: '$health',
+                },
+                updatedAt: 1,
+              },
+            },
+          ],
+          total: [{ $count: 'total' }],
+        },
+      },
+    ]);
 
-    // ---- inventory per listing ----
-    const listingIds = listings.map((l) => l._id);
-    const invs = listingIds.length
-      ? await Inventory.find({ tenantId, tenantProductId: { $in: listingIds }, isDeleted: { $ne: true } }).lean()
-      : [];
-    const invByListing = new Map(invs.map((i) => [String(i.tenantProductId), i]));
-
-    // ---- group listings per master, pick primary ----
-    const byMaster = new Map();
-    for (const l of listings) {
-      const arr = byMaster.get(String(l.productMasterId)) || [];
-      arr.push(l);
-      byMaster.set(String(l.productMasterId), arr);
-    }
-
-    const items = [];
-    for (const [masterId, ls] of byMaster) {
-      const m = masterById.get(masterId) || {};
-      const primary = ls[0];
-      const inv = invByListing.get(String(primary._id));
-      const available = Math.max(0, (inv?.qtyOnHand || 0) - (inv?.qtyReserved || 0));
-      const health = available <= 0 ? INVENTORY_HEALTH.OUT_OF_STOCK : available <= threshold ? INVENTORY_HEALTH.LOW_STOCK : INVENTORY_HEALTH.IN_STOCK;
-
-      if (query.health && query.health !== health) continue;
-
-      items.push({
-        id: masterId,
-        skuGlobal: m.skuGlobal || null,
-        title: m.title || primary.skuSnapshot?.title || 'Item',
-        type: m.type || null,
-        categoryId: m.categoryId || null,
-        status: m.status || primary.status,
-        listingsCount: ls.length,
-        listingId: primary._id,
-        price: primary.price || null,
-        stock: { qtyOnHand: inv?.qtyOnHand ?? 0, qtyReserved: inv?.qtyReserved ?? 0, available, health },
-        updatedAt: m.updatedAt || primary.updatedAt,
-      });
-    }
-
-    const total = items.length;
-    const pageItems = items.slice((page - 1) * limit, page * limit);
+    const items = facet?.items || [];
+    const total = facet?.total?.[0]?.total ?? 0;
     return {
       // items already carry string ids — skip serializeList (it would clobber
       // id with String(undefined) on these synthesized rows)
-      items: pageItems,
+      items,
       meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: page * limit < total },
     };
   }
@@ -136,10 +171,28 @@ export class AdminCatalogService {
     return { master: { ...master, id: master._id }, listings: serializeList(enriched), priceHistory: serializeList(priceHistory) };
   }
 
-  /** CSV export of the same view (bigger limit, no pagination meta). */
+  /**
+   * CSV export of the same view — COMPLETE, not truncated: pages through the
+   * aggregated list until exhausted (hard safety cap: 50 pages × 200 = 10k
+   * rows, with an `exportComplete: false` marker if the cap was hit).
+   */
   async csv({ tenantId, query = {} }) {
-    const { items } = await this.list({ tenantId, query: { ...query, page: 1, limit: 200 } });
-    return items.map((it) => ({
+    const rows = [];
+    const PAGE = 200;
+    const MAX_PAGES = 50;
+    let page = 1;
+    let complete = true;
+    while (true) {
+      // eslint-disable-next-line no-await-in-loop
+      const { items, meta } = await this.list({ tenantId, query: { ...query, page, limit: PAGE } });
+      rows.push(...items);
+      if (!meta.hasMore || page >= MAX_PAGES) {
+        if (meta.hasMore) complete = false;
+        break;
+      }
+      page += 1;
+    }
+    const mapped = rows.map((it) => ({
       id: it.id,
       skuGlobal: it.skuGlobal,
       title: it.title,
@@ -153,6 +206,7 @@ export class AdminCatalogService {
       available: it.stock.available,
       health: it.stock.health,
     }));
+    return { rows: mapped, exportComplete: complete };
   }
 }
 

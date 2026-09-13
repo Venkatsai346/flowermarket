@@ -12,6 +12,7 @@ import catalogEventService from './catalogEvent.service.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import { pick } from '../utils/catalog/diff.js';
+import { whitelistMasterPatch } from '../utils/catalog/fieldOwnership.js';
 import { titleSimilarity, DUPLICATE_TITLE_THRESHOLD } from '../utils/catalog/similarity.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
 import { badRequest, notFound } from '../utils/ApiError.js';
@@ -207,9 +208,29 @@ class ProductMasterService {
       });
       return master;
     }
+    master.status = PRODUCT_MASTER_STATUS.REJECTED;
+    master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
+    master.version += 1;
+    await master.save();
+    // A rejected master must not keep SELLABLE listings alive (DEPRECATED has
+    // the same cascade — previously only deprecation had it). Draft listings
+    // are kept: the tenant may revise the master and resubmit.
+    await TenantProduct.updateMany(
+      {
+        productMasterId: master.id,
+        isDeleted: { $ne: true },
+        status: TENANT_LISTING_STATUS.ACTIVE,
+      },
+      { $set: { status: TENANT_LISTING_STATUS.INACTIVE, lastStatusChangedAt: new Date() } }
+    );
     await auditService.record({
       action: 'reject', entityType: 'product_master', entityId: master.id,
-      actorId, actorType: 'admin', after: { status: master.status }, meta: { note }, req,
+      actorId, actorType: 'admin', after: { status: master.status },
+      meta: { note, cascadedListings: true }, req,
+    });
+    await catalogEventService.publish({
+      eventType: 'product_deactivated', entityType: 'product_master', entityId: master.id,
+      payload: { id: master.id, status: master.status },
     });
     return master;
   }
@@ -227,6 +248,7 @@ class ProductMasterService {
       );
       if (!ok) throw badRequest('Category attribute validation failed', 'CATEGORY_ATTRIBUTE_ERROR', errors);
     }
+    if (patch.slug) await assertSlugFree(ProductMaster, patch.slug, {}, master.id);
 
     const similar = await this.assertNoDuplicate({
       skuGlobal: master.skuGlobal,
@@ -256,16 +278,55 @@ class ProductMasterService {
     return this.getMaster(master.id);
   }
 
-  /** Apply an approved change-request diff (bypasses optimistic check by design). */
+  /**
+   * Apply an approved change-request diff.
+   *
+   * Bypasses the CLIENT optimistic check by design (an admin approval is the
+   * authorizing act), but the TENANT-SUPPLIED diff is still sanitized:
+   *   1. KEYS are whitelisted to central-owned global fields — lifecycle and
+   *      accounting fields (status, version, soldCount, vendor routing, …)
+   *      smuggled into `diff.after` are dropped, never applied.
+   *   2. VALUES are re-validated against the master's CURRENT state — the
+   *      diff may be stale: the category may have gained required
+   *      attributes, the title may now collide, the slug may be taken.
+   */
   async applyGlobalPatch(master, patch, { actorId = null, note = null, req = null } = {}) {
-    master.set(patch);
-    master.version = (master.version || 1) + 1;
+    const { clean, dropped } = whitelistMasterPatch(patch);
+    if (!Object.keys(clean).length) {
+      throw badRequest('Change request diff contains no updatable master fields', 'EMPTY_DIFF', { dropped });
+    }
+
+    // Re-validate the (possibly stale) values against current state.
+    if (clean.categoryId && String(clean.categoryId) !== String(master.categoryId || '')) {
+      const currentAttrs = await ProductAttributeValue.find({ productMasterId: master.id }).lean();
+      const { ok, errors } = await categoryService.validateAttributes(
+        clean.categoryId,
+        currentAttrs.map((a) => ({ key: a.attributeKey, value: a.value }))
+      );
+      if (!ok) throw badRequest('Category attribute validation failed', 'CATEGORY_ATTRIBUTE_ERROR', errors);
+    }
+    if (clean.slug) await assertSlugFree(ProductMaster, clean.slug, {}, master.id);
+    const similar = await this.assertNoDuplicate({
+      skuGlobal: master.skuGlobal,
+      title: clean.title ?? master.title,
+      barcode: clean.barcode ?? master.barcode,
+      excludeId: master.id,
+    });
+    if (similar) {
+      throw new AppError(`Possible duplicate of "${similar.title}"`, {
+        status: 409, code: 'POSSIBLE_DUPLICATE', details: { existingId: similar.id, existingTitle: similar.title },
+      });
+    }
+
+    const before = pick(master.toObject({ depopulate: true }), Object.keys(clean));
+    master.set(clean);
+    master.version = (Number(master.version) || 1) + 1;
     master.searchText = await this.buildSearchText(master);
     await master.save();
     await auditService.record({
       action: 'update', entityType: 'product_master', entityId: master.id,
-      actorId, actorType: 'admin', before: pick(master.toObject({ depopulate: true }), Object.keys(patch)),
-      after: patch, meta: { note, via: 'change_request' }, req,
+      actorId, actorType: 'admin', before, after: pick(master.toObject({ depopulate: true }), Object.keys(clean)),
+      meta: { note, via: 'change_request', droppedFields: dropped }, req,
     });
     await catalogEventService.publish({
       eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
@@ -330,11 +391,16 @@ class ProductMasterService {
       );
       const primaryIdx = payload.images.findIndex((img) => img.isPrimary);
       if (primaryIdx >= 0) {
+        // Scope the clear to the MASTER gallery (variantId == null): a
+        // master-primary demotion must never touch a variant's own primary
+        // (each (master, variant) gallery elects its primary independently).
         await ProductImage.updateMany(
-          { productMasterId: master.id, isPrimary: true },
+          { productMasterId: master.id, variantId: null, isPrimary: true },
           { $set: { isPrimary: false } }
         );
-        const primary = await ProductImage.findOne({ productMasterId: master.id, url: payload.images[primaryIdx].url });
+        const primary = await ProductImage.findOne({
+          productMasterId: master.id, variantId: null, url: payload.images[primaryIdx].url,
+        });
         if (primary) {
           primary.isPrimary = true;
           await primary.save();
@@ -362,26 +428,20 @@ class ProductMasterService {
    * cascade or a duplicated deprecation event.
    */
   async deprecate({ id, actorId = null, note = null, req = null }) {
-    const current = await ProductMaster.findById(id).lean();
-    assertMasterDeprecatable(current);
-    const master = await ProductMaster.findOneAndUpdate(
-      { _id: id, status: { $ne: PRODUCT_MASTER_STATUS.DEPRECATED } },
-      {
-        $set: {
-          status: PRODUCT_MASTER_STATUS.DEPRECATED,
-          review: { ...(current.review || {}), reviewedBy: actorId, reviewedAt: new Date(), note: note || null },
-        },
-        $inc: { version: 1 },
-      },
-      { new: true }
-    );
-    if (!master) {
-      const reread = await ProductMaster.findById(id).lean();
-      assertMasterDeprecatable(reread);
+    const master = await ProductMaster.findById(id);
+    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    if (master.status === PRODUCT_MASTER_STATUS.DEPRECATED) {
+      throw conflict('Master is already deprecated', 'ALREADY_DEPRECATED');
     }
+    master.status = PRODUCT_MASTER_STATUS.DEPRECATED;
+    master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
+    master.version += 1;
+    await master.save();
 
+    // updateMany is NOT covered by the soft-delete find-hook — filter
+    // explicitly so soft-deleted (ghost) listings are not stamped.
     await TenantProduct.updateMany(
-      { productMasterId: master.id, status: { $ne: TENANT_LISTING_STATUS.INACTIVE } },
+      { productMasterId: master.id, isDeleted: { $ne: true }, status: { $ne: TENANT_LISTING_STATUS.INACTIVE } },
       { $set: { status: TENANT_LISTING_STATUS.INACTIVE, lastStatusChangedAt: new Date() } }
     );
 
@@ -452,7 +512,7 @@ class ProductMasterService {
     }
     await auditService.record({
       action: 'create', entityType: 'product_variant', entityId: variant.id,
-      actorId, actorType: viaRequest ? 'admin' : 'admin',
+      actorId, actorType: 'admin',
       after: { masterId: master.id, value: variant.value, images: nestedImages?.length || 0 },
       meta: { via: viaRequest ? 'change_request' : 'direct' }, req,
     });
@@ -674,13 +734,17 @@ class ProductMasterService {
     if (query.brandId) q.brandId = query.brandId;
     if (query.type) q.type = query.type;
     if (query.search) {
+      const rx = literalRegex(query.search); // escaped — raw input must never reach new RegExp
       q.$or = [
-        { title: new RegExp(query.search, 'i') },
-        { skuGlobal: new RegExp(query.search, 'i') },
-        { searchText: new RegExp(query.search, 'i') },
+        { title: rx },
+        { skuGlobal: rx },
+        { searchText: rx },
       ];
     }
-    const sort = { [query.sortBy === 'createdAt' ? 'createdAt' : 'createdAt']: query.sortOrder === 'asc' ? 1 : -1 };
+    const sortField = ['createdAt', 'updatedAt', 'title', 'skuGlobal'].includes(query.sortBy)
+      ? query.sortBy
+      : 'createdAt';
+    const sort = { [sortField]: query.sortOrder === 'asc' ? 1 : -1 };
     const [docs, total] = await Promise.all([
       ProductMaster.find(q).sort(sort).skip((page - 1) * limit).limit(limit).lean(),
       ProductMaster.countDocuments(q),

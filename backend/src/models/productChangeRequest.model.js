@@ -53,14 +53,13 @@ const ProductChangeRequestSchema = new Schema(
       index: true,
     },
     review: { type: ReviewSchema, default: () => ({}) },
-    // Apply-failure accounting: when an approved apply throws, review() reverts
-    // the claim to PENDING and records the attempt here — retryable, honest,
-    // and visible in the review queue (never stranded approved-but-unapplied).
-    applyAttempts: { type: Number, default: 0, min: 0 },
-    lastApplyError: {
-      message: { type: String, default: null, maxlength: 500 },
-      at: { type: Date, default: null },
-    },
+    // Idempotent-apply bookkeeping: when the approval's apply step last
+    // SUCCEEDED. If a later re-approval of the same request is attempted
+    // (e.g. after an apply-failure rollback), an existing appliedAt means
+    // the master was already mutated and the apply is skipped — never
+    // applied twice. lastApplyError carries the reason for the admin UI.
+    appliedAt: { type: Date, default: null },
+    lastApplyError: { type: String, default: null, maxlength: 500 },
     submittedAt: { type: Date, default: Date.now },
   },
   { collection: 'productchangerequests' }

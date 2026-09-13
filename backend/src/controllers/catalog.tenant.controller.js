@@ -107,21 +107,11 @@ class CatalogTenantController {
     res.status(200).json(success(stock, { message: 'Stock fetched' }));
   });
 
-  reserveStock = asyncHandler(async (req, res) => {
-    const row = await inventoryService.reserve({
-      tenantId: req.tenantId, listingId: req.params.id, qty: req.body.qty,
-      orderRef: req.body.orderRef, actorId: req.auth.userId, req,
-    });
-    res.status(200).json(success(row, { message: 'Stock reserved' }));
-  });
-
-  releaseStock = asyncHandler(async (req, res) => {
-    const row = await inventoryService.release({
-      tenantId: req.tenantId, listingId: req.params.id, qty: req.body.qty,
-      orderRef: req.body.orderRef, actorId: req.auth.userId, req,
-    });
-    res.status(200).json(success(row, { message: 'Stock released' }));
-  });
+  // NOTE (F-12): the tenant-facing stock reserve/release endpoints were
+  // removed from the routes — see the inventory section in
+  // catalog.tenant.routes.js for the rationale (display/hold state without
+  // order linkage diverged from checkout, which commits against qtyOnHand).
+  // inventoryService.reserve/release remain for internal order-driven use.
 
   // ---------------- change requests ----------------
   submitChangeRequest = asyncHandler(async (req, res) => {
@@ -161,10 +151,20 @@ class CatalogTenantController {
     if (rows.length === 0) {
       throw badRequest('CSV is empty or malformed', 'EMPTY_CSV');
     }
+    if (rows.length > bulkImportService.BULK_MAX_ROWS) {
+      throw badRequest(`Too many rows: max ${bulkImportService.BULK_MAX_ROWS} per upload`, 'CSV_TOO_LARGE');
+    }
     const job = bulkImportService.createJob({ kind, rows, tenantId: req.tenantId, actorId: req.auth.userId });
     const dryRun = req.query.dryRun === 'true';
-    // process in background (fire-and-forget); client polls GET /bulk/:jobId
-    bulkImportService.runJob(job, { dryRun }).catch(() => {});
+    // Process in background; client polls GET /bulk/:jobId. An unexpected
+    // crash in the runner must be VISIBLE (job failed + logged) — the old
+    // .catch(() => {}) left jobs stuck in "running" forever.
+    bulkImportService.runJob(job, { dryRun }).catch((err) => {
+      job.status = 'failed';
+      job.finishedAt = new Date();
+      job.errors.push({ row: 0, message: err?.message || String(err) });
+      console.error('[bulk-import] job crashed:', err);
+    });
     res.status(202).json(success({ jobId: job.id, status: 'queued', dryRun }, { message: 'Bulk job queued' }));
   });
 

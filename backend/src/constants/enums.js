@@ -800,11 +800,6 @@ export const BRAND_VERIFICATION_STATUS = Object.freeze({
   REJECTED: 'rejected',
 });
 
-export const ENTITY_STATUS2 = Object.freeze({
-  ACTIVE: 'active',
-  INACTIVE: 'inactive',
-});
-
 
 // ================= Phase 5: multi-tenant marketplace =================
 

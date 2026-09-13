@@ -7,7 +7,6 @@ import {
   CHANGE_REQUEST_STATUS,
   AUDIT_ACTION,
   SELLING_UNIT,
-  AVAILABILITY_STATUS,
   VARIANT_TYPE,
   ATTRIBUTE_FIELD_TYPE,
 } from '../../constants/enums.js';
@@ -368,14 +367,15 @@ export const changeRequestQuerySchema = Joi.object({
   ...pagination,
 });
 
-// ---------------- Inventory ----------------
-export const inventoryOpSchema = Joi.object({
-  listingId: objectId.required(),
-  op: Joi.string().valid('set', 'adjust', 'reserve', 'release').required(),
-  qty: Joi.number().integer().required(), // for set/adjust signed; reserve/release must be >= 0
-  orderRef: Joi.string().max(80).allow(null, ''),
-  note: Joi.string().max(300).allow(null, ''),
-  expectedVersion: Joi.number().integer().min(1),
+// ---------------- Inventory (tenant stock ops) ----------------
+// These schemas are the edge contract for PUT/PATCH /listings/:id/stock.
+// The listing id comes from the path; the body carries only the quantity.
+export const stockSetSchema = Joi.object({
+  qty: Joi.number().integer().min(0).max(1_000_000).required(),
+});
+
+export const stockAdjustSchema = Joi.object({
+  delta: Joi.number().integer().min(-1_000_000).max(1_000_000).invalid(0).required(),
 });
 
 // ---------------- Customer catalog query ----------------

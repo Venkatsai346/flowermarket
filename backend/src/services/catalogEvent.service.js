@@ -1,6 +1,7 @@
 import CatalogEvent from '../models/catalogEvent.model.js';
 import { CATALOG_EVENT_TYPE, OUTBOX_STATUS } from '../constants/enums.js';
 import config from '../config/index.js';
+import { localEmit, LOCAL_EVENTS } from '../utils/localEvents.js';
 
 /**
  * CatalogEventService — outbox-based domain events.
@@ -47,7 +48,7 @@ class CatalogEventService {
     if (!Object.values(CATALOG_EVENT_TYPE).includes(eventType)) {
       throw new Error(`Unknown catalog event type: ${eventType}`);
     }
-    return CatalogEvent.create({
+    const row = await CatalogEvent.create({
       eventType,
       entityType,
       entityId,
@@ -56,6 +57,11 @@ class CatalogEventService {
       status: OUTBOX_STATUS.PENDING,
       availableAt: delayMs ? new Date(Date.now() + delayMs) : new Date(),
     });
+    // Same-process read-cache invalidation: the outbox row is the durable
+    // record (consumed by the worker), but this process's GET cache must not
+    // keep serving the pre-mutation snapshot. Best-effort, never blocks.
+    localEmit(LOCAL_EVENTS.CATALOG_WRITE, { eventType, entityType });
+    return row;
   }
 
   /**

@@ -63,7 +63,6 @@ class SearchIndexerService {
         await this.reindexMaster(entityId);
       }
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error('[search] index update failed (will be repaired by the sweep):', err.message);
     }
   };
@@ -118,7 +117,6 @@ class SearchIndexerService {
       categoryPath,
       tags,
       suggest: buildSuggest({ title, brandName, tags, categoryPath }),
-      attributes: listing.attributes || {},
 
       pricePaise: toPaise(listing.price?.sellingPrice ?? 0),
       mrpPaise: toPaise(listing.price?.mrp ?? 0),
@@ -178,21 +176,41 @@ class SearchIndexerService {
     return { variantById, imagesByMaster };
   }
 
-  /** A global product changed — refresh it in every store that lists it. */
+  /**
+   * A global product changed — refresh it in EVERY store that lists it.
+   * Cursor-paginated (the old single .limit(500) query left the tail stale
+   * for masters listed in >500 tenants; nothing ever re-fetched them).
+   */
   async reindexMaster(masterId) {
-    const listings = await TenantProduct.find({ productMasterId: masterId }).limit(500).lean();
-    if (!listings.length) return { indexed: 0 };
-    const master = await ProductMaster.findById(masterId).lean();
-    if (!master) return { indexed: 0 };
-    const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
-      this.categoryMap([master.categoryId]),
-      this.brandMap([master.brandId]),
-      this.variantImageMaps(listings),
-    ]);
-    const docs = await Promise.all(
-      listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }))
-    );
-    return searchProvider.index(docs);
+    const BATCH = 500;
+    const MAX_BATCHES = 400; // 200k listings safety valve
+    let cursor = null;
+    let scanned = 0;
+    let indexed = 0;
+
+    for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
+      const q = { productMasterId: masterId };
+      if (cursor) q._id = { $gt: cursor };
+      // eslint-disable-next-line no-await-in-loop
+      const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(BATCH).lean();
+      if (!listings.length) break;
+      const master = await ProductMaster.findById(masterId).lean();
+      if (!master) break;
+      const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
+        this.categoryMap([master.categoryId]),
+        this.brandMap([master.brandId]),
+        this.variantImageMaps(listings),
+      ]);
+      const docs = await Promise.all(
+        listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }))
+      );
+      // eslint-disable-next-line no-await-in-loop
+      const res = await searchProvider.index(docs);
+      scanned += listings.length;
+      indexed += res?.indexed || 0;
+      cursor = listings[listings.length - 1]._id;
+    }
+    return { indexed, scanned };
   }
 
   async categoryMap(ids) {

@@ -61,7 +61,6 @@ class CatalogPublicController {
         // if the live catalogue is larger than the index, serve it instead.
         const legacyProbe = await catalogSearchService.search({ tenantId: req.tenantId, query });
         if (legacyProbe.meta.total > (ranked.meta?.total ?? 0)) {
-          // eslint-disable-next-line no-console
           console.warn(`[search] index stale — ranked ${ranked.meta?.total} < live ${legacyProbe.meta.total} listings; serving legacy scan`);
           const g = await maybeGroup(legacyProbe.items, legacyProbe.meta);
           return res.status(200).json(success(g.items, {
@@ -75,7 +74,6 @@ class CatalogPublicController {
           message: 'Catalog fetched',
         }));
       } catch (err) {
-        // eslint-disable-next-line no-console
         console.error('[search] ranked path failed, falling back to the legacy scan:', err.message);
       }
     }
@@ -135,8 +133,18 @@ class CatalogPublicController {
   async assembleProductPage({ tenantId, masterId, variantId = null }) {
     const [master, listings] = await Promise.all([
       productMasterService.getMaster(masterId),
-      TenantProduct.find({ tenantId, productMasterId: masterId, status: 'active' }).lean(),
+      TenantProduct.find({
+        tenantId, productMasterId: masterId, status: 'active',
+        'price.sellingPrice': { $ne: null }, // never render an unpriced listing
+      }).lean(),
     ]);
+    // PUBLISH GATE — the PLP and the slug PDP already filter master.status;
+    // the id PDP must enforce the same gate, or a PENDING_REVIEW/REJECTED/
+    // DEPRECATED master keeps a public shareable page (and, for rejected
+    // masters, a listing the cascade missed).
+    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+      throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
+    }
     if (!listings?.length) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
 
     const variantById = new Map((master.variants || []).map((v) => [String(v._id ?? v.id), v]));
@@ -290,9 +298,16 @@ class CatalogPublicController {
 
   /** GET /catalog/products/:id/stock[?variantId=] — quick availability check (RN app polling). */
   stockCheck = asyncHandler(async (req, res) => {
-    const q = { tenantId: req.tenantId, productMasterId: req.params.id, status: 'active' };
+    const q = {
+      tenantId: req.tenantId, productMasterId: req.params.id, status: 'active',
+      'price.sellingPrice': { $ne: null },
+    };
     if (req.query.variantId) q.variantId = req.query.variantId;
-    const listing = await TenantProduct.findOne(q).lean();
+    const [master, listing] = await Promise.all([
+      ProductMaster.findById(req.params.id).select('status').lean(),
+      TenantProduct.findOne(q).lean(),
+    ]);
+    if (master?.status !== PRODUCT_MASTER_STATUS.ACTIVE) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     if (!listing) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     const stock = await inventoryService.getStock({ tenantId: req.tenantId, listingId: listing._id });
     res.status(200).json(success({ ...stock, listingId: String(listing._id), variantId: listing.variantId ? String(listing.variantId) : null }, { message: 'Stock fetched' }));

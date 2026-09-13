@@ -30,9 +30,16 @@ class AdminController {
   });
 
   exportProducts = asyncHandler(async (req, res) => {
-    const rows = await adminCatalogService.csv({ tenantId: req.tenantId, query: req.query });
+    const { rows, exportComplete } = await adminCatalogService.csv({ tenantId: req.tenantId, query: req.query });
     const headers = [['id','ID'],['skuGlobal','SKU'],['title','Title'],['type','Type'],['categoryId','Category ID'],['status','Status'],['mrp','MRP'],['sellingPrice','Selling Price'],['qtyOnHand','Qty On Hand'],['qtyReserved','Qty Reserved'],['available','Available'],['health','Health']];
-    sendCsv(res, 'products.csv', toCsvString(rows, headers));
+    const lines = toCsvString(rows, headers).split('\n');
+    if (!exportComplete) {
+      // Surface truncation IN the file (first data row, 12 columns) rather
+      // than silently shipping a partial export.
+      const warning = ['EXPORT_TRUNCATED_AT_10000_ROWS', new Date().toISOString(), '', '', '', '', '', '', '', '', '', ''].join(',');
+      lines.splice(1, 0, warning);
+    }
+    sendCsv(res, exportComplete ? 'products.csv' : 'products-partial.csv', lines.join('\n'));
   });
 
   // ---------------- inventory ----------------

@@ -7,6 +7,7 @@ import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
 import inventoryService from './inventory.service.js';
 import { groupImagesByVariant, resolveImagesForVariant, variantDisplayLabel, pickDefaultVariant } from '../utils/catalog/variantImages.js';
+import { literalRegex } from '../utils/regex.js';
 import { TENANT_LISTING_STATUS, PRODUCT_MASTER_STATUS } from '../constants/enums.js';
 
 /** Aggregation pipelines do NOT auto-cast ids — always normalize to ObjectId. */
@@ -39,6 +40,9 @@ class CatalogSearchService {
       tenantId: toObjectId(tenantId),
       status: TENANT_LISTING_STATUS.ACTIVE,
       isDeleted: { $ne: true },
+      // Defense in depth: a priceless listing must never reach the customer,
+      // even if one slipped past the activation gate (legacy data, race).
+      'price.sellingPrice': { $ne: null },
     };
 
     const pipeline = [
@@ -57,7 +61,7 @@ class CatalogSearchService {
 
     // ---- filters ----
     if (query.search) {
-      const rx = new RegExp(query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const rx = literalRegex(query.search); // escaped — raw input never reaches new RegExp
       pipeline.push({
         $match: {
           $or: [
@@ -363,7 +367,7 @@ class CatalogSearchService {
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
     const q = {};
     if (query.search) {
-      const rx = new RegExp(query.search, 'i');
+      const rx = literalRegex(query.search); // escaped — raw input never reaches new RegExp
       q.$or = [{ title: rx }, { skuGlobal: rx }, { searchText: rx }];
     }
     if (query.status) q.status = query.status;
@@ -394,8 +398,17 @@ class CatalogSearchService {
         isFeatured: Boolean(c.isFeatured),
       });
     }
-    const attach = (cat) => ({ ...cat, children: byParent.get(String(cat.id))?.map(attach) || [] });
-    return (byParent.get('root') || []).map(attach);
+    // Cycle-safe (legacy data could hold a parent cycle): prune, never recurse
+    // forever — this endpoint is public and must not 500 on bad data.
+    const attach = (cat, seen) => {
+      const visited = new Set(seen);
+      visited.add(String(cat.id));
+      const children = (byParent.get(String(cat.id)) || [])
+        .filter((ch) => !visited.has(String(ch.id)))
+        .map((ch) => attach(ch, visited));
+      return { ...cat, children };
+    };
+    return (byParent.get('root') || []).map((c) => attach(c, new Set()));
   }
 
   /** Brand list for filter chips. */

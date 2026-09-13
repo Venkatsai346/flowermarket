@@ -87,8 +87,13 @@ const TenantProductSchema = new Schema(
   { collection: 'tenantproducts' }
 );
 
-// one listing per (tenant, master) or (tenant, master, variant)
-TenantProductSchema.index({ tenantId: 1, productMasterId: 1, variantId: 1 }, { unique: true });
+// one listing per (tenant, master) or (tenant, master, variant) —
+// soft-delete-aware (migration 003): a deleted listing releases the triple,
+// so re-listing the same SKU does not 409 against a ghost row.
+TenantProductSchema.index(
+  { tenantId: 1, productMasterId: 1, variantId: 1 },
+  { unique: true, partialFilterExpression: { isDeleted: false } }
+);
 TenantProductSchema.index({ tenantId: 1, status: 1 });
 TenantProductSchema.index({ tenantId: 1, productMasterId: 1 });
 

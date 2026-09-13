@@ -220,8 +220,9 @@ export function createEndpoints(client) {
       stock: (id) => c.get(`/catalog/tenant/listings/${id}/stock`),
       setStock: (id, body) => c.put(`/catalog/tenant/listings/${id}/stock`, body),
       adjustStock: (id, body) => c.patch(`/catalog/tenant/listings/${id}/stock`, body),
-      reserveStock: (id, body) => c.post(`/catalog/tenant/listings/${id}/stock/reserve`, body),
-      releaseStock: (id, body) => c.post(`/catalog/tenant/listings/${id}/stock/release`, body),
+      // NOTE: reserveStock/releaseStock were removed with the backend routes
+      // (F-12): checkout commits straight against qtyOnHand; qtyReserved is
+      // display-only on the tenant surface. Do not re-add without the saga.
       changeRequests: (q = {}) => c.get('/catalog/tenant/change-requests', { query: q }),
       submitChangeRequest: (body) => c.post('/catalog/tenant/change-requests', body),
       cancelChangeRequest: (id) => c.post(`/catalog/tenant/change-requests/${id}/cancel`),
