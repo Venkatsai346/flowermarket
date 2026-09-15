@@ -21,6 +21,18 @@ class CatalogTenantController {
     res.status(201).json(created(result, { message: 'Master proposed for review' }));
   });
 
+  /**
+   * Read-only browse of the GLOBAL master catalog for the tenant listing flow
+   * ("which masters can this store list?"). Store owners need this to add
+   * listings; they must NOT get the admin master surface (create/update/
+   * review/deprecate) — hence a GET-only tenant route reusing the same
+   * read-only, validated listMasters query as the admin view.
+   */
+  listMastersForListing = asyncHandler(async (req, res) => {
+    const result = await productMasterService.listMasters({ query: req.query });
+    res.status(200).json(success(result.items, { message: 'Masters fetched', meta: result.meta }));
+  });
+
   // ---------------- listings ----------------
   createListing = asyncHandler(async (req, res) => {
     const listing = await tenantProductService.createListing({

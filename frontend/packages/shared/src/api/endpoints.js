@@ -209,6 +209,9 @@ export function createEndpoints(client) {
     /** Phase 4/Phase 9 — tenant-scoped listings, stock, change requests and bulk. */
     catalogTenant: {
       proposeMaster: (body) => c.post('/catalog/tenant/masters/propose', body),
+      // Read-only global master browse for the "add a listing" picker.
+      // Store owners use this (NOT the admin master surface) to pick a master.
+      masters: (q = {}) => c.get('/catalog/tenant/masters', { query: q }),
       listings: (q = {}) => c.get('/catalog/tenant/listings', { query: q }),
       listing: (id) => c.get(`/catalog/tenant/listings/${id}`),
       createListing: (body) => c.post('/catalog/tenant/listings', body),

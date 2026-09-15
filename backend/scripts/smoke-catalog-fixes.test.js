@@ -240,6 +240,50 @@ async function main() {
   assert.equal(r.status, 409, JSON.stringify(r.body));
   assert.equal(r.body.code, 'MASTER_NOT_ACTIVE', 'draft under a PENDING master must not activate');
 
+  // ============ store-owner master browse: read-only for listings ============
+  section('store owner browses global masters READ-ONLY; master editing stays admin');
+  // Context: m1 (active) + pend (pending) exist. A store owner must be able to
+  // SEE the global catalog to add listings, via the tenant (store) surface —
+  // NOT the admin master surface that carries edit/review/deprecate.
+  r = await call('/catalog/tenant/masters', { token: tok.vendor });
+  assert.equal(r.status, 200, `store owner tenant master browse must be 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.ok(Array.isArray(r.body.data), 'tenant master browse must return an array of masters');
+  assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'active master must be visible to the store owner');
+  assert.ok(r.body.data.some((m) => String(m._id) === String(pendId)), 'pending master must also be visible (browse is the global catalog)');
+  assert.ok(Number.isInteger(r.body.meta.total), 'meta.total must be an integer');
+  assert.equal(r.body.meta.total, r.body.data.length, 'small catalog: total must equal item count');
+
+  // status filter: the listing picker requests only ACTIVE masters
+  r = await call('/catalog/tenant/masters?status=active', { token: tok.vendor });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.meta.total, 1, 'only the active master matches status=active');
+  assert.ok(r.body.data.every((m) => m.status === 'active'), 'status=active must return ONLY active masters');
+  assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'the active master must be the one returned');
+
+  // search filter works on the tenant browse too (title/sku)
+  r = await call(`/catalog/tenant/masters?search=${encodeURIComponent('Dedup')}`, { token: tok.vendor });
+  assert.equal(r.status, 200);
+  assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'search must find the master by title');
+
+  // hostile search string must be regex-safe (200, not 500)
+  r = await call(`/catalog/tenant/masters?search=${encodeURIComponent('(a+)+')}`, { token: tok.vendor });
+  assert.equal(r.status, 200, 'regex-injection search on tenant browse must be 200');
+
+  // READ-ONLY contract: a store owner must NOT reach the admin master surface
+  // (create/update/review/deprecate all live there). This is the 403 the
+  // reported bug hit — the store owner was pointed at the admin endpoint.
+  r = await call('/catalog/admin/masters', { token: tok.vendor });
+  assert.equal(r.status, 403, `store owner must be 403 on the ADMIN master surface, got ${r.status}`);
+
+  // but a true admin keeps full access to that same surface
+  r = await call('/catalog/admin/masters', { token: tok.adminUser });
+  assert.equal(r.status, 200, 'admin role must still reach the admin master surface');
+  assert.ok(Array.isArray(r.body.data) && r.body.data.length >= 1, 'admin master list must be populated');
+
+  // and a plain customer is locked out of the store-owner browse entirely
+  r = await call('/catalog/tenant/masters', { token: tok.custA });
+  assert.equal(r.status, 403, `customer must be 403 on the tenant master browse, got ${r.status}`);
+
   // ================= F-02: optimistic lock under concurrency =================
   section('F-02 concurrent same-version price writers: one wins, one 409s');
   r = await call(`/catalog/tenant/listings/${L1}`, { token: tok.vendor });

@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate.js';
 import { USER_ROLES } from '../constants/enums.js';
 import {
   masterProposeSchema,
+  masterQuerySchema,
   listingCreateSchema,
   listingBulkSchema,
   listingQuerySchema,
@@ -32,6 +33,14 @@ router.use(authenticate, authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN, USE
 
 // ---- propose a new global SKU (goes to admin review) ----
 router.post('/masters/propose', validate(masterProposeSchema), CatalogTenantController.proposeMaster);
+
+// ---- READ-ONLY global master browse — the "pick a master to list" picker ----
+// Store owners (any role that runs a store catalog) must be able to see the
+// global catalog to add listings, WITHOUT any master-editing surface. This
+// route is GET-only: create/update/review/deprecate of masters stay on
+// /catalog/admin/* (or go through change requests). Reuses the same
+// read-only, filter-validated, soft-delete-aware query as the admin list.
+router.get('/masters', validate(masterQuerySchema, 'query'), CatalogTenantController.listMastersForListing);
 
 // ---- listings (tenant-scoped writes, optimistic-locked) ----
 router.post('/listings', validate(listingCreateSchema), CatalogTenantController.createListing);

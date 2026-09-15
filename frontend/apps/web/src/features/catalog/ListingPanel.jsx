@@ -473,7 +473,10 @@ export default function ListingPanel() {
     }),
     [page, search, status, refreshKey],
   );
-  const masters = useApi(() => api.catalogAdmin.masters({ status: 'active', limit: 100 }), []);
+  // Read-only tenant master browse (store owners can list any ACTIVE global
+  // master; they do not get the admin master surface). Only active masters
+  // are listable, so that is all the picker needs.
+  const masters = useApi(() => api.catalogTenant.masters({ status: 'active', limit: 100 }), []);
 
   const refresh = () => setRefreshKey((k) => k + 1);
   const rows = data || [];
