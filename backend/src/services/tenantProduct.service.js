@@ -16,6 +16,7 @@ import {
   PRICE_CHANGE_REASON,
   PRICE_CHANGE_SOURCE,
   ENTITY_STATUS,
+  PRODUCT_MASTER_STATUS,
 } from '../constants/enums.js';
 import { assertMasterListable } from '../utils/catalogGuards.js';
 
