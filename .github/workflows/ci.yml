@@ -77,6 +77,34 @@ jobs:
           path: backend/coverage/
           retention-days: 7
 
+  test-hermetic:
+    name: Backend Hermetic (adversarial catalog suite)
+    runs-on: ubuntu-latest
+    env:
+      NODE_ENV: test
+      # Pinned so the mongod binary cache key is deterministic; hermeticMongo
+      # retries with a distro-supported version if this pin is ever unmappable.
+      MONGOMS_VERSION: '7.0.14'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+      - name: Install deps
+        run: cd backend && npm ci
+      - name: Cache mongod binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongod-${{ runner.os }}-${{ env.MONGOMS_VERSION }}
+      # Self-contained: boots its own in-memory mongod, needs no service
+      # container. Separate job on purpose — a binary-download flake must not
+      # take down the core unit-test job with it.
+      - name: Run hermetic adversarial suite
+        run: cd backend && node scripts/smoke-catalog-fixes.test.js
+
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest

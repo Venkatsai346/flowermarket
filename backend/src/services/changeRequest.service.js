@@ -217,8 +217,12 @@ class ChangeRequestService {
     return claimed;
   }
 
-  /** Tenant revises a NEEDS_CHANGES request (updates payload/diff, back to PENDING). */
-  // eslint-disable-next-line no-unused-vars -- actorId/req kept for call-site symmetry with the other CR verbs
+  /**
+   * Tenant revises a NEEDS_CHANGES request (updates payload/diff, back to PENDING).
+   * actorId/req are accepted but unused — kept for call-site symmetry with the
+   * other CR verbs (submit/review pass them through to the audit trail).
+   */
+  // eslint-disable-next-line no-unused-vars
   async revise({ requestId, tenantId, actorId = null, payload = null, diff = null, note = null, req = null }) {
     const cr = await ProductChangeRequest.findById(requestId);
     if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');

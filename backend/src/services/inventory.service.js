@@ -240,10 +240,18 @@ class InventoryService {
     }
   }
 
+  /**
+   * Saga commit — items are processed one at a time, deliberately sequential:
+   * each line's stock decrement is a conditional CAS whose result decides the
+   * committed/failed split, and a line's soldCount bump must follow its own
+   * successful decrement. Parallelizing lines would interleave compensation.
+   */
   async commitForOrder({ tenantId, items }) {
     const committed = [];
     const failed = [];
     for (const it of items) {
+      // Saga order: this line's decrement result decides its own compensation.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
         {
           tenantId,
@@ -255,9 +263,15 @@ class InventoryService {
       );
       if (row) {
         committed.push({ listingId: it.listingId, qty: it.qty, row });
+        // Saga order: the refresh + soldCount bump follow THIS line's decrement.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Saga order: stock refresh lands before the next line runs.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Saga order: this line's soldCount, one line at a time.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, 1);
         }
       } else {
@@ -267,18 +281,30 @@ class InventoryService {
     return { committed, failed };
   }
 
-  /** COMPENSATION — restore qtyOnHand (and undo the soldCount bump) for items that were committed. */
+  /**
+   * COMPENSATION — restore qtyOnHand (and undo the soldCount bump) for items
+   * that were committed. Runs one line at a time in commit order, mirroring
+   * the saga, so an interrupted restore is auditable and re-runnable.
+   */
   async restoreForOrder({ tenantId, items }) {
     for (const it of items) {
+      // Compensation order: undo each line's decrement before the next.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
         { tenantId, tenantProductId: it.listingId },
         { $inc: { qtyOnHand: it.qty }, $set: { lastUpdatedAt: new Date() } },
         { new: true }
       );
       if (row) {
+        // Compensation order: undo this line's refresh/soldCount after its restore.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Compensation order: stock refresh before the next line.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Compensation order: this line's soldCount, one at a time.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, -1);
         }
       }

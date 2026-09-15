@@ -183,6 +183,7 @@ export class AdminCatalogService {
     let page = 1;
     let complete = true;
     while (true) {
+      // Page N+1 only exists if page N reported hasMore — sequential by design.
       // eslint-disable-next-line no-await-in-loop
       const { items, meta } = await this.list({ tenantId, query: { ...query, page, limit: PAGE } });
       rows.push(...items);

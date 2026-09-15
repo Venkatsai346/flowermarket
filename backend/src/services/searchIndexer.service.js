@@ -191,19 +191,28 @@ class SearchIndexerService {
     for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
       const q = { productMasterId: masterId };
       if (cursor) q._id = { $gt: cursor };
+      // Each batch is the cursor's next page — sequential by design.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(BATCH).lean();
       if (!listings.length) break;
+      // Re-checked per batch: a master deleted mid-reindex stops the walk.
+      // eslint-disable-next-line no-await-in-loop
       const master = await ProductMaster.findById(masterId).lean();
       if (!master) break;
+      // Per-batch maps are built from THIS batch's listings (depends on the
+      // previous query), so they run after it, one at a time.
+      // eslint-disable-next-line no-await-in-loop
       const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
         this.categoryMap([master.categoryId]),
         this.brandMap([master.brandId]),
         this.variantImageMaps(listings),
       ]);
+      // Documents for the batch: parallel within, sequential across batches.
+      // eslint-disable-next-line no-await-in-loop
       const docs = await Promise.all(
         listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }))
       );
+      // One index call per batch — sequential: the cursor advances per batch.
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);
       scanned += listings.length;
@@ -243,14 +252,18 @@ class SearchIndexerService {
       if (tenantId) q.tenantId = tenantId;
       if (cursor) q._id = { $gt: cursor };
 
+      // Each batch is the cursor's next page — sequential by design.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(batchSize).lean();
       if (!listings.length) break;
 
       const masterIds = [...new Set(listings.map((l) => String(l.productMasterId)))];
+      // This batch's masters come from this batch's listings — one $in fetch,
+      // one at a time per cursor page.
       // eslint-disable-next-line no-await-in-loop
       const masters = await ProductMaster.find({ _id: { $in: masterIds } }).lean();
       const masterById = new Map(masters.map((m) => [String(m._id), m]));
+      // Per-batch maps from this batch's masters — one at a time per cursor page.
       // eslint-disable-next-line no-await-in-loop
       const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
         this.categoryMap(masters.map((m) => m.categoryId)),
@@ -258,13 +271,15 @@ class SearchIndexerService {
         this.variantImageMaps(listings),
       ]);
 
-      const docs = [];
-      for (const listing of listings) {
-        const master = masterById.get(String(listing.productMasterId));
-        if (!master) continue;
-        // eslint-disable-next-line no-await-in-loop
-        docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }));
-      }
+      // Built in parallel (same shape as reindexMaster); order follows `listings`.
+      // eslint-disable-next-line no-await-in-loop
+      const docs = await Promise.all(
+        listings
+          .map((listing) => ({ listing, master: masterById.get(String(listing.productMasterId)) }))
+          .filter((x) => x.master)
+          .map((x) => this.buildDocument({ listing: x.listing, master: x.master, categoryById, brandById, variantById, imagesByMaster }))
+      );
+      // One index call per batch — sequential: the cursor advances per batch.
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);
 
@@ -289,6 +304,8 @@ class SearchIndexerService {
     let repaired = 0;
     if (repair) {
       for (const s of stale) {
+        // One stale doc at a time (bounded by `limit`) so a single bad doc
+        // cannot wedge the whole repair pass.
         // eslint-disable-next-line no-await-in-loop
         const r = await this.indexListing({ listingId: s.listingId, tenantId: s.tenantId }).catch(() => null);
         if (r?.indexed) repaired += 1;

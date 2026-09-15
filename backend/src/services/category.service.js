@@ -48,6 +48,8 @@ class CategoryService {
       if (seen.has(key)) return false; // legacy cycle — stop
       seen.add(key);
       if (key === String(targetId)) return true;
+      // Each hop's parentId comes from the previous hop — sequential by construction.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Category.findById(cur).select('parentId').lean();
       cur = row?.parentId || null;
     }
@@ -60,6 +62,8 @@ class CategoryService {
     let processed = 0;
     while (frontier.length) {
       const next = [];
+      // One batched query per BFS level — a level's rows depend on the previous
+      // level's frontier, so levels run one at a time.
       // eslint-disable-next-line no-await-in-loop
       const rows = await Category.find({
         parentId: { $in: frontier.map((f) => f._id) },
@@ -67,6 +71,8 @@ class CategoryService {
       const levelOf = new Map(frontier.map((f) => [String(f._id), f.level]));
       for (const r of rows) {
         const lvl = (levelOf.get(String(r.parentId)) ?? 0) + 1;
+        // One update per row (bounded by the 10k guard below); each level was
+        // computed from its parent in the previous level's map.
         // eslint-disable-next-line no-await-in-loop
         await Category.updateOne({ _id: r._id }, { $set: { level: lvl } });
         processed += 1;

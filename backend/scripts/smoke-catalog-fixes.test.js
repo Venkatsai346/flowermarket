@@ -52,6 +52,8 @@ async function main() {
   ];
   const loaded = {};
   for (const m of models) {
+    // Sequential on purpose: models register with mongoose in import order —
+    // a defined load order the suites rely on.
     // eslint-disable-next-line no-await-in-loop
     loaded[m] = (await import(`../src/models/${m}`)).default;
   }
@@ -87,6 +89,7 @@ async function main() {
   const { default: AuthService } = await import('../src/services/auth.service.js');
   const tok = {};
   for (const [k, u] of Object.entries({ admin, vendor, vendor2, custA, custB, adminUser })) {
+    // Bounded setup: six users minted one at a time so a failure names the user.
     // eslint-disable-next-line no-await-in-loop
     tok[k] = (await AuthService.issueTokens(u)).accessToken;
   }
@@ -128,12 +131,14 @@ async function main() {
   const pollJob = async (jobId, { timeoutMs = 15_000 } = {}) => {
     const t0 = Date.now();
     for (;;) {
+      // Polling loop: each round depends on the previous one's job status.
       // eslint-disable-next-line no-await-in-loop
       const r = await call(`/catalog/tenant/bulk/jobs/${jobId}`, { token: tok.vendor });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       const job = r.body.data;
       if (job.status === 'completed' || job.status === 'failed') return job;
       if (Date.now() - t0 > timeoutMs) throw new Error(`job ${jobId} did not finish: ${JSON.stringify(job)}`);
+      // Poll cadence: sleep, then the next round depends on the previous result.
       // eslint-disable-next-line no-await-in-loop
       await new Promise((res2) => { setTimeout(res2, 150); });
     }
@@ -563,10 +568,12 @@ async function main() {
 
   // ================= F-10: regex injection in search =================
   section('F-10 hostile search strings return 200, not 500');
+  // Bounded: eight hostile strings probed one at a time so each result is attributable.
   for (const evil of ['(', '(a+)+', '[', '*', '.*', '$$$', '\\', 'a|b']) {
     // eslint-disable-next-line no-await-in-loop
     const a = await call(`/catalog/admin/masters?search=${encodeURIComponent(evil)}`, { token: tok.admin });
     assert.equal(a.status, 200, `admin master search "${evil}" must be 200`);
+    // Same string on the second surface — sequential keeps the log ordered.
     // eslint-disable-next-line no-await-in-loop
     const b = await call(`/catalog/tenant/listings?search=${encodeURIComponent(evil)}`, { token: tok.vendor });
     assert.equal(b.status, 200, `tenant listing search "${evil}" must be 200`);
