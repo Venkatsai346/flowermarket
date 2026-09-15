@@ -132,7 +132,12 @@ export const GO_SHORTCUTS = Object.freeze({
 
 export function groupsForRole(role) {
   if (role === 'super_admin') return ['platform', 'store', 'catalog'];
-  if (role === 'admin') return ['store', 'catalog'];
+  // Store owner (tenant): runs their own store ("My store", which includes
+  // "My catalog" = tenant listing ops). The "catalog" group is the PLATFORM's
+  // global-catalog management surface (masters/categories/brands/deep admin)
+  // and is super_admin-only — a tenant browses masters read-only to add
+  // listings, it does not manage the global catalog.
+  if (role === 'admin') return ['store'];
   if (role === 'vendor') return ['vendor'];
   if (role === 'rider') return ['rider'];
   return [];

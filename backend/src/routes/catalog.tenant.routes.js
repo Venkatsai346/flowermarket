@@ -7,6 +7,7 @@ import { USER_ROLES } from '../constants/enums.js';
 import {
   masterProposeSchema,
   masterQuerySchema,
+  categoryQuerySchema,
   listingCreateSchema,
   listingBulkSchema,
   listingQuerySchema,
@@ -41,6 +42,11 @@ router.post('/masters/propose', validate(masterProposeSchema), CatalogTenantCont
 // /catalog/admin/* (or go through change requests). Reuses the same
 // read-only, filter-validated, soft-delete-aware query as the admin list.
 router.get('/masters', validate(masterQuerySchema, 'query'), CatalogTenantController.listMastersForListing);
+
+// ---- READ-ONLY category reference list (store config: policies, GST rates) ----
+// Tenants read the shared taxonomy to configure their store; category
+// create/update/delete stays on /catalog/admin/* (super_admin).
+router.get('/categories', validate(categoryQuerySchema, 'query'), CatalogTenantController.listCategories);
 
 // ---- listings (tenant-scoped writes, optimistic-locked) ----
 router.post('/listings', validate(listingCreateSchema), CatalogTenantController.createListing);

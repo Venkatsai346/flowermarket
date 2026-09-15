@@ -31,7 +31,7 @@ export default function PoliciesPage() {
       api.policies.taxPolicies(),
       api.policies.coupons(),
       api.policies.refund(),
-      api.catalogAdmin.categories({ limit: 100, includeInactive: true }),
+      api.catalogTenant.categories({ limit: 100, includeInactive: true }),
     ]).then(([fee, tax, coupon, refundPolicy, cats]) => ({
       deliveryFees: fee.data || [],
       taxPolicies: tax.data || [],

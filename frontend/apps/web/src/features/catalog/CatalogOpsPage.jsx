@@ -1,29 +1,29 @@
 import { useState } from 'react';
-import { Boxes, History, Inbox, UploadCloud, Zap } from 'lucide-react';
+import { History, Inbox, Zap } from 'lucide-react';
 import { cn } from '../../lib/utils.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
-import ListingPanel from './ListingPanel.jsx';
 import ReviewQueuePanel from './ReviewQueuePanel.jsx';
 import AuditPanel from './AuditPanel.jsx';
 import EventPanel from './EventPanel.jsx';
-import BulkPanel from './BulkPanel.jsx';
 
+// Platform catalog operations — super_admin only (route-guarded in App.jsx).
+// Store listings / bulk upload live in "My catalog" (the store owner's page);
+// shared-catalog approvals, the audit trail and the event pipeline are
+// platform concerns and belong here.
 const TABS = [
-  ['listings', 'Listings', Boxes],
   ['review', 'Review queue', Inbox],
   ['audit', 'Audit', History],
   ['events', 'Events', Zap],
-  ['bulk', 'Bulk', UploadCloud],
 ];
 
 export default function CatalogOpsPage() {
-  const [tab, setTab] = useState('listings');
+  const [tab, setTab] = useState('review');
 
   return (
     <div>
       <PageHeader
         title="Catalog deep admin"
-        description="Store listings, shared-catalog approvals, the immutable audit trail and the event pipeline."
+        description="Shared-catalog approvals, the immutable audit trail and the event pipeline."
       />
 
       <nav className="mb-5 flex flex-wrap gap-1 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-1.5">
@@ -43,11 +43,9 @@ export default function CatalogOpsPage() {
         ))}
       </nav>
 
-      {tab === 'listings' && <ListingPanel />}
       {tab === 'review' && <ReviewQueuePanel />}
       {tab === 'audit' && <AuditPanel />}
       {tab === 'events' && <EventPanel />}
-      {tab === 'bulk' && <BulkPanel />}
     </div>
   );
 }

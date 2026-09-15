@@ -3,6 +3,7 @@ import tenantProductService from '../services/tenantProduct.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import inventoryService from '../services/inventory.service.js';
 import bulkImportService from '../services/bulkImport.service.js';
+import categoryService from '../services/category.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { badRequest } from '../utils/ApiError.js';
@@ -31,6 +32,19 @@ class CatalogTenantController {
   listMastersForListing = asyncHandler(async (req, res) => {
     const result = await productMasterService.listMasters({ query: req.query });
     res.status(200).json(success(result.items, { message: 'Masters fetched', meta: result.meta }));
+  });
+
+  /**
+   * Read-only category list for the TENANT's own store configuration
+   * (delivery policies, per-category GST rate policies). Categories are shared
+   * catalog reference data — reading them is not a platform operation, so the
+   * tenant surface serves this read while create/update/delete of categories
+   * stays on /catalog/admin/* (super_admin). Reuses the same read-only,
+   * filter-validated, soft-delete-aware query as the admin list.
+   */
+  listCategories = asyncHandler(async (req, res) => {
+    const result = await categoryService.list(req.query);
+    res.status(200).json(success(result.items, { message: 'Categories fetched', meta: result.meta }));
   });
 
   // ---------------- listings ----------------

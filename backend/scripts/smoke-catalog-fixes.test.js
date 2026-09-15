@@ -245,49 +245,89 @@ async function main() {
   assert.equal(r.status, 409, JSON.stringify(r.body));
   assert.equal(r.body.code, 'MASTER_NOT_ACTIVE', 'draft under a PENDING master must not activate');
 
-  // ============ store-owner master browse: read-only for listings ============
-  section('store owner browses global masters READ-ONLY; master editing stays admin');
-  // Context: m1 (active) + pend (pending) exist. A store owner must be able to
-  // SEE the global catalog to add listings, via the tenant (store) surface —
-  // NOT the admin master surface that carries edit/review/deprecate.
-  r = await call('/catalog/tenant/masters', { token: tok.vendor });
-  assert.equal(r.status, 200, `store owner tenant master browse must be 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  // ============ tenant (store owner) master browse: read-only for listings ============
+  section('tenant (store owner) browses masters READ-ONLY; master mgmt is platform-only');
+  // The persona is a TENANT — a storefront owner: role `admin`, tenant-scoped,
+  // on a plan subscription (exactly what registerStore creates). NOT a
+  // marketplace vendor. `adminUser` (role admin, tenant1) is that persona.
+  // Context: m1 (active) + pend (pending) exist.
+  r = await call('/catalog/tenant/masters', { token: tok.adminUser });
+  assert.equal(r.status, 200, `tenant master browse must be 200, got ${r.status}: ${JSON.stringify(r.body)}`);
   assert.ok(Array.isArray(r.body.data), 'tenant master browse must return an array of masters');
-  assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'active master must be visible to the store owner');
+  assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'active master must be visible to the tenant');
   assert.ok(r.body.data.some((m) => String(m._id) === String(pendId)), 'pending master must also be visible (browse is the global catalog)');
   assert.ok(Number.isInteger(r.body.meta.total), 'meta.total must be an integer');
   assert.equal(r.body.meta.total, r.body.data.length, 'small catalog: total must equal item count');
 
   // status filter: the listing picker requests only ACTIVE masters
-  r = await call('/catalog/tenant/masters?status=active', { token: tok.vendor });
+  r = await call('/catalog/tenant/masters?status=active', { token: tok.adminUser });
   assert.equal(r.status, 200);
   assert.equal(r.body.meta.total, 1, 'only the active master matches status=active');
   assert.ok(r.body.data.every((m) => m.status === 'active'), 'status=active must return ONLY active masters');
   assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'the active master must be the one returned');
 
-  // search filter works on the tenant browse too (title/sku)
-  r = await call(`/catalog/tenant/masters?search=${encodeURIComponent('Dedup')}`, { token: tok.vendor });
+  // search filter works on the tenant browse (title/sku)
+  r = await call(`/catalog/tenant/masters?search=${encodeURIComponent('Dedup')}`, { token: tok.adminUser });
   assert.equal(r.status, 200);
   assert.ok(r.body.data.some((m) => String(m._id) === String(m1Id)), 'search must find the master by title');
 
   // hostile search string must be regex-safe (200, not 500)
-  r = await call(`/catalog/tenant/masters?search=${encodeURIComponent('(a+)+')}`, { token: tok.vendor });
+  r = await call(`/catalog/tenant/masters?search=${encodeURIComponent('(a+)+')}`, { token: tok.adminUser });
   assert.equal(r.status, 200, 'regex-injection search on tenant browse must be 200');
 
-  // READ-ONLY contract: a store owner must NOT reach the admin master surface
-  // (create/update/review/deprecate all live there). This is the 403 the
-  // reported bug hit — the store owner was pointed at the admin endpoint.
-  r = await call('/catalog/admin/masters', { token: tok.vendor });
-  assert.equal(r.status, 403, `store owner must be 403 on the ADMIN master surface, got ${r.status}`);
+  // browse → list: the platform approves a fresh master; the tenant sees it in
+  // the browse and attaches it to its own store as a listing — the whole point
+  // of the read-only browse. (A distinct master, so no (tenant,master) duplicate.)
+  r = await propose({ skuGlobal: 'TENANT-LIST-1', type: 'fresh_flower', title: 'Tenant Lists This', categoryId: catA, brandId });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  const tListId = r.body.data.master.id;
+  await approveMaster(tListId); // platform approves → ACTIVE
+  r = await call('/catalog/tenant/masters?status=active', { token: tok.adminUser });
+  assert.ok(r.body.data.some((m) => String(m._id) === String(tListId)), 'newly approved master must appear in the tenant browse');
+  r = await makeListing(
+    { productMasterId: tListId, status: 'active', price: { mrp: 300, sellingPrice: 250 }, stockQty: 10 },
+    { token: tok.adminUser },
+  );
+  assert.equal(r.status, 201, `tenant must be able to list a master it browsed, got ${r.status}: ${JSON.stringify(r.body)}`);
 
-  // but a true admin keeps full access to that same surface
+  // READ-ONLY contract: the tenant must NOT reach the platform master surface —
+  // create / edit / review / deprecate are super_admin-only now. A tenant
+  // touching any of them is a 403, and none of it may mutate the catalog.
   r = await call('/catalog/admin/masters', { token: tok.adminUser });
-  assert.equal(r.status, 200, 'admin role must still reach the admin master surface');
+  assert.equal(r.status, 403, `tenant must be 403 on the admin master LIST, got ${r.status}`);
+  r = await call('/catalog/admin/masters', {
+    method: 'POST', token: tok.adminUser,
+    body: { skuGlobal: 'TENANT-NEW-1', type: 'fresh_flower', title: 'Tenant Created', categoryId: catA, brandId },
+  });
+  assert.equal(r.status, 403, `tenant must be 403 CREATING a master, got ${r.status}`);
+  r = await call(`/catalog/admin/masters/${m1Id}`, { method: 'PATCH', token: tok.adminUser, body: { title: 'Tenant Edit' } });
+  assert.equal(r.status, 403, `tenant must be 403 EDITING a master, got ${r.status}`);
+  r = await call(`/catalog/admin/masters/${pendId}/review`, { method: 'POST', token: tok.adminUser, body: { decision: 'approve' } });
+  assert.equal(r.status, 403, `tenant must be 403 REVIEWING a master, got ${r.status}`);
+  r = await call(`/catalog/admin/masters/${m1Id}/deprecate`, { method: 'POST', token: tok.adminUser, body: { note: 'no' } });
+  assert.equal(r.status, 403, `tenant must be 403 DEPRECATING a master, got ${r.status}`);
+  const mUnmutated = await ProductMaster.findById(m1Id).lean();
+  assert.notEqual(mUnmutated.title, 'Tenant Edit', 'a blocked tenant edit must not have applied');
+
+  // the PLATFORM operator (super_admin) keeps full access to the same surface
+  r = await call('/catalog/admin/masters', { token: tok.admin });
+  assert.equal(r.status, 200, 'platform (super_admin) must reach the admin master surface');
   assert.ok(Array.isArray(r.body.data) && r.body.data.length >= 1, 'admin master list must be populated');
 
-  // and a plain customer is locked out of the store-owner browse entirely
+  // a plain customer is locked out of the tenant browse entirely
   r = await call('/catalog/tenant/masters', { token: tok.custA });
   assert.equal(r.status, 403, `customer must be 403 on the tenant master browse, got ${r.status}`);
+
+  // category reference data: the tenant reads the shared taxonomy on the TENANT
+  // surface to configure its own store (delivery policies, per-category GST
+  // rates) — it must NOT reach the admin taxonomy surface (create/update/delete).
+  r = await call('/catalog/tenant/categories?includeInactive=true', { token: tok.adminUser });
+  assert.equal(r.status, 200, `tenant must read the category reference list, got ${r.status}: ${JSON.stringify(r.body)}`);
+  assert.ok(Array.isArray(r.body.data) && r.body.data.length >= 3, 'tenant category read must return the taxonomy');
+  assert.ok(r.body.data.some((c) => String(c._id) === String(catA)), 'a created category must be visible to the tenant');
+  assert.ok(Number.isInteger(r.body.meta.total), 'category read meta.total must be an integer');
+  r = await call('/catalog/admin/categories', { token: tok.adminUser });
+  assert.equal(r.status, 403, `tenant must be 403 on the ADMIN category surface, got ${r.status}`);
 
   // ================= F-02: optimistic lock under concurrency =================
   section('F-02 concurrent same-version price writers: one wins, one 409s');
@@ -583,10 +623,13 @@ async function main() {
 
   // ================= F-17: live role =================
   section('F-17 demoted user loses access on the very next request');
-  r = await call('/catalog/admin/categories', { token: tok.adminUser });
-  assert.equal(r.status, 200, 'admin role must pass before demotion');
+  // The store owner (role admin) can browse the tenant master surface...
+  r = await call('/catalog/tenant/masters', { token: tok.adminUser });
+  assert.equal(r.status, 200, 'admin (store owner) role must pass before demotion');
+  // ...is demoted to a plain customer — the SAME token must 403 immediately,
+  // because RBAC reads the LIVE role, not the role frozen into the JWT.
   await User.findByIdAndUpdate(adminUser.id, { role: 'customer' });
-  r = await call('/catalog/admin/categories', { token: tok.adminUser });
+  r = await call('/catalog/tenant/masters', { token: tok.adminUser });
   assert.equal(r.status, 403, `demoted user must be 403 with the SAME token, got ${r.status}`);
   await User.findByIdAndUpdate(adminUser.id, { role: 'admin' });
 

@@ -22,7 +22,7 @@ export default function RatePoliciesPanel() {
     () => Promise.all([
       api.tax.policies(),
       api.tax.statutoryRates(),
-      api.catalogAdmin.categories({ limit: 100, includeInactive: true }),
+      api.catalogTenant.categories({ limit: 100, includeInactive: true }),
     ]).then(([policies, rates, cats]) => ({
       policies: policies.data || [],
       statutoryRates: rates.data || [],

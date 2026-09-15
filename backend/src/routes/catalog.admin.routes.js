@@ -32,9 +32,24 @@ import {
 const router = Router();
 
 /**
- * /catalog/admin — CENTRAL CATALOG OPS (ADMIN + SUPER_ADMIN).
+ * /catalog/admin — CENTRAL CATALOG OPS (PLATFORM OPERATOR = SUPER_ADMIN ONLY).
+ *
+ * This surface manages the GLOBAL catalog (taxonomy, product masters, the
+ * change-request review queue, catalog audit + event ops). The global catalog
+ * is a PLATFORM asset, so it is gated to the platform operator.
+ *
+ * Store owners (tenants — role `admin`, created by registerStore with a plan
+ * subscription) do NOT run this surface: they browse the catalog READ-ONLY via
+ * /catalog/tenant/masters and manage their own listings via /catalog/tenant/*
+ * (see catalog.tenant.routes.js). Giving a tenant master-editing rights would
+ * let one store mutate the global catalog every other store sells from.
+ *
+ * (Historically this gate was `authorize(ADMIN, SUPER_ADMIN)`, which — since
+ * `admin` is the tenant/store-owner role — let store owners edit global
+ * masters. That was the over-grant behind the "store owner" 403/permission
+ * confusion; the tenant browse is the intended read path.)
  */
-router.use(authenticate, authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN));
+router.use(authenticate, authorize(USER_ROLES.SUPER_ADMIN));
 
 // ---- taxonomy ----
 router.post('/categories', validate(categoryCreateSchema), CatalogAdminController.createCategory);

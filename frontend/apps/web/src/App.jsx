@@ -151,10 +151,10 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route index element={<HomeRoute />} />
           <Route path="catalog" element={storeOnly(<CatalogPage />)} />
-          <Route path="catalog/masters" element={storeOnly(<MastersPage />)} />
-          <Route path="catalog/categories" element={storeOnly(<CategoriesPage />)} />
-          <Route path="catalog/brands" element={storeOnly(<BrandsPage />)} />
-          <Route path="catalog/ops" element={storeOnly(<Suspense fallback={<LoadingBlock />}><CatalogOpsPage /></Suspense>)} />
+          <Route path="catalog/masters" element={platformOnly(<MastersPage />)} />
+          <Route path="catalog/categories" element={platformOnly(<CategoriesPage />)} />
+          <Route path="catalog/brands" element={platformOnly(<BrandsPage />)} />
+          <Route path="catalog/ops" element={platformOnly(<Suspense fallback={<LoadingBlock />}><CatalogOpsPage /></Suspense>)} />
           <Route path="orders" element={storeOnly(<OrdersPage />)} />
           <Route path="fulfillment" element={storeOnly(<FulfillmentPage />)} />
           <Route path="returns" element={storeOnly(<AftersalesPage />)} />

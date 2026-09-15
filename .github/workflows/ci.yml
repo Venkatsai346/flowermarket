@@ -119,6 +119,11 @@ jobs:
         run: cd frontend && npm ci
       - name: Run shared tests
         run: cd frontend && npm test --if-present
+      - name: Run admin web tests
+        # The admin console's unit tests lock the role-based nav/route contract
+        # (e.g. a store owner gets "My store" only, never the platform "Catalog"
+        # management group) — run them, don't just build.
+        run: cd frontend && npm run test --workspace=apps/web
       - name: Build storefront
         run: cd frontend && npm run build --workspace=apps/storefront --if-present
       - name: Build admin web

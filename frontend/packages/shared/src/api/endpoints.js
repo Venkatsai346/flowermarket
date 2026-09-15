@@ -212,6 +212,9 @@ export function createEndpoints(client) {
       // Read-only global master browse for the "add a listing" picker.
       // Store owners use this (NOT the admin master surface) to pick a master.
       masters: (q = {}) => c.get('/catalog/tenant/masters', { query: q }),
+      // Read-only shared taxonomy for the store's own config (delivery
+      // policies, per-category GST rates). Category mgmt stays on catalogAdmin.
+      categories: (q = {}) => c.get('/catalog/tenant/categories', { query: q }),
       listings: (q = {}) => c.get('/catalog/tenant/listings', { query: q }),
       listing: (id) => c.get(`/catalog/tenant/listings/${id}`),
       createListing: (body) => c.post('/catalog/tenant/listings', body),

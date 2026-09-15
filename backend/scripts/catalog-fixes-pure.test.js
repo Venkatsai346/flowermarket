@@ -728,6 +728,33 @@ await test('backoff grows with attempts and stays capped (30m max)', () => {
   assert.equal(backoffMs(99), 30 * 60_000, 'ladder must cap at 30m');
 });
 
+console.log('\n[entitlements] plan caps: free maxProducts=50 boundary, 0 = unlimited');
+
+const { exceedsLimit, FREE_FALLBACK_FEATURES } = await import('../src/services/entitlement.service.js');
+
+await test('the 50th product on the free plan is allowed (49 used + 1)', () => {
+  assert.equal(exceedsLimit(49, 50, 1), false);
+});
+await test('the 51st product on the free plan is BLOCKED (50 used + 1)', () => {
+  assert.equal(exceedsLimit(50, 50, 1), true);
+});
+await test('a bulk add that would cross the cap is blocked (49 used + 2)', () => {
+  assert.equal(exceedsLimit(49, 50, 2), true);
+});
+await test('a bulk add that lands exactly on the cap is allowed (48 used + 2)', () => {
+  assert.equal(exceedsLimit(48, 50, 2), false);
+});
+await test('limit 0 means UNLIMITED — no count can breach it', () => {
+  assert.equal(exceedsLimit(0, 0, 1), false);
+  assert.equal(exceedsLimit(999_999, 0, 1), false);
+});
+await test('the fail-safe free tier carries the documented caps', () => {
+  assert.equal(FREE_FALLBACK_FEATURES.maxProducts, 50);
+  assert.equal(FREE_FALLBACK_FEATURES.maxHubs, 1);
+  assert.equal(FREE_FALLBACK_FEATURES.maxStaff, 2);
+  assert.equal(FREE_FALLBACK_FEATURES.marketplaceEnabled, false);
+});
+
 // ---------------- summary ----------------
 console.log(`\n${failed === 0 ? '✅' : '❌'} catalog-fixes-pure: ${passed} passed, ${failed} failed`);
 if (failed > 0) {
