@@ -473,7 +473,9 @@ export default function ListingPanel() {
     }),
     [page, search, status, refreshKey],
   );
-  const masters = useApi(() => api.catalogAdmin.masters({ status: 'active', limit: 100 }), []);
+  // Store owners are intentionally forbidden from the global admin API.
+  // Use the tenant-scoped, read-only active-master discovery endpoint.
+  const masters = useApi(() => api.catalogTenant.availableMasters({ limit: 100 }), []);
 
   const refresh = () => setRefreshKey((k) => k + 1);
   const rows = data || [];

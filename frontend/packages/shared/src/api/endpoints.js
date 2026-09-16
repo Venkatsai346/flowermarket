@@ -209,6 +209,7 @@ export function createEndpoints(client) {
     /** Phase 4/Phase 9 — tenant-scoped listings, stock, change requests and bulk. */
     catalogTenant: {
       proposeMaster: (body) => c.post('/catalog/tenant/masters/propose', body),
+      availableMasters: (q = {}) => c.get('/catalog/tenant/masters', { query: q }),
       listings: (q = {}) => c.get('/catalog/tenant/listings', { query: q }),
       listing: (id) => c.get(`/catalog/tenant/listings/${id}`),
       createListing: (body) => c.post('/catalog/tenant/listings', body),
@@ -216,7 +217,7 @@ export function createEndpoints(client) {
       masterVariants: (id) => c.get(`/catalog/tenant/masters/${id}/variants`),
       updatePrice: (id, body) => c.patch(`/catalog/tenant/listings/${id}/price`, body),
       updateStatus: (id, body) => c.patch(`/catalog/tenant/listings/${id}/status`, body),
-      deactivateListing: (id) => c.post(`/catalog/tenant/listings/${id}/deactivate`),
+      deactivateListing: (id, body = {}) => c.post(`/catalog/tenant/listings/${id}/deactivate`, body),
       stock: (id) => c.get(`/catalog/tenant/listings/${id}/stock`),
       setStock: (id, body) => c.put(`/catalog/tenant/listings/${id}/stock`, body),
       adjustStock: (id, body) => c.patch(`/catalog/tenant/listings/${id}/stock`, body),

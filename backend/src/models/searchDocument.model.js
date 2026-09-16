@@ -36,6 +36,8 @@ const SearchDocumentSchema = new Schema(
     slug: { type: String, default: null, maxlength: 200 },
     searchText: { type: String, default: '' },
     brandName: { type: String, default: null, maxlength: 120 },
+    brandId: { type: Types.ObjectId, ref: 'Brand', default: null, index: true },
+    productType: { type: String, default: null, maxlength: 40, index: true },
     categoryId: { type: Types.ObjectId, ref: 'Category', default: null, index: true },
     categoryPath: { type: [String], default: [] },
     tags: { type: [String], default: [] },

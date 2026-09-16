@@ -256,8 +256,19 @@ export const variantImageCreateSchema = Joi.object({
   expectedVersion: Joi.number().integer().min(1).required(),
 });
 
-export const imagePrimarySchema = Joi.object({
+export const versionOnlySchema = Joi.object({
   expectedVersion: Joi.number().integer().min(1).required(),
+});
+
+export const imagePrimarySchema = versionOnlySchema;
+
+export const masterReviewSchema = Joi.object({
+  decision: Joi.string().valid('approve', 'reject').required(),
+  note: Joi.string().max(500).allow(null, ''),
+});
+
+export const masterDeprecateSchema = Joi.object({
+  note: Joi.string().max(500).allow(null, ''),
 });
 
 export const attributeSetSchema = Joi.object({

@@ -15,8 +15,7 @@ import { pick } from '../utils/catalog/diff.js';
 import { whitelistMasterPatch } from '../utils/catalog/fieldOwnership.js';
 import { titleSimilarity, DUPLICATE_TITLE_THRESHOLD } from '../utils/catalog/similarity.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
-import { badRequest, notFound } from '../utils/ApiError.js';
-import { AppError } from '../utils/ApiError.js';
+import { badRequest, notFound, conflict, AppError } from '../utils/ApiError.js';
 import {
   PRODUCT_MASTER_STATUS,
   TENANT_LISTING_STATUS,
@@ -197,6 +196,28 @@ class ProductMasterService {
       const reread = await ProductMaster.findById(masterId).lean();
       assertMasterReviewable(reread);
     }
+    // A proposed master and its CREATE_MASTER request are one workflow exposed
+    // through two admin views (master detail and review queue). If staff decide
+    // from master detail, close the still-pending request too; previously it
+    // remained pending forever and a later queue approval could never apply.
+    // When called from changeRequestService the request was already atomically
+    // claimed, so this guarded update is intentionally a no-op.
+    await ProductChangeRequest.updateMany(
+      {
+        productMasterId: master.id,
+        type: 'create_master',
+        status: 'pending',
+        isDeleted: { $ne: true },
+      },
+      {
+        $set: {
+          status: decision === 'approve' ? 'approved' : 'rejected',
+          review: { reviewedBy: actorId, reviewedAt: new Date(), note: note || null },
+          ...(decision === 'approve' ? { appliedAt: new Date(), lastApplyError: null } : {}),
+        },
+      },
+    );
+
     if (decision === 'approve') {
       await auditService.record({
         action: 'approve', entityType: 'product_master', entityId: master.id,
@@ -208,10 +229,10 @@ class ProductMasterService {
       });
       return master;
     }
-    master.status = PRODUCT_MASTER_STATUS.REJECTED;
-    master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
-    master.version += 1;
-    await master.save();
+    // The guarded findOneAndUpdate above already persisted the rejection,
+    // review metadata and exactly one version bump. Do not save/bump again:
+    // that used to make reject advance two versions and opened a stale-save
+    // window after the atomic decision.
     // A rejected master must not keep SELLABLE listings alive (DEPRECATED has
     // the same cascade — previously only deprecation had it). Draft listings
     // are kept: the tenant may revise the master and resubmit.

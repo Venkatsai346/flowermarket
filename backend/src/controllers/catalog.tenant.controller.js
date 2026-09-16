@@ -22,6 +22,20 @@ class CatalogTenantController {
   });
 
   // ---------------- listings ----------------
+  /**
+   * Read-only discovery of ACTIVE global masters for listing creation.
+   * Tenant admins cannot call /catalog/admin/masters (correctly SUPER_ADMIN
+   * only), so the console needs this tenant-authorized, publish-gated view.
+   */
+  listAvailableMasters = asyncHandler(async (req, res) => {
+    const result = await productMasterService.listMasters({
+      query: { ...req.query, status: 'active' },
+    });
+    res.status(200).json(success(result.items, {
+      message: 'Available product masters fetched', meta: result.meta,
+    }));
+  });
+
   createListing = asyncHandler(async (req, res) => {
     const listing = await tenantProductService.createListing({
       tenantId: req.tenantId, payload: req.body, actorId: req.auth.userId, req,

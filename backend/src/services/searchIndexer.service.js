@@ -113,6 +113,8 @@ class SearchIndexerService {
       slug: master.slug || null,
       searchText,
       brandName,
+      brandId: master.brandId || null,
+      productType: master.type || null,
       categoryId: master.categoryId || null,
       categoryPath,
       tags,
@@ -130,8 +132,17 @@ class SearchIndexerService {
       vendorRating: 0,
       marginScore: 0,
       listedAt: listing.createdAt || new Date(),
-      status: (listing.status === TENANT_LISTING_STATUS.ACTIVE && master.status === PRODUCT_MASTER_STATUS.ACTIVE)
-        ? 'active' : 'hidden',
+      // Defense-in-depth publish gate. Legacy rows can predate activation
+      // validation, and a variant can be archived after its listing was made.
+      // Such rows remain indexed for repair/diagnostics but can never surface.
+      status: (
+        listing.status === TENANT_LISTING_STATUS.ACTIVE
+        && master.status === PRODUCT_MASTER_STATUS.ACTIVE
+        && Number.isFinite(Number(listing.price?.sellingPrice))
+        && listing.price?.sellingPrice !== null
+        && listing.price?.sellingPrice !== undefined
+        && (!listing.variantId || (variant && variant.status === 'active'))
+      ) ? 'active' : 'hidden',
       sourceVersion: (listing.version || 1) + (master.version || 1),
     };
   }

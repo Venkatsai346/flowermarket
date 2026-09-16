@@ -1,5 +1,6 @@
 import Category from '../models/category.model.js';
-import { badRequest, notFound } from '../utils/ApiError.js';
+import ProductMaster from '../models/productMaster.model.js';
+import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { serializeDoc, serializeList } from '../utils/serialize.js';
 import auditService from './audit.service.js';
@@ -151,7 +152,7 @@ class CategoryService {
       const visited = new Set(seen);
       visited.add(String(cat._id));
       return {
-        ...cat,
+        ...serializeDoc(cat),
         children: children.filter((ch) => !visited.has(String(ch._id))).map((ch) => attach(ch, visited)),
       };
     };
@@ -169,6 +170,16 @@ class CategoryService {
     const children = await Category.countDocuments({ parentId: id, isDeleted: { $ne: true } });
     if (children > 0) {
       throw badRequest('Cannot delete a category that has children', 'CATEGORY_HAS_CHILDREN');
+    }
+    const referenced = await ProductMaster.exists({
+      categoryId: id,
+      status: { $in: ['active', 'pending_review'] },
+    });
+    if (referenced) {
+      throw conflict(
+        'Cannot delete a category used by active or pending products. Move those products first.',
+        'CATEGORY_IN_USE',
+      );
     }
     await cat.softDelete();
     await auditService.record({

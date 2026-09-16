@@ -59,10 +59,13 @@ export default function Product() {
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
   const [active, setActive] = useState(0);
   const [selListingId, setSelListingId] = useState(null);
+  const requestedVariantId = params.get('variantId') || '';
 
   const { data, loading, error } = useApi(
-    () => api.shop.productBySlug(slug),
-    [slug]
+    () => api.shop.productBySlug(slug, {
+      variantId: requestedVariantId || undefined,
+    }),
+    [slug, requestedVariantId]
   );
 
   const product = data?.product || {};

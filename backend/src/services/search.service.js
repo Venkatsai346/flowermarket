@@ -148,6 +148,8 @@ class SearchService {
     const filters = {
       ...parsed.filters,
       ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+      ...(query.brandId ? { brandId: query.brandId } : {}),
+      ...(query.type ? { productType: query.type } : {}),
       ...(query.vendorId ? { vendorId: query.vendorId } : {}),
       ...(query.minPrice != null ? { minPrice: Number(query.minPrice) } : {}),
       ...(query.maxPrice != null ? { maxPrice: Number(query.maxPrice) } : {}),
@@ -193,6 +195,20 @@ class SearchService {
       .filter((p) => !p.query || p.query.toLowerCase() === parsed.normalized)
       .flatMap((p) => p.listingIds || []);
     ranked = applyEditorial(ranked, { pins: pinsForQuery, buries: profile.buries });
+
+    // Explicit customer sorts must be deterministic and must not silently
+    // continue using relevance ranking. Editorial pinning applies to the
+    // default relevance view only; price/newest/popularity mean exactly what
+    // their labels promise.
+    if (query.sort === 'price_asc') {
+      ranked.sort((a, b) => (a.doc.pricePaise - b.doc.pricePaise) || String(a.doc._id).localeCompare(String(b.doc._id)));
+    } else if (query.sort === 'price_desc') {
+      ranked.sort((a, b) => (b.doc.pricePaise - a.doc.pricePaise) || String(a.doc._id).localeCompare(String(b.doc._id)));
+    } else if (query.sort === 'newest') {
+      ranked.sort((a, b) => new Date(b.doc.listedAt || 0) - new Date(a.doc.listedAt || 0));
+    } else if (query.sort === 'popularity') {
+      ranked.sort((a, b) => (b.doc.soldCount30d || 0) - (a.doc.soldCount30d || 0));
+    }
 
     const total = ranked.length;
     const slice = ranked.slice((page - 1) * limit, page * limit);
