@@ -22,6 +22,10 @@ const blank = () => ({
   productMasterId: '',
   mrp: '',
   sellingPrice: '',
+  costPrice: '',
+  sellerSku: '',
+  titleOverride: '',
+  storefront: true,
   stockQty: 0,
   status: 'draft',
 });
@@ -52,13 +56,21 @@ function CreateListingModal({ masters, onClose, onSaved }) {
     e.preventDefault();
     setError('');
     const mrp = form.mrp === '' ? null : Number(form.mrp);
-    const price = { mrp: mrp ?? 0, sellingPrice: Number(form.sellingPrice), currency: 'INR' };
+    const price = {
+      mrp: mrp ?? 0,
+      sellingPrice: Number(form.sellingPrice),
+      costPrice: form.costPrice === '' ? null : Number(form.costPrice),
+      currency: 'INR',
+    };
     if (mrp != null && mrp < price.sellingPrice) return setError('MRP must be greater than or equal to the selling price.');
     try {
       await run(() => api.catalogTenant.createListing({
         productMasterId: form.productMasterId,
         ...(variantId ? { variantId } : {}),
+        sellerSku: form.sellerSku.trim() || null,
         price,
+        merchandising: { titleOverride: form.titleOverride.trim() || null },
+        channels: { storefront: form.storefront, pos: true, marketplace: false, wholesale: false },
         stockQty: Math.max(0, Math.trunc(Number(form.stockQty) || 0)),
         status: form.status,
       }));
@@ -110,6 +122,20 @@ function CreateListingModal({ masters, onClose, onSaved }) {
           </Field>
           <Field label="MRP (₹)" hint="Leave blank when no MRP.">
             <Input type="number" min="0" step="0.01" value={form.mrp} onChange={(e) => set('mrp', e.target.value)} />
+          </Field>
+          <Field label="Cost price (₹)" hint="Private margin reporting; never shown to customers.">
+            <Input type="number" min="0" step="0.01" value={form.costPrice} onChange={(e) => set('costPrice', e.target.value)} />
+          </Field>
+          <Field label="Seller SKU" hint="Your store-specific stock keeping unit.">
+            <Input value={form.sellerSku} onChange={(e) => set('sellerSku', e.target.value)} />
+          </Field>
+          <Field label="Storefront title override">
+            <Input value={form.titleOverride} onChange={(e) => set('titleOverride', e.target.value)} />
+          </Field>
+          <Field label="Customer channel">
+            <label className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 px-3 text-sm text-slate-700">
+              <input type="checkbox" checked={form.storefront} onChange={(e) => set('storefront', e.target.checked)} /> Visible on storefront
+            </label>
           </Field>
           <Field label="Opening stock" hint="Creates the inventory row when > 0.">
             <Input type="number" min="0" step="1" value={form.stockQty} onChange={(e) => set('stockQty', e.target.value)} />

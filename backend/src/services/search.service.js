@@ -263,6 +263,7 @@ class SearchService {
         label: d.variantLabel || null,
         value: d.variantLabel || null,
         variantType: d.variantType || null,
+        optionValues: d.optionValues || [],
       } : null,
       product: {
         id: String(d.masterId),

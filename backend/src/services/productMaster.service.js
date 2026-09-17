@@ -15,6 +15,7 @@ import { pick } from '../utils/catalog/diff.js';
 import { whitelistMasterPatch } from '../utils/catalog/fieldOwnership.js';
 import { titleSimilarity, DUPLICATE_TITLE_THRESHOLD } from '../utils/catalog/similarity.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
+import { normalizeOptionDefinitions, normalizeOptionValues, combinationKey } from '../utils/catalog/productStructure.js';
 import { badRequest, notFound, conflict, AppError } from '../utils/ApiError.js';
 import {
   PRODUCT_MASTER_STATUS,
@@ -28,9 +29,16 @@ import {
 } from '../utils/catalogGuards.js';
 
 const GLOBAL_FIELDS = [
-  'skuGlobal', 'type', 'title', 'slug', 'shortDescription', 'description',
-  'categoryId', 'brandId', 'barcode', 'tags', 'isPerishable', 'requiresColdChain',
+  'skuGlobal', 'type', 'kind', 'title', 'slug', 'shortDescription', 'description',
+  'categoryId', 'brandId', 'barcode', 'tags', 'manufacturer', 'modelNumber',
+  'countryOfOrigin', 'identifiers', 'condition', 'warranty', 'seo', 'options',
+  'fulfillmentProfile', 'isPerishable', 'requiresColdChain',
   'defaultSellingUnit', 'minOrderQty', 'maxOrderQty', 'complianceStatus',
+];
+
+const MEDIA_FIELDS = [
+  'url', 'altText', 'mediaType', 'role', 'mimeType', 'width', 'height',
+  'fileSize', 'focalPoint', 'isPrimary', 'sortOrder',
 ];
 
 /**
@@ -64,7 +72,7 @@ class ProductMasterService {
       (master.tags || []).join(' '),
       categoryPath,
       brand?.name,
-      attrs.map((a) => `${a.attributeKey} ${a.value} ${a.unit || ''}`).join(' '),
+      attrs.map((a) => `${a.attributeKey} ${a.textValue || (typeof a.value === 'object' ? JSON.stringify(a.value) : a.value)} ${a.unit || ''}`).join(' '),
     ];
     return parts.filter(Boolean).join(' ').toLowerCase();
   }
@@ -98,8 +106,32 @@ class ProductMasterService {
     return null;
   }
 
+  /** Normalize option definitions and variant combinations as one invariant. */
+  normalizeStructure(payload) {
+    const options = normalizeOptionDefinitions(payload.options || []);
+    const variants = (payload.variants || []).map((variant) => {
+      const optionValues = normalizeOptionValues(variant.optionValues || [], options);
+      return {
+        ...variant,
+        optionValues,
+        combinationKey: combinationKey(optionValues, variant),
+        value: variant.value || optionValues.map((o) => o.value).join(' / '),
+        displayLabel: variant.displayLabel || optionValues.map((o) => o.value).join(' / ') || variant.value,
+      };
+    });
+    const keys = variants.map((v) => v.combinationKey);
+    if (new Set(keys).size !== keys.length) {
+      throw badRequest('Variant option combinations must be unique', 'VARIANT_COMBINATION_DUPLICATE');
+    }
+    if (variants.filter((v) => v.isDefault).length > 1) {
+      throw badRequest('Only one variant can be the default', 'MULTIPLE_DEFAULT_VARIANTS');
+    }
+    return { ...payload, options, variants };
+  }
+
   /** Create a master (admin: ACTIVE; tenant proposal: PENDING_REVIEW). */
   async createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, req = null }) {
+    payload = this.normalizeStructure(payload);
     await categoryService.getById(payload.categoryId);
     const { ok, errors } = await categoryService.validateAttributes(payload.categoryId, payload.attributes || []);
     if (!ok) throw badRequest('Category attribute validation failed', 'CATEGORY_ATTRIBUTE_ERROR', errors);
@@ -261,6 +293,15 @@ class ProductMasterService {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
 
+    if (patch.options) {
+      patch.options = normalizeOptionDefinitions(patch.options);
+      const variants = await ProductVariant.find({ productMasterId: master.id }).lean();
+      for (const variant of variants) {
+        // Existing combinations must remain representable after an option edit.
+        normalizeOptionValues(variant.optionValues || [], patch.options);
+      }
+    }
+
     if (patch.categoryId && String(patch.categoryId) !== String(master.categoryId || '')) {
       const currentAttrs = await ProductAttributeValue.find({ productMasterId: master.id }).lean();
       const { ok, errors } = await categoryService.validateAttributes(
@@ -318,6 +359,11 @@ class ProductMasterService {
     }
 
     // Re-validate the (possibly stale) values against current state.
+    if (clean.options) {
+      clean.options = normalizeOptionDefinitions(clean.options);
+      const variants = await ProductVariant.find({ productMasterId: master.id }).lean();
+      for (const variant of variants) normalizeOptionValues(variant.optionValues || [], clean.options);
+    }
     if (clean.categoryId && String(clean.categoryId) !== String(master.categoryId || '')) {
       const currentAttrs = await ProductAttributeValue.find({ productMasterId: master.id }).lean();
       const { ok, errors } = await categoryService.validateAttributes(
@@ -362,8 +408,14 @@ class ProductMasterService {
         productMasterId: master.id,
         variantType: v.variantType,
         value: v.value,
+        optionValues: v.optionValues || [],
+        combinationKey: v.combinationKey,
         displayLabel: v.displayLabel || null,
         sku: v.sku || null,
+        barcode: v.barcode || null,
+        identifiers: v.identifiers || {},
+        weight: v.weight || {},
+        dimensions: v.dimensions || {},
         sortOrder: v.sortOrder ?? i,
         isDefault: v.isDefault || false,
         status: ENTITY_STATUS.ACTIVE,
@@ -376,7 +428,7 @@ class ProductMasterService {
           nested.push({
             productMasterId: master.id,
             variantId: created[i]._id,
-            url: img.url,
+            ...pick(img, MEDIA_FIELDS),
             altText: img.altText || null,
             isPrimary: img.isPrimary || false,
             sortOrder: img.sortOrder ?? j,
@@ -402,7 +454,7 @@ class ProductMasterService {
       await ProductImage.insertMany(
         payload.images.map((img, i) => ({
           productMasterId: master.id,
-          url: img.url,
+          ...pick(img, MEDIA_FIELDS),
           altText: img.altText || null,
           isPrimary: img.isPrimary || false,
           sortOrder: img.sortOrder ?? i,
@@ -505,8 +557,13 @@ class ProductMasterService {
   async addVariant({ id, payload, expectedVersion, actorId = null, viaRequest = false, req = null }) {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
-    if (!viaRequest) await updateWithVersion(master, expectedVersion, {});
+    const optionValues = normalizeOptionValues(payload?.optionValues || [], master.options || []);
     const { images: nestedImages, ...variantFields } = payload || {};
+    variantFields.optionValues = optionValues;
+    variantFields.combinationKey = combinationKey(optionValues, variantFields);
+    variantFields.value = variantFields.value || optionValues.map((o) => o.value).join(' / ');
+    variantFields.displayLabel = variantFields.displayLabel || optionValues.map((o) => o.value).join(' / ') || variantFields.value;
+    if (!viaRequest) await updateWithVersion(master, expectedVersion, {});
     const variant = await ProductVariant.create({
       productMasterId: master.id, ...variantFields, status: ENTITY_STATUS.ACTIVE,
     });
@@ -515,7 +572,7 @@ class ProductMasterService {
         nestedImages.map((img, i) => ({
           productMasterId: master.id,
           variantId: variant._id,
-          url: img.url,
+          ...pick(img, MEDIA_FIELDS),
           altText: img.altText || null,
           isPrimary: img.isPrimary || false,
           sortOrder: img.sortOrder ?? i,
@@ -551,7 +608,15 @@ class ProductMasterService {
     await updateWithVersion(master, expectedVersion, {});
     const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId });
     if (!variant) throw notFound('Variant not found on this master', 'VARIANT_NOT_FOUND');
-    const allowed = ['displayLabel', 'sortOrder', 'isDefault', 'sku', 'status', 'value', 'variantType'];
+    const allowed = [
+      'displayLabel', 'sortOrder', 'isDefault', 'sku', 'barcode', 'identifiers',
+      'weight', 'dimensions', 'status', 'value', 'variantType', 'optionValues',
+    ];
+    if (patch.optionValues) {
+      patch.optionValues = normalizeOptionValues(patch.optionValues, master.options || []);
+      patch.combinationKey = combinationKey(patch.optionValues, { ...variant.toObject(), ...patch });
+      allowed.push('combinationKey');
+    }
     const before = pick(variant.toObject(), Object.keys(patch).filter((k) => allowed.includes(k)));
     for (const k of allowed) {
       if (patch[k] !== undefined) variant[k] = patch[k];
@@ -615,7 +680,7 @@ class ProductMasterService {
     const image = await ProductImage.create({
       productMasterId: master.id,
       variantId,
-      url: payload.url,
+      ...pick(payload, MEDIA_FIELDS),
       altText: payload.altText || null,
       isPrimary: payload.isPrimary || false,
       sortOrder: payload.sortOrder ?? 0,

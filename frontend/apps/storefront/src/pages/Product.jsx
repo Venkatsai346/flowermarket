@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, Droplets, Leaf, Scissors, Snowflake, Sun, Truck } from 'lucide-react';
+import { ChevronLeft, Droplets, FileText, Leaf, Play, Scissors, Snowflake, Sun, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -89,6 +89,10 @@ export default function Product() {
   useEffect(() => { setSelListingId(null); }, [slug]);
 
   const selected = family.find((v) => String(v.listingId) === String(selListingId)) || null;
+  const optionDefinitions = (product.options || []).filter((definition) =>
+    family.some((v) => (v.optionValues || []).some((o) => o.code === definition.code))
+  );
+  const selectedOptions = Object.fromEntries((selected?.optionValues || []).map((o) => [o.code, o.value]));
   const effListing = selected
     ? { listingId: selected.listingId, price: selected.price, stockQty: selected.stockQty, variantId: selected.variantId }
     : listing;
@@ -100,6 +104,16 @@ export default function Product() {
     if (v.variantId) next.set('variantId', v.variantId);
     else next.delete('variantId');
     setParams(next, { replace: true });
+  };
+
+  const pickOption = (code, value) => {
+    const desired = { ...selectedOptions, [code]: value };
+    const exact = family.find((v) => {
+      const values = Object.fromEntries((v.optionValues || []).map((o) => [o.code, o.value]));
+      return optionDefinitions.every((definition) => values[definition.code] === desired[definition.code]);
+    });
+    const fallback = family.find((v) => (v.optionValues || []).some((o) => o.code === code && o.value === value));
+    if (exact || fallback) pick(exact || fallback);
   };
 
   const listingView = useMemo(() => ({
@@ -182,7 +196,13 @@ export default function Product() {
         <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
           <div>
             <div className="aspect-square overflow-auto rounded-3xl bg-slate-50" style={{ touchAction: 'pan-x pinch-zoom' }}>
-              {images[active]?.url ? (
+              {images[active]?.url && images[active]?.mediaType === 'video' ? (
+                <video src={images[active].url} controls playsInline className="h-full w-full bg-slate-950 object-contain" aria-label={images[active].altText || product.title} />
+              ) : images[active]?.url && ['document', 'model_3d'].includes(images[active]?.mediaType) ? (
+                <a href={images[active].url} target="_blank" rel="noreferrer" className="flex h-full flex-col items-center justify-center gap-3 text-slate-600">
+                  <FileText className="h-14 w-14" /><span className="text-sm font-semibold">Open {images[active].mediaType === 'model_3d' ? '3D model' : 'document'}</span>
+                </a>
+              ) : images[active]?.url ? (
                 <FloralImage
                   src={images[active].url}
                   alt={images[active].altText || product.title}
@@ -204,7 +224,11 @@ export default function Product() {
                     className="h-16 w-16 shrink-0 overflow-hidden rounded-xl ring-offset-2"
                     style={i === active ? { boxShadow: '0 0 0 2px var(--brand)' } : undefined}
                   >
-                    <FloralImage src={img.url} alt="" className="h-full w-full object-cover" />
+                    {img.mediaType === 'video' ? (
+                      <span className="grid h-full w-full place-items-center bg-slate-900 text-white"><Play className="h-5 w-5" /></span>
+                    ) : ['document', 'model_3d'].includes(img.mediaType) ? (
+                      <span className="grid h-full w-full place-items-center bg-slate-100 text-slate-500"><FileText className="h-5 w-5" /></span>
+                    ) : <FloralImage src={img.url} alt="" className="h-full w-full object-cover" />}
                   </button>
                 ))}
               </div>
@@ -230,7 +254,48 @@ export default function Product() {
               </div>
             )}
 
-            {multi && (
+            {multi && optionDefinitions.length > 0 && (
+              <div className="mt-5 space-y-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                {optionDefinitions.map((definition) => (
+                  <div key={definition.code}>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      {definition.name}<span className="ml-1.5 normal-case text-slate-800">— {selectedOptions[definition.code]}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={`Choose ${definition.name}`}>
+                      {definition.values.map((value) => {
+                        const candidates = family.filter((v) => {
+                          const values = Object.fromEntries((v.optionValues || []).map((o) => [o.code, o.value]));
+                          return values[definition.code] === value && optionDefinitions.every((other) =>
+                            other.code === definition.code || !selectedOptions[other.code] || values[other.code] === selectedOptions[other.code]
+                          );
+                        });
+                        const unavailable = !candidates.some((v) => (v.stockQty ?? 0) > 0);
+                        const activeOption = selectedOptions[definition.code] === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            role="radio"
+                            aria-checked={activeOption}
+                            disabled={!candidates.length}
+                            onClick={() => pickOption(definition.code, value)}
+                            className={cn(
+                              'rounded-xl border px-3.5 py-2 text-sm font-semibold transition',
+                              activeOption ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400',
+                              unavailable && !activeOption && 'opacity-50 line-through',
+                            )}
+                          >
+                            {value}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {multi && optionDefinitions.length === 0 && (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
                   {(selected?.variantType || 'Option').replace(/_/g, ' ')}
@@ -350,6 +415,20 @@ export default function Product() {
 
             {product.description && (
               <p className="mt-6 text-sm leading-relaxed text-slate-600">{product.description}</p>
+            )}
+
+            {(product.manufacturer || product.modelNumber || product.countryOfOrigin || product.identifiers?.gtin || product.fulfillmentProfile?.weight?.value) && (
+              <section className="mt-8 overflow-hidden rounded-2xl border border-slate-200">
+                <h2 className="border-b border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">Product information</h2>
+                <dl className="grid grid-cols-2 gap-x-5 gap-y-3 p-4 text-sm">
+                  {product.manufacturer && <><dt className="text-slate-500">Manufacturer</dt><dd className="font-medium text-slate-800">{product.manufacturer}</dd></>}
+                  {product.modelNumber && <><dt className="text-slate-500">Model</dt><dd className="font-medium text-slate-800">{product.modelNumber}</dd></>}
+                  {product.condition && <><dt className="text-slate-500">Condition</dt><dd className="font-medium capitalize text-slate-800">{product.condition}</dd></>}
+                  {product.countryOfOrigin && <><dt className="text-slate-500">Country of origin</dt><dd className="font-medium text-slate-800">{product.countryOfOrigin}</dd></>}
+                  {product.identifiers?.gtin && <><dt className="text-slate-500">GTIN</dt><dd className="font-mono text-xs text-slate-800">{product.identifiers.gtin}</dd></>}
+                  {product.fulfillmentProfile?.weight?.value != null && <><dt className="text-slate-500">Shipping weight</dt><dd className="font-medium text-slate-800">{product.fulfillmentProfile.weight.value} {product.fulfillmentProfile.weight.unit}</dd></>}
+                </dl>
+              </section>
             )}
           </div>
         </div>

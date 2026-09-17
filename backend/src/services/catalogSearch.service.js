@@ -43,6 +43,7 @@ class CatalogSearchService {
       // Defense in depth: a priceless listing must never reach the customer,
       // even if one slipped past the activation gate (legacy data, race).
       'price.sellingPrice': { $ne: null },
+      'channels.storefront': { $ne: false },
     };
 
     const pipeline = [
@@ -134,6 +135,8 @@ class CatalogSearchService {
                 id: { $toString: '$variant._id' },
                 variantType: '$variant.variantType',
                 value: '$variant.value',
+                optionValues: '$variant.optionValues',
+                combinationKey: '$variant.combinationKey',
                 displayLabel: '$variant.displayLabel',
                 sku: '$variant.sku',
                 sortOrder: '$variant.sortOrder',
@@ -144,16 +147,22 @@ class CatalogSearchService {
           },
           product: {
             id: { $toString: '$master._id' },
-            title: '$master.title',
+            title: { $ifNull: ['$merchandising.titleOverride', '$master.title'] },
+            canonicalTitle: '$master.title',
             slug: '$master.slug',
             skuGlobal: '$master.skuGlobal',
             type: '$master.type',
-            shortDescription: '$master.shortDescription',
+            kind: '$master.kind',
+            shortDescription: { $ifNull: ['$merchandising.descriptionOverride', '$master.shortDescription'] },
             categoryId: '$master.categoryId',
             brandId: '$master.brandId',
             isPerishable: '$master.isPerishable',
             requiresColdChain: '$master.requiresColdChain',
             defaultSellingUnit: '$master.defaultSellingUnit',
+            manufacturer: '$master.manufacturer',
+            modelNumber: '$master.modelNumber',
+            condition: '$master.condition',
+            fulfillmentProfile: '$master.fulfillmentProfile',
             soldCount: '$master.soldCount',
             searchText: '$master.searchText',
           },

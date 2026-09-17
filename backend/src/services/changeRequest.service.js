@@ -58,11 +58,14 @@ function assertVariantShape(variant) {
   if (!variant || typeof variant !== 'object' || Array.isArray(variant)) {
     throw badRequest('payload.variant must be an object', 'PAYLOAD_INVALID');
   }
-  if (typeof variant.variantType !== 'string' || !Object.values(VARIANT_TYPE).includes(variant.variantType)) {
+  if (variant.variantType !== undefined
+    && (typeof variant.variantType !== 'string' || !Object.values(VARIANT_TYPE).includes(variant.variantType))) {
     throw badRequest('payload.variant.variantType is invalid', 'PAYLOAD_INVALID');
   }
-  if (typeof variant.value !== 'string' || !variant.value.trim() || variant.value.length > 80) {
-    throw badRequest('payload.variant.value must be a non-empty string ≤80', 'PAYLOAD_INVALID');
+  const hasLegacyValue = typeof variant.value === 'string' && variant.value.trim() && variant.value.length <= 100;
+  const hasOptions = Array.isArray(variant.optionValues) && variant.optionValues.length > 0 && variant.optionValues.length <= 6;
+  if (!hasLegacyValue && !hasOptions) {
+    throw badRequest('payload.variant needs value or 1–6 optionValues', 'PAYLOAD_INVALID');
   }
   if (variant.images !== undefined && !Array.isArray(variant.images)) {
     throw badRequest('payload.variant.images must be an array', 'PAYLOAD_INVALID');
@@ -243,8 +246,7 @@ class ChangeRequestService {
   }
 
   /** Tenant revises a NEEDS_CHANGES request (updates payload/diff, back to PENDING). */
-  // eslint-disable-next-line no-unused-vars -- actorId/req kept for call-site symmetry with the other CR verbs
-  async revise({ requestId, tenantId, actorId = null, payload = null, diff = null, note = null, req = null }) {
+  async revise({ requestId, tenantId, actorId: _actorId = null, payload = null, diff = null, note = null, req: _req = null }) {
     const cr = await ProductChangeRequest.findById(requestId);
     if (!cr) throw notFound('Change request not found', 'CHANGE_REQUEST_NOT_FOUND');
     if (String(cr.tenantId) !== String(tenantId)) throw forbidden('Not your change request', 'FORBIDDEN');

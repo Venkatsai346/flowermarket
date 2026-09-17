@@ -50,6 +50,8 @@ class CategoryService {
       if (seen.has(key)) return false; // legacy cycle — stop
       seen.add(key);
       if (key === String(targetId)) return true;
+      // Ancestor traversal is deliberately sequential because each parent depends on the previous row.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Category.findById(cur).select('parentId').lean();
       cur = row?.parentId || null;
     }
@@ -62,6 +64,7 @@ class CategoryService {
     let processed = 0;
     while (frontier.length) {
       const next = [];
+      // The ancestor/subtree walk is deliberately sequential because each frontier depends on the previous level.
       // eslint-disable-next-line no-await-in-loop
       const rows = await Category.find({
         parentId: { $in: frontier.map((f) => f._id) },
@@ -69,6 +72,7 @@ class CategoryService {
       const levelOf = new Map(frontier.map((f) => [String(f._id), f.level]));
       for (const r of rows) {
         const lvl = (levelOf.get(String(r.parentId)) ?? 0) + 1;
+        // The ancestor/subtree walk is deliberately sequential because each frontier depends on the previous level.
         // eslint-disable-next-line no-await-in-loop
         await Category.updateOne({ _id: r._id }, { $set: { level: lvl } });
         processed += 1;
@@ -213,9 +217,10 @@ class CategoryService {
       }
       if (!entry) continue;
 
-      const value = String(entry.value ?? '');
+      const rawValue = entry.value;
+      const value = String(rawValue ?? '');
       if (field.type === ATTRIBUTE_FIELD_TYPE.NUMBER) {
-        const n = Number(value);
+        const n = Number(rawValue);
         if (Number.isNaN(n)) { errors.push(`${field.key} must be a number`); continue; }
         if (field.min !== null && field.min !== undefined && n < field.min) errors.push(`${field.key} must be >= ${field.min}`);
         if (field.max !== null && field.max !== undefined && n > field.max) errors.push(`${field.key} must be <= ${field.max}`);
@@ -223,10 +228,20 @@ class CategoryService {
         if (field.options?.length && !field.options.includes(value)) {
           errors.push(`${field.key} must be one of: ${field.options.join(', ')}`);
         }
+      } else if (field.type === ATTRIBUTE_FIELD_TYPE.MULTI_SELECT) {
+        if (!Array.isArray(rawValue) || !rawValue.length) {
+          errors.push(`${field.key} must contain at least one selection`);
+        } else if (field.options?.length && rawValue.some((v) => !field.options.includes(String(v)))) {
+          errors.push(`${field.key} contains an unsupported selection`);
+        }
       } else if (field.type === ATTRIBUTE_FIELD_TYPE.BOOLEAN) {
-        if (!['true', 'false'].includes(value.toLowerCase())) errors.push(`${field.key} must be true/false`);
+        if (typeof rawValue !== 'boolean' && !['true', 'false'].includes(value.toLowerCase())) errors.push(`${field.key} must be true/false`);
+      } else if (field.type === ATTRIBUTE_FIELD_TYPE.DATE) {
+        if (Number.isNaN(Date.parse(value))) errors.push(`${field.key} must be a valid date`);
+      } else if (field.type === ATTRIBUTE_FIELD_TYPE.JSON) {
+        if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) errors.push(`${field.key} must be an object`);
       }
-      if (field.regex) {
+      if (field.regex && typeof rawValue !== 'object') {
         try {
           if (!new RegExp(field.regex).test(value)) errors.push(`${field.key} failed format validation`);
         } catch { /* ignore invalid regex in schema */ }

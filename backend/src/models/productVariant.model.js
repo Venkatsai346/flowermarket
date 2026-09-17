@@ -9,16 +9,45 @@
 import mongoose from 'mongoose';
 import { softDeletePlugin, auditPlugin, toJSONPlugin } from './plugins/index.js';
 import { VARIANT_TYPE, ENTITY_STATUS } from '../constants/enums.js';
+import { combinationKey } from '../utils/catalog/productStructure.js';
 
 const { Schema, Types } = mongoose;
+
+const OptionValueSchema = new Schema(
+  {
+    code: { type: String, required: true, match: /^[a-z][a-z0-9_]{0,39}$/ },
+    name: { type: String, required: true, maxlength: 80 },
+    value: { type: String, required: true, maxlength: 100 },
+  },
+  { _id: false }
+);
 
 const ProductVariantSchema = new Schema(
   {
     productMasterId: { type: Types.ObjectId, ref: 'ProductMaster', required: true, index: true },
-    variantType: { type: String, enum: Object.values(VARIANT_TYPE), required: true },
-    value: { type: String, required: true, trim: true, maxlength: 80 }, // e.g. "10 stems"
-    displayLabel: { type: String, trim: true, maxlength: 120, default: null },
-    sku: { type: String, trim: true, maxlength: 80, default: null }, // variant-level SKU
+    // Legacy one-dimensional projection retained for old clients. Universal
+    // variants use optionValues + combinationKey for arbitrary combinations.
+    variantType: { type: String, enum: Object.values(VARIANT_TYPE), default: VARIANT_TYPE.OTHER },
+    value: { type: String, trim: true, maxlength: 100, default: null },
+    optionValues: { type: [OptionValueSchema], default: [], validate: (v) => v.length <= 6 },
+    combinationKey: { type: String, default: null, maxlength: 800 },
+    displayLabel: { type: String, trim: true, maxlength: 240, default: null },
+    sku: { type: String, trim: true, maxlength: 80, default: null },
+    barcode: { type: String, trim: true, maxlength: 60, default: null },
+    identifiers: {
+      gtin: { type: String, trim: true, maxlength: 32, default: null },
+      mpn: { type: String, trim: true, maxlength: 100, default: null },
+    },
+    weight: {
+      value: { type: Number, default: null, min: 0 },
+      unit: { type: String, enum: ['mg', 'g', 'kg', 'oz', 'lb'], default: 'g' },
+    },
+    dimensions: {
+      length: { type: Number, default: null, min: 0 },
+      width: { type: Number, default: null, min: 0 },
+      height: { type: Number, default: null, min: 0 },
+      unit: { type: String, enum: ['mm', 'cm', 'm', 'in', 'ft'], default: 'cm' },
+    },
     sortOrder: { type: Number, default: 0 },
     isDefault: { type: Boolean, default: false },
     status: {
@@ -31,11 +60,26 @@ const ProductVariantSchema = new Schema(
   { collection: 'productvariants' }
 );
 
-// Soft-delete-aware (migration 003): a deleted variant releases its SKU,
-// and the (master, type, value) key is re-usable after deletion.
+ProductVariantSchema.pre('validate', function normalizeCombination(next) {
+  if (!this.value && !this.optionValues?.length) return next(new Error('A variant needs value or optionValues'));
+  this.combinationKey = combinationKey(this.optionValues || [], {
+    variantType: this.variantType,
+    value: this.value,
+  });
+  if (!this.displayLabel) {
+    this.displayLabel = this.optionValues?.length
+      ? this.optionValues.map((o) => o.value).join(' / ')
+      : this.value;
+  }
+  return next();
+});
+
+// Universal identity is the full canonical option combination, not one
+// variantType/value pair. Migration 004 drops the superseded unique triple.
+ProductVariantSchema.index({ productMasterId: 1, variantType: 1, value: 1 });
 ProductVariantSchema.index(
-  { productMasterId: 1, variantType: 1, value: 1 },
-  { unique: true, partialFilterExpression: { isDeleted: false } }
+  { productMasterId: 1, combinationKey: 1 },
+  { unique: true, partialFilterExpression: { $and: [{ combinationKey: { $type: 'string' } }, { isDeleted: false }] } }
 );
 ProductVariantSchema.index(
   { sku: 1 },
@@ -43,6 +87,14 @@ ProductVariantSchema.index(
     unique: true,
     partialFilterExpression: { $and: [{ sku: { $type: 'string' } }, { isDeleted: false }] },
   }
+);
+ProductVariantSchema.index(
+  { barcode: 1 },
+  { unique: true, partialFilterExpression: { $and: [{ barcode: { $type: 'string' } }, { isDeleted: false }] } }
+);
+ProductVariantSchema.index(
+  { 'identifiers.gtin': 1 },
+  { unique: true, partialFilterExpression: { $and: [{ 'identifiers.gtin': { $type: 'string' } }, { isDeleted: false }] } }
 );
 
 ProductVariantSchema.plugin(auditPlugin);

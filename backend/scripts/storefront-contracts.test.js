@@ -231,7 +231,8 @@ console.log('S7 · brand modal coherence');
 console.log('S8 · cache freshness wiring');
 {
   const cache = read('backend/src/middleware/responseCache.js');
-  check('credentialed requests bypass cache', cache.includes('req.headers.authorization || req.headers.cookie'));
+  check('credentialed public reads are isolated by authorization hash',
+    cache.includes("createHash('sha256')") && cache.includes('${authTag(req)}'));
   const marketplace = read('backend/src/controllers/marketplace.controller.js');
   check('store save busts owner GET + public stores', marketplace.includes("invalidateCache('/marketplace/store')"));
 }

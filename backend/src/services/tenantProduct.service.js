@@ -84,8 +84,12 @@ class TenantProductService {
       tenantId,
       productMasterId: master.id,
       variantId,
+      sellerSku: payload.sellerSku || null,
       price: payload.price || { mrp: null, sellingPrice: null },
       orderLimits: payload.orderLimits || {},
+      sellingPolicy: payload.sellingPolicy || {},
+      merchandising: payload.merchandising || {},
+      channels: payload.channels || {},
       stockQty: payload.stockQty || 0,
       status: payload.status || TENANT_LISTING_STATUS.DRAFT,
       listedBy: actorId,
@@ -194,6 +198,10 @@ class TenantProductService {
             stockQty: row.stockQty ?? 0,
             status: row.status || TENANT_LISTING_STATUS.DRAFT,
             orderLimits: row.orderLimits || {},
+            sellerSku: row.sellerSku || null,
+            sellingPolicy: row.sellingPolicy || {},
+            merchandising: row.merchandising || {},
+            channels: row.channels || {},
           },
           actorId,
           req,
@@ -236,7 +244,8 @@ class TenantProductService {
     return {
       master: {
         id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal,
-        type: master.type, status: master.status, defaultSellingUnit: master.defaultSellingUnit,
+        type: master.type, kind: master.kind, options: master.options || [],
+        status: master.status, defaultSellingUnit: master.defaultSellingUnit,
         images: sortGallery(groupImagesByVariant(images).master).map((g) => ({
           id: g._id, url: g.url, altText: g.altText, isPrimary: g.isPrimary,
         })),
@@ -250,6 +259,7 @@ class TenantProductService {
         return {
           variant: {
             id: v._id, variantType: v.variantType, value: v.value,
+            optionValues: v.optionValues || [], combinationKey: v.combinationKey || null,
             displayLabel: v.displayLabel, sku: v.sku, sortOrder: v.sortOrder,
             isDefault: v.isDefault, status: v.status,
             images: v.images, imageSource: v.imageSource, primaryImageUrl: v.primaryImageUrl,
@@ -465,8 +475,16 @@ class TenantProductService {
   // ---------------- helpers ----------------
 
   assertPriceValid(price) {
+    for (const key of ['sellingPrice', 'mrp', 'costPrice']) {
+      if (price?.[key] != null && (!Number.isFinite(Number(price[key])) || Number(price[key]) < 0)) {
+        throw badRequest(`${key} must be a non-negative number`, 'PRICE_INVALID');
+      }
+    }
     if (price.sellingPrice != null && price.mrp != null && Number(price.sellingPrice) > Number(price.mrp)) {
       throw badRequest('sellingPrice cannot exceed mrp', 'PRICE_INVALID');
+    }
+    if (price.saleStartsAt && price.saleEndsAt && new Date(price.saleEndsAt) <= new Date(price.saleStartsAt)) {
+      throw badRequest('saleEndsAt must be after saleStartsAt', 'PRICE_INVALID');
     }
   }
 

@@ -27,11 +27,17 @@ const AttributeSchemaField = new Schema(
       default: ATTRIBUTE_FIELD_TYPE.STRING,
     },
     required: { type: Boolean, default: false },
-    options: { type: [String], default: [] }, // for select
+    options: { type: [String], default: [], validate: (v) => v.length <= 100 }, // select / multi-select vocabulary
     unit: { type: String, default: null },
     min: { type: Number, default: null },
     max: { type: Number, default: null },
     regex: { type: String, default: null }, // client-side + server validation hint
+    multiple: { type: Boolean, default: false },
+    filterable: { type: Boolean, default: false },
+    facetable: { type: Boolean, default: false },
+    searchable: { type: Boolean, default: false },
+    group: { type: String, default: null, maxlength: 80 },
+    sortOrder: { type: Number, default: 0 },
   },
   { _id: false }
 );

@@ -25,6 +25,10 @@ const PriceSchema = new Schema(
   {
     mrp: { type: Number, min: 0, default: null },
     sellingPrice: { type: Number, min: 0, default: null },
+    costPrice: { type: Number, min: 0, default: null, select: false },
+    saleStartsAt: { type: Date, default: null },
+    saleEndsAt: { type: Date, default: null },
+    taxInclusive: { type: Boolean, default: true },
     currency: {
       type: String,
       enum: Object.values(PRICE_CURRENCY),
@@ -47,9 +51,30 @@ const TenantProductSchema = new Schema(
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
     productMasterId: { type: Types.ObjectId, ref: 'ProductMaster', required: true, index: true },
     variantId: { type: Types.ObjectId, ref: 'ProductVariant', default: null },
+    sellerSku: { type: String, trim: true, maxlength: 100, default: null },
 
     price: { type: PriceSchema, default: () => ({}) },
     orderLimits: { type: OrderLimitsSchema, default: () => ({}) },
+    sellingPolicy: {
+      allowBackorder: { type: Boolean, default: false },
+      preorder: { type: Boolean, default: false },
+      availableFrom: { type: Date, default: null },
+      availableUntil: { type: Date, default: null },
+      leadTimeDays: { type: Number, default: 0, min: 0, max: 365 },
+    },
+    merchandising: {
+      titleOverride: { type: String, default: null, maxlength: 160 },
+      descriptionOverride: { type: String, default: null, maxlength: 1000 },
+      badges: { type: [String], default: [], validate: (v) => v.length <= 10 },
+      featured: { type: Boolean, default: false },
+      searchBoost: { type: Number, default: 0, min: -100, max: 100 },
+    },
+    channels: {
+      storefront: { type: Boolean, default: true },
+      marketplace: { type: Boolean, default: true },
+      pos: { type: Boolean, default: true },
+      wholesale: { type: Boolean, default: false },
+    },
 
     // stock snapshot — truth lives in the Inventory collection; kept here for
     // cheap availability reads & customer queries
@@ -94,7 +119,11 @@ TenantProductSchema.index(
   { tenantId: 1, productMasterId: 1, variantId: 1 },
   { unique: true, partialFilterExpression: { isDeleted: false } }
 );
-TenantProductSchema.index({ tenantId: 1, status: 1 });
+TenantProductSchema.index(
+  { tenantId: 1, sellerSku: 1 },
+  { unique: true, partialFilterExpression: { $and: [{ sellerSku: { $type: 'string' } }, { isDeleted: false }] } }
+);
+TenantProductSchema.index({ tenantId: 1, status: 1, 'channels.storefront': 1 });
 TenantProductSchema.index({ tenantId: 1, productMasterId: 1 });
 
 TenantProductSchema.plugin(auditPlugin);

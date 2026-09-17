@@ -74,7 +74,7 @@ class SearchIndexerService {
 
     const categoryPath = category ? [category.name].filter(Boolean) : [];
     const tags = master.tags || [];
-    const title = master.title;
+    const title = listing.merchandising?.titleOverride || master.title;
     const brandName = brand?.name || null;
 
     // Variant context: preloaded maps in batch paths, single fetch otherwise.
@@ -92,9 +92,12 @@ class SearchIndexerService {
     const imageUrl = primaryImageUrlFor(flat, listing.variantId || null);
 
     const searchText = [
-      title, master.shortDescription, master.description,
+      title, master.title, listing.merchandising?.descriptionOverride,
+      master.shortDescription, master.description, master.manufacturer, master.modelNumber,
+      master.identifiers?.gtin, master.identifiers?.mpn, master.identifiers?.isbn,
       brandName, ...categoryPath, ...tags,
-      variantLabel, variant?.value, variant?.sku,
+      variantLabel, variant?.value, variant?.sku, variant?.barcode,
+      ...(variant?.optionValues || []).flatMap((o) => [o.name, o.value]),
     ].filter(Boolean).join(' ').toLowerCase().slice(0, 2000);
 
     const stockQty = listing.stockQty ?? 0;
@@ -108,6 +111,7 @@ class SearchIndexerService {
       variantId: listing.variantId || null,
       variantLabel,
       variantType: variant?.variantType || null,
+      optionValues: variant?.optionValues || [],
 
       title,
       slug: master.slug || null,
@@ -141,6 +145,7 @@ class SearchIndexerService {
         && Number.isFinite(Number(listing.price?.sellingPrice))
         && listing.price?.sellingPrice !== null
         && listing.price?.sellingPrice !== undefined
+        && listing.channels?.storefront !== false
         && (!listing.variantId || (variant && variant.status === 'active'))
       ) ? 'active' : 'hidden',
       sourceVersion: (listing.version || 1) + (master.version || 1),
@@ -202,19 +207,27 @@ class SearchIndexerService {
     for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
       const q = { productMasterId: masterId };
       if (cursor) q._id = { $gt: cursor };
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(BATCH).lean();
       if (!listings.length) break;
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
+      // eslint-disable-next-line no-await-in-loop
       const master = await ProductMaster.findById(masterId).lean();
       if (!master) break;
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
+      // eslint-disable-next-line no-await-in-loop
       const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
         this.categoryMap([master.categoryId]),
         this.brandMap([master.brandId]),
         this.variantImageMaps(listings),
       ]);
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
+      // eslint-disable-next-line no-await-in-loop
       const docs = await Promise.all(
         listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }))
       );
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);
       scanned += listings.length;
@@ -254,14 +267,17 @@ class SearchIndexerService {
       if (tenantId) q.tenantId = tenantId;
       if (cursor) q._id = { $gt: cursor };
 
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(batchSize).lean();
       if (!listings.length) break;
 
       const masterIds = [...new Set(listings.map((l) => String(l.productMasterId)))];
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const masters = await ProductMaster.find({ _id: { $in: masterIds } }).lean();
       const masterById = new Map(masters.map((m) => [String(m._id), m]));
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
         this.categoryMap(masters.map((m) => m.categoryId)),
@@ -273,9 +289,11 @@ class SearchIndexerService {
       for (const listing of listings) {
         const master = masterById.get(String(listing.productMasterId));
         if (!master) continue;
+        // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
         // eslint-disable-next-line no-await-in-loop
         docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }));
       }
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);
 
@@ -300,6 +318,7 @@ class SearchIndexerService {
     let repaired = 0;
     if (repair) {
       for (const s of stale) {
+        // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
         // eslint-disable-next-line no-await-in-loop
         const r = await this.indexListing({ listingId: s.listingId, tenantId: s.tenantId }).catch(() => null);
         if (r?.indexed) repaired += 1;
