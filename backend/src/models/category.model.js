@@ -27,6 +27,7 @@ const AttributeSchemaField = new Schema(
       default: ATTRIBUTE_FIELD_TYPE.STRING,
     },
     required: { type: Boolean, default: false },
+    appliesTo: { type: String, enum: ['master', 'variant', 'both'], default: 'master' },
     options: { type: [String], default: [], validate: (v) => v.length <= 100 }, // select / multi-select vocabulary
     unit: { type: String, default: null },
     min: { type: Number, default: null },
@@ -42,6 +43,15 @@ const AttributeSchemaField = new Schema(
   { _id: false }
 );
 
+const ComplianceRequirementSchema = new Schema({
+  code: { type: String, required: true, uppercase: true, trim: true, maxlength: 100 },
+  type: { type: String, enum: ['certificate', 'license', 'regulatory_id', 'standard', 'restriction', 'safety', 'environmental'], required: true },
+  label: { type: String, required: true, maxlength: 160 },
+  required: { type: Boolean, default: true },
+  requiresExpiry: { type: Boolean, default: false },
+  jurisdictions: { type: [String], default: ['IN'], validate: (value) => value.length <= 100 },
+}, { _id: false });
+
 const CategorySchema = new Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 120 },
@@ -55,7 +65,8 @@ const CategorySchema = new Schema(
     // Wide hero for the category card / browse header (falls back to imageUrl).
     bannerUrl: { type: String, default: null, trim: true },
 
-    attributeSchema: { type: [AttributeSchemaField], default: [] },
+    attributeSchema: { type: [AttributeSchemaField], default: [], validate: (value) => value.length <= 100 },
+    complianceRequirements: { type: [ComplianceRequirementSchema], default: [], validate: (value) => value.length <= 100 },
 
     sortOrder: { type: Number, default: 0 },
     isFeatured: { type: Boolean, default: false },

@@ -168,7 +168,10 @@ export const ATTRIBUTE_FIELD_TYPE_LABEL = {
   number: 'Number',
   boolean: 'Yes/No',
   select: 'Dropdown',
+  multi_select: 'Multi-select',
+  text: 'Long text',
   date: 'Date',
+  json: 'Structured JSON',
 };
 
 export const ENTITY_STATUS_META = {

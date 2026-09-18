@@ -32,6 +32,7 @@ import Button from '../../components/ui/Button.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Checkbox, Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
+import AdvancedStructuresPanel from './AdvancedStructuresPanel.jsx';
 
 const STATUS_META = PRODUCT_MASTER_STATUS_META;
 const parseCombination = (text, definitions = []) => String(text || '').split(',').map((part) => {
@@ -395,6 +396,8 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
             <Button type="submit" size="sm" variant="secondary" loading={busy}>Add image</Button>
           </form>
         </section>
+
+        <AdvancedStructuresPanel master={m} onChanged={() => { load(true); onChanged?.(); }} />
       </div>
 
       {/* review / deprecate confirm */}

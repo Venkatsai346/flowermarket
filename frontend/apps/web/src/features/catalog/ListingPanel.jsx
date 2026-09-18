@@ -25,6 +25,8 @@ const blank = () => ({
   costPrice: '',
   sellerSku: '',
   titleOverride: '',
+  priceBasisQuantity: 1,
+  priceBasisUnit: 'piece',
   storefront: true,
   stockQty: 0,
   status: 'draft',
@@ -45,6 +47,8 @@ function CreateListingModal({ masters, onClose, onSaved }) {
   useEffect(() => {
     setVariantId('');
     if (!form.productMasterId) { setVariantOptions(null); return; }
+    const selectedMaster = (masters || []).find((master) => rid(master) === form.productMasterId);
+    setForm((current) => ({ ...current, priceBasisUnit: selectedMaster?.unitPolicy?.baseUnit || selectedMaster?.defaultSellingUnit || 'piece' }));
     let live = true;
     api.catalogTenant.masterVariants(form.productMasterId)
       .then((r) => { if (live) setVariantOptions((r.data?.variants || []).filter((v) => v.variant)); })
@@ -70,6 +74,7 @@ function CreateListingModal({ masters, onClose, onSaved }) {
         sellerSku: form.sellerSku.trim() || null,
         price,
         merchandising: { titleOverride: form.titleOverride.trim() || null },
+        priceBasis: { quantity: Number(form.priceBasisQuantity || 1), unitCode: form.priceBasisUnit },
         channels: { storefront: form.storefront, pos: true, marketplace: false, wholesale: false },
         stockQty: Math.max(0, Math.trunc(Number(form.stockQty) || 0)),
         status: form.status,
@@ -128,6 +133,9 @@ function CreateListingModal({ masters, onClose, onSaved }) {
           </Field>
           <Field label="Seller SKU" hint="Your store-specific stock keeping unit.">
             <Input value={form.sellerSku} onChange={(e) => set('sellerSku', e.target.value)} />
+          </Field>
+          <Field label="Price basis" hint="The quantity covered by this price.">
+            <div className="flex gap-2"><Input className="!w-24" type="number" min="0.000001" step="any" value={form.priceBasisQuantity} onChange={(e) => set('priceBasisQuantity', e.target.value)} /><Input value={form.priceBasisUnit} onChange={(e) => set('priceBasisUnit', e.target.value)} /></div>
           </Field>
           <Field label="Storefront title override">
             <Input value={form.titleOverride} onChange={(e) => set('titleOverride', e.target.value)} />
@@ -336,12 +344,20 @@ function ListVariantsModal({ masters, onClose, onSaved }) {
 function ListingModal({ row, onClose, onSaved }) {
   const { busy, run } = useAction();
   const [priceForm, setPriceForm] = useState({ mrp: row.price?.mrp ?? '', sellingPrice: row.price?.sellingPrice ?? '', reason: 'manual' });
+  const [offerForm, setOfferForm] = useState({
+    sellerSku: row.sellerSku || '', titleOverride: row.merchandising?.titleOverride || '',
+    priceBasisQuantity: row.priceBasis?.quantity ?? 1,
+    priceBasisUnit: row.priceBasis?.unitCode || row.master?.unitPolicy?.baseUnit || row.master?.defaultSellingUnit || 'piece',
+    storefront: row.channels?.storefront !== false, marketplace: row.channels?.marketplace !== false,
+    allowBackorder: Boolean(row.sellingPolicy?.allowBackorder), leadTimeDays: row.sellingPolicy?.leadTimeDays ?? 0,
+  });
+  const [currentVersion, setCurrentVersion] = useState(row.version || 1);
   const [stockQty, setStockQty] = useState('0');
   const [stockData, setStockData] = useState(null);
   const [loadingStock, setLoadingStock] = useState(true);
   const [serverError, setServerError] = useState('');
   const listingId = row.id || row._id;
-  const version = row.version || 1;
+  const version = currentVersion;
   const status = row.status || 'draft';
 
   const onChanged = () => { loadStock(); onSaved?.(); };
@@ -367,16 +383,35 @@ function ListingModal({ row, onClose, onSaved }) {
     const mrp = priceForm.mrp === '' ? null : Number(priceForm.mrp);
     if (mrp == null || mrp < Number(priceForm.sellingPrice)) return setServerError('MRP is required and must be greater than or equal to the selling price.');
     try {
-      await run(() => api.catalogTenant.updatePrice(listingId, {
+      const response = await run(() => api.catalogTenant.updatePrice(listingId, {
         price: { mrp: mrp ?? 0, sellingPrice: Number(priceForm.sellingPrice), currency: 'INR' },
         reason: priceForm.reason,
         expectedVersion: version,
       }));
+      setCurrentVersion(response.data?.version || version + 1);
       toast.success('Listing price updated');
       onChanged();
     } catch (err) {
       setServerError(errMsg(err));
     }
+  };
+
+  const saveOffer = async (e) => {
+    e.preventDefault();
+    setServerError('');
+    try {
+      const response = await run(() => api.catalogTenant.updateOffer(listingId, {
+        sellerSku: offerForm.sellerSku || null,
+        priceBasis: { quantity: Number(offerForm.priceBasisQuantity), unitCode: offerForm.priceBasisUnit },
+        merchandising: { titleOverride: offerForm.titleOverride || null },
+        sellingPolicy: { allowBackorder: offerForm.allowBackorder, leadTimeDays: Number(offerForm.leadTimeDays || 0) },
+        channels: { storefront: offerForm.storefront, marketplace: offerForm.marketplace },
+        expectedVersion: version,
+      }));
+      setCurrentVersion(response.data?.version || version + 1);
+      toast.success('Offer policy updated');
+      onChanged();
+    } catch (err) { setServerError(errMsg(err)); }
   };
 
   const saveStock = async (e) => {
@@ -393,7 +428,8 @@ function ListingModal({ row, onClose, onSaved }) {
 
   const setStatus = async (next) => {
     try {
-      await run(() => api.catalogTenant.updateStatus(listingId, { status: next, expectedVersion: version }));
+      const response = await run(() => api.catalogTenant.updateStatus(listingId, { status: next, expectedVersion: version }));
+      setCurrentVersion(response.data?.version || version + 1);
       toast.success(`Listing ${next}`);
       onChanged();
     } catch (err) {
@@ -403,7 +439,8 @@ function ListingModal({ row, onClose, onSaved }) {
 
   const deactivate = async () => {
     try {
-      await run(() => api.catalogTenant.deactivateListing(listingId, { expectedVersion: version }));
+      const response = await run(() => api.catalogTenant.deactivateListing(listingId, { expectedVersion: version }));
+      setCurrentVersion(response.data?.version || version + 1);
       toast.success('Listing deactivated');
       onChanged();
     } catch (err) {
@@ -477,6 +514,22 @@ function ListingModal({ row, onClose, onSaved }) {
           )}
         </form>
       </div>
+
+      <form onSubmit={saveOffer} className="mt-5 rounded-xl border border-slate-200 p-4">
+        <p className="text-sm font-semibold text-slate-800">Offer identity, quantity basis & channels</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="Seller SKU"><Input value={offerForm.sellerSku} onChange={(e) => setOfferForm({ ...offerForm, sellerSku: e.target.value })} /></Field>
+          <Field label="Storefront title"><Input value={offerForm.titleOverride} onChange={(e) => setOfferForm({ ...offerForm, titleOverride: e.target.value })} /></Field>
+          <Field label="Price basis"><div className="flex gap-2"><Input className="!w-20" type="number" min="0.000001" step="any" value={offerForm.priceBasisQuantity} onChange={(e) => setOfferForm({ ...offerForm, priceBasisQuantity: e.target.value })} /><Input value={offerForm.priceBasisUnit} onChange={(e) => setOfferForm({ ...offerForm, priceBasisUnit: e.target.value })} /></div></Field>
+          <Field label="Lead time (days)"><Input type="number" min="0" max="365" value={offerForm.leadTimeDays} onChange={(e) => setOfferForm({ ...offerForm, leadTimeDays: e.target.value })} /></Field>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-5">
+          <label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={offerForm.storefront} onChange={(e) => setOfferForm({ ...offerForm, storefront: e.target.checked })} /> Storefront</label>
+          <label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={offerForm.marketplace} onChange={(e) => setOfferForm({ ...offerForm, marketplace: e.target.checked })} /> Marketplace</label>
+          <label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={offerForm.allowBackorder} onChange={(e) => setOfferForm({ ...offerForm, allowBackorder: e.target.checked })} /> Allow backorder</label>
+          <Button className="ml-auto" type="submit" size="sm" loading={busy}>Save offer</Button>
+        </div>
+      </form>
     </Modal>
   );
 }

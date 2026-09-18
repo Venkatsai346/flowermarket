@@ -45,6 +45,45 @@ const ProductOptionSchema = new Schema(
   { _id: false }
 );
 
+const UnitPolicySchema = new Schema(
+  {
+    dimension: { type: String, enum: ['count', 'mass', 'volume', 'length', 'area', 'time', 'digital', 'custom'], default: 'count' },
+    baseUnit: { type: String, required: true, match: /^[a-z][a-z0-9_]{0,39}$/ },
+    allowFractional: { type: Boolean, default: false },
+    precision: { type: Number, min: 0, max: 6, default: 3 },
+    units: {
+      type: [{
+        _id: false,
+        code: { type: String, required: true, match: /^[a-z][a-z0-9_]{0,39}$/ },
+        label: { type: String, required: true, maxlength: 60 },
+        toBaseFactor: { type: Number, required: true, min: Number.EPSILON },
+        precision: { type: Number, min: 0, max: 6, default: 3 },
+      }],
+      default: [],
+      validate: (value) => value.length <= 50,
+    },
+  },
+  { _id: false }
+);
+
+const OptionRuleSchema = new Schema(
+  {
+    code: { type: String, required: true, match: /^[a-z][a-z0-9_]{0,39}$/ },
+    when: {
+      code: { type: String, required: true },
+      values: { type: [String], default: [] },
+    },
+    then: {
+      code: { type: String, required: true },
+      allowedValues: { type: [String], default: [] },
+      excludedValues: { type: [String], default: [] },
+      required: { type: Boolean, default: true },
+    },
+    priority: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const FulfillmentProfileSchema = new Schema(
   {
     requiresShipping: { type: Boolean, default: true },
@@ -108,6 +147,11 @@ const ProductMasterSchema = new Schema(
     // Product-level option vocabulary. A sellable variant stores one value
     // per dimension and a canonical combinationKey (e.g. color=red&size=m).
     options: { type: [ProductOptionSchema], default: [], validate: (v) => v.length <= 6 },
+    optionRules: { type: [OptionRuleSchema], default: [], validate: (v) => v.length <= 100 },
+
+    // Product-local unit graph. Legacy defaultSellingUnit remains the public
+    // fallback while unitPolicy supports exact conversions and fractional rules.
+    unitPolicy: { type: UnitPolicySchema, default: null },
 
     // ---- fulfilment characteristics (global) ----
     fulfillmentProfile: { type: FulfillmentProfileSchema, default: () => ({}) },
@@ -149,6 +193,26 @@ const ProductMasterSchema = new Schema(
   },
   { collection: 'productmasters' }
 );
+
+ProductMasterSchema.pre('validate', function validateUniversalStructure(next) {
+  const optionCodes = (this.options || []).map((option) => option.code);
+  if (new Set(optionCodes).size !== optionCodes.length) return next(new Error('Product option codes must be unique'));
+  const definitions = new Map((this.options || []).map((option) => [option.code, option]));
+  for (const rule of this.optionRules || []) {
+    if (!definitions.has(rule.when?.code) || !definitions.has(rule.then?.code) || rule.when?.code === rule.then?.code) {
+      return next(new Error('Option dependency references invalid dimensions'));
+    }
+  }
+  if (this.unitPolicy) {
+    const units = this.unitPolicy.units || [];
+    const codes = units.map((unit) => unit.code);
+    const base = units.find((unit) => unit.code === this.unitPolicy.baseUnit);
+    if (new Set(codes).size !== codes.length || !base || Math.abs(base.toBaseFactor - 1) > Number.EPSILON) {
+      return next(new Error('Unit policy requires unique units and a factor-1 base unit'));
+    }
+  }
+  return next();
+});
 
 // Unique constraints are SOFT-DELETE-AWARE (partial on isDeleted: false): a
 // soft-deleted row releases its key, so a deleted master can be re-created

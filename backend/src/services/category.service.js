@@ -110,6 +110,15 @@ class CategoryService {
     const oldParentKey = cat.parentId ? String(cat.parentId) : '';
     Object.assign(cat, patch);
     await cat.save();
+    if (patch.complianceRequirements) {
+      const hasRequiredCompliance = patch.complianceRequirements.some((requirement) => requirement.required !== false);
+      if (hasRequiredCompliance) {
+        await ProductMaster.updateMany(
+          { categoryId: cat.id, status: 'active' },
+          { $set: { complianceStatus: 'pending' }, $inc: { version: 1 } },
+        );
+      }
+    }
     const newParentKey = cat.parentId ? String(cat.parentId) : '';
     // A reparented subtree carries STALE `level` values on every descendant
     // (level is denormalized depth) — recompute the whole subtree.
@@ -201,9 +210,11 @@ class CategoryService {
    * Validate EAV attributes against the category's attributeSchema
    * (compliance gating: food/pharma categories can require FSSAI, expiry, etc.).
    */
-  async validateAttributes(categoryId, attributes = []) {
+  async validateAttributes(categoryId, attributes = [], { scope = 'master' } = {}) {
     const cat = await this.getById(categoryId);
-    const schema = cat.attributeSchema || [];
+    const schema = (cat.attributeSchema || []).filter((field) =>
+      (field.appliesTo || 'master') === 'both' || (field.appliesTo || 'master') === scope
+    );
     if (schema.length === 0) return { ok: true, errors: [] };
 
     const byKey = new Map((attributes || []).map((a) => [a.key, a]));

@@ -24,6 +24,10 @@ import {
   masterReviewSchema,
   masterDeprecateSchema,
   attributeSetSchema,
+  variantAttributeSetSchema,
+  packageSetSchema,
+  bundleComponentSetSchema,
+  complianceSetSchema,
   changeRequestReviewSchema,
   changeRequestQuerySchema,
   auditQuerySchema,
@@ -75,6 +79,12 @@ router.post('/masters/:id/images', validate(idParamSchema, 'params'), validate(i
 router.delete('/masters/:id/images/:imageId', validate(masterImageParamSchema, 'params'), validate(versionOnlySchema), CatalogAdminController.removeImage);
 router.patch('/masters/:id/images/:imageId/primary', validate(masterImageParamSchema, 'params'), validate(imagePrimarySchema), CatalogAdminController.setImagePrimary);
 router.put('/masters/:id/attributes', validate(idParamSchema, 'params'), validate(attributeSetSchema), CatalogAdminController.setAttributes);
+router.get('/masters/:id/structures', validate(idParamSchema, 'params'), CatalogAdminController.getStructures);
+router.get('/masters/:id/integrity', validate(idParamSchema, 'params'), CatalogAdminController.getIntegrityReport);
+router.put('/masters/:id/variants/:variantId/attributes', validate(masterVariantParamSchema, 'params'), validate(variantAttributeSetSchema), CatalogAdminController.setVariantAttributes);
+router.put('/masters/:id/packages', validate(idParamSchema, 'params'), validate(packageSetSchema), CatalogAdminController.setPackages);
+router.put('/masters/:id/bundle-components', validate(idParamSchema, 'params'), validate(bundleComponentSetSchema), CatalogAdminController.setBundleComponents);
+router.put('/masters/:id/compliance', validate(idParamSchema, 'params'), validate(complianceSetSchema), CatalogAdminController.setCompliance);
 
 // ---- review queue ----
 router.get('/change-requests', validate(changeRequestQuerySchema, 'query'), CatalogAdminController.listChangeRequests);

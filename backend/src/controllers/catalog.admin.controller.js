@@ -1,6 +1,7 @@
 import categoryService from '../services/category.service.js';
 import brandService from '../services/brand.service.js';
 import productMasterService from '../services/productMaster.service.js';
+import catalogStructureService from '../services/catalogStructure.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import auditService from '../services/audit.service.js';
 import catalogEventService from '../services/catalogEvent.service.js';
@@ -190,6 +191,49 @@ class CatalogAdminController {
       id: req.params.id, attributes, expectedVersion, actorId: req.auth.userId, req,
     });
     res.status(200).json(success(master, { message: 'Attributes updated' }));
+  });
+
+  getStructures = asyncHandler(async (req, res) => {
+    const structures = await catalogStructureService.getStructures(req.params.id);
+    res.status(200).json(success(structures, { message: 'Advanced product structures fetched' }));
+  });
+
+  getIntegrityReport = asyncHandler(async (req, res) => {
+    const report = await catalogStructureService.integrityReport(req.params.id);
+    res.status(200).json(success(report, { message: 'Catalog integrity evaluated' }));
+  });
+
+  setVariantAttributes = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.setVariantAttributes({
+      masterId: req.params.id, variantId: req.params.variantId,
+      attributes: req.body.attributes, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Variant attributes updated' }));
+  });
+
+  setPackages = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.replacePackages({
+      masterId: req.params.id, packages: req.body.packages, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Pack hierarchy updated' }));
+  });
+
+  setBundleComponents = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.replaceBundleComponents({
+      masterId: req.params.id, components: req.body.components, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Bundle composition updated' }));
+  });
+
+  setCompliance = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.replaceCompliance({
+      masterId: req.params.id, records: req.body.records, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Compliance records updated' }));
   });
 
   // ---------------- review queue ----------------

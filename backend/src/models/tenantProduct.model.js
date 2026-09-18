@@ -54,6 +54,10 @@ const TenantProductSchema = new Schema(
     sellerSku: { type: String, trim: true, maxlength: 100, default: null },
 
     price: { type: PriceSchema, default: () => ({}) },
+    priceBasis: {
+      quantity: { type: Number, default: 1, min: Number.EPSILON },
+      unitCode: { type: String, default: null, match: /^[a-z][a-z0-9_]{0,39}$/ },
+    },
     orderLimits: { type: OrderLimitsSchema, default: () => ({}) },
     sellingPolicy: {
       allowBackorder: { type: Boolean, default: false },

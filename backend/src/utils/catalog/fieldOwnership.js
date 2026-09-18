@@ -30,6 +30,8 @@ export const MASTER_GLOBAL_FIELDS = Object.freeze(
     'warranty',
     'seo',
     'options',
+    'optionRules',
+    'unitPolicy',
     'fulfillmentProfile',
     'isPerishable',
     'requiresColdChain',

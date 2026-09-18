@@ -48,6 +48,10 @@ const ProductVariantSchema = new Schema(
       height: { type: Number, default: null, min: 0 },
       unit: { type: String, enum: ['mm', 'cm', 'm', 'in', 'ft'], default: 'cm' },
     },
+    sellQuantity: {
+      value: { type: Number, default: 1, min: Number.EPSILON },
+      unitCode: { type: String, default: null, match: /^[a-z][a-z0-9_]{0,39}$/ },
+    },
     sortOrder: { type: Number, default: 0 },
     isDefault: { type: Boolean, default: false },
     status: {
@@ -62,6 +66,8 @@ const ProductVariantSchema = new Schema(
 
 ProductVariantSchema.pre('validate', function normalizeCombination(next) {
   if (!this.value && !this.optionValues?.length) return next(new Error('A variant needs value or optionValues'));
+  const optionCodes = (this.optionValues || []).map((option) => option.code);
+  if (new Set(optionCodes).size !== optionCodes.length) return next(new Error('Variant option dimensions must be unique'));
   this.combinationKey = combinationKey(this.optionValues || [], {
     variantType: this.variantType,
     value: this.value,

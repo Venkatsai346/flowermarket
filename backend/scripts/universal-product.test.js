@@ -6,6 +6,11 @@ import {
   normalizeMeasurements,
 } from '../src/utils/catalog/productStructure.js';
 import ProductVariant from '../src/models/productVariant.model.js';
+import ProductPackage from '../src/models/productPackage.model.js';
+import ProductBundleComponent from '../src/models/productBundleComponent.model.js';
+import ProductCompliance from '../src/models/productCompliance.model.js';
+import { normalizeUnitPolicy, convertQuantity, assertQuantity } from '../src/utils/catalog/unitConversion.js';
+import { normalizeOptionRules, evaluateOptionCombination } from '../src/utils/catalog/optionDependencies.js';
 
 const options = normalizeOptionDefinitions([
   { name: 'Color', values: ['Red', 'Blue'] },
@@ -55,5 +60,39 @@ const legacy = new ProductVariant({
 });
 await legacy.validate();
 assert.equal(legacy.combinationKey, 'weight=500%20g');
+
+const unitPolicy = normalizeUnitPolicy({
+  dimension: 'mass', baseUnit: 'kg', allowFractional: true, precision: 3,
+  units: [
+    { code: 'kg', label: 'Kilogram', toBaseFactor: 1, precision: 3 },
+    { code: 'g', label: 'Gram', toBaseFactor: 0.001, precision: 0 },
+  ],
+});
+assert.equal(convertQuantity(500, 'g', 'kg', unitPolicy), 0.5);
+assert.equal(convertQuantity(2, 'kg', 'g', unitPolicy), 2000);
+assert.equal(assertQuantity(0.25, 'kg', unitPolicy), 0.25);
+assert.throws(() => assertQuantity(1.5, 'piece', normalizeUnitPolicy(null, 'piece')), (err) => err.code === 'FRACTIONAL_QUANTITY_NOT_ALLOWED');
+assert.throws(() => normalizeUnitPolicy({ dimension: 'mass', baseUnit: 'kg', units: [{ code: 'kg', label: 'Kilogram', toBaseFactor: 1000 }] }), (err) => err.code === 'UNIT_BASE_FACTOR_INVALID');
+
+const optionRules = normalizeOptionRules([{
+  code: 'red_sizes', when: { code: 'color', values: ['Red'] },
+  then: { code: 'size', allowedValues: ['S', 'M'], excludedValues: [] },
+}], options);
+assert.equal(evaluateOptionCombination(a, optionRules).valid, true);
+assert.equal(evaluateOptionCombination([{ code: 'color', value: 'Red' }, { code: 'size', value: 'L' }], optionRules).valid, false);
+assert.throws(() => normalizeOptionRules([{ when: { code: 'color', values: ['Green'] }, then: { code: 'size' } }], options), (err) => err.code === 'OPTION_RULE_VALUE_INVALID');
+
+const packageRow = new ProductPackage({
+  productMasterId: '507f1f77bcf86cd799439011', code: 'case', label: 'Case', level: 'case', quantity: 12, unitCode: 'piece',
+});
+assert.equal(packageRow.validateSync(), undefined);
+const component = new ProductBundleComponent({
+  bundleMasterId: '507f1f77bcf86cd799439011', componentMasterId: '507f191e810c19729de860ea', quantity: 1, unitCode: 'piece',
+});
+assert.equal(component.validateSync(), undefined);
+const compliance = new ProductCompliance({
+  productMasterId: '507f1f77bcf86cd799439011', type: 'certificate', code: 'BIS-123', title: 'BIS conformity', status: 'verified', issuerReference: 'BIS/2026/123',
+});
+assert.equal(compliance.validateSync(), undefined);
 
 console.log('UNIVERSAL PRODUCT STRUCTURE: all invariants passed ✔'); // eslint-disable-line no-console

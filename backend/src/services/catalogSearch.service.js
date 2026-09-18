@@ -57,7 +57,7 @@ class CatalogSearchService {
         },
       },
       { $unwind: { path: '$master', preserveNullAndEmptyArrays: false } },
-      { $match: { 'master.status': PRODUCT_MASTER_STATUS.ACTIVE, 'master.isDeleted': { $ne: true } } },
+      { $match: { 'master.status': PRODUCT_MASTER_STATUS.ACTIVE, 'master.complianceStatus': { $ne: 'pending' }, 'master.isDeleted': { $ne: true } } },
       // Resolve variants before count/facets/pagination so archived, deleted or
       // dangling variant listings never inflate totals or surface as a false
       // master-level row. A null variantId is the legitimate master listing.
@@ -126,6 +126,7 @@ class CatalogSearchService {
             $cond: [{ $ifNull: ['$variant._id', false] }, { $toString: '$variant._id' }, null],
           },
           price: 1,
+          priceBasis: 1,
           stockQty: 1,
           availability: 1,
           variant: {
@@ -159,6 +160,9 @@ class CatalogSearchService {
             isPerishable: '$master.isPerishable',
             requiresColdChain: '$master.requiresColdChain',
             defaultSellingUnit: '$master.defaultSellingUnit',
+            unitPolicy: '$master.unitPolicy',
+            options: '$master.options',
+            optionRules: '$master.optionRules',
             manufacturer: '$master.manufacturer',
             modelNumber: '$master.modelNumber',
             condition: '$master.condition',

@@ -52,6 +52,12 @@ const blank = () => ({
   maxOrderQty: 100,
   attributes: [],
   options: [],
+  optionRules: [],
+  unitDimension: 'count',
+  baseUnit: 'piece',
+  allowFractional: false,
+  unitPrecision: 0,
+  units: [{ code: 'piece', label: 'Piece', toBaseFactor: 1, precision: 0 }],
   variants: [],
   images: [],
 });
@@ -91,6 +97,23 @@ function RowsEditor({ rows, onChange, kind }) {
               </Select>
             </>
           )}
+          {kind === 'rule' && (
+            <>
+              <Input className="!w-28" placeholder="when option" value={r.whenCode || ''} onChange={(e) => upd(i, { whenCode: e.target.value })} />
+              <Input className="!w-36" placeholder="values: Red, Blue" value={r.whenValues || ''} onChange={(e) => upd(i, { whenValues: e.target.value })} />
+              <Input className="!w-28" placeholder="target option" value={r.thenCode || ''} onChange={(e) => upd(i, { thenCode: e.target.value })} />
+              <Input className="min-w-[180px] flex-1" placeholder="allowed values" value={r.allowedValues || ''} onChange={(e) => upd(i, { allowedValues: e.target.value })} />
+              <Input className="min-w-[160px] flex-1" placeholder="excluded values" value={r.excludedValues || ''} onChange={(e) => upd(i, { excludedValues: e.target.value })} />
+            </>
+          )}
+          {kind === 'unit' && (
+            <>
+              <Input className="!w-28" placeholder="code" value={r.code || ''} onChange={(e) => upd(i, { code: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') })} />
+              <Input className="!w-40" placeholder="label" value={r.label || ''} onChange={(e) => upd(i, { label: e.target.value })} />
+              <Input className="!w-36" type="number" min="0.000000001" step="any" placeholder="to base factor" value={r.toBaseFactor ?? ''} onChange={(e) => upd(i, { toBaseFactor: e.target.value })} />
+              <Input className="!w-24" type="number" min="0" max="6" placeholder="precision" value={r.precision ?? 3} onChange={(e) => upd(i, { precision: e.target.value })} />
+            </>
+          )}
           {kind === 'variant' && (
             <>
               <Select className="!w-32" value={r.variantType || ''} onChange={(e) => upd(i, { variantType: e.target.value })}>
@@ -98,6 +121,8 @@ function RowsEditor({ rows, onChange, kind }) {
               </Select>
               <Input className="!w-32" placeholder="Legacy value" value={r.value || ''} onChange={(e) => upd(i, { value: e.target.value })} />
               <Input className="min-w-[220px] flex-1" placeholder="Combination: color=Red, size=M" value={r.optionText || ''} onChange={(e) => upd(i, { optionText: e.target.value })} />
+              <Input className="!w-28" type="number" min="0.000001" step="any" placeholder="qty" value={r.sellQuantityValue ?? 1} onChange={(e) => upd(i, { sellQuantityValue: e.target.value })} />
+              <Input className="!w-24" placeholder="unit" value={r.sellQuantityUnit || ''} onChange={(e) => upd(i, { sellQuantityUnit: e.target.value })} />
               <Input className="!w-32" placeholder="label" value={r.displayLabel || ''} onChange={(e) => upd(i, { displayLabel: e.target.value })} />
               <Input className="!w-32" placeholder="SKU" value={r.sku || ''} onChange={(e) => upd(i, { sku: e.target.value })} />
               <label className="flex items-center gap-1.5 text-xs text-slate-600">
@@ -135,7 +160,9 @@ function RowsEditor({ rows, onChange, kind }) {
 const blankRow = (kind) => {
   if (kind === 'attribute') return { key: '', value: '', unit: '' };
   if (kind === 'option') return { code: '', name: '', values: '', displayType: 'text' };
-  if (kind === 'variant') return { variantType: 'other', value: '', optionText: '', displayLabel: '', sku: '', isDefault: false };
+  if (kind === 'rule') return { whenCode: '', whenValues: '', thenCode: '', allowedValues: '', excludedValues: '' };
+  if (kind === 'unit') return { code: '', label: '', toBaseFactor: 1, precision: 3 };
+  if (kind === 'variant') return { variantType: 'other', value: '', optionText: '', sellQuantityValue: 1, sellQuantityUnit: '', displayLabel: '', sku: '', isDefault: false };
   return { url: '', altText: '', mediaType: 'image', role: 'gallery', isPrimary: false };
 };
 
@@ -222,11 +249,29 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
       displayType: o.displayType || 'text',
       sortOrder: index,
     }));
+    const csv = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+    const optionRules = form.optionRules.filter((rule) => rule.whenCode && rule.thenCode).map((rule, index) => ({
+      code: `rule_${index + 1}`,
+      when: { code: rule.whenCode, values: csv(rule.whenValues) },
+      then: { code: rule.thenCode, allowedValues: csv(rule.allowedValues), excludedValues: csv(rule.excludedValues), required: true },
+      priority: index,
+    }));
+    const unitPolicy = {
+      dimension: form.unitDimension,
+      baseUnit: form.baseUnit,
+      allowFractional: form.allowFractional,
+      precision: Number(form.unitPrecision),
+      units: form.units.filter((unit) => unit.code && unit.label).map((unit) => ({
+        code: unit.code, label: unit.label, toBaseFactor: Number(unit.toBaseFactor), precision: Number(unit.precision),
+      })),
+    };
     const body = {
       ...(isEdit ? {} : { skuGlobal: form.skuGlobal.trim().toUpperCase() }),
       type: form.type.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_'),
       kind: form.kind,
       options,
+      optionRules,
+      unitPolicy,
       title: form.title.trim(),
       slug: form.slug || undefined,
       categoryId: form.categoryId,
@@ -258,12 +303,13 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
       minOrderQty: Number(form.minOrderQty) || 1,
       maxOrderQty: Number(form.maxOrderQty) || 100,
       attributes: form.attributes.filter((a) => a.key && a.value).map(({ key, value, unit }) => ({ key, value, unit: unit || null })),
-      variants: form.variants.filter((v) => v.value || v.optionText).map(({ variantType, value, optionText, displayLabel, sku, isDefault }) => {
+      variants: form.variants.filter((v) => v.value || v.optionText).map(({ variantType, value, optionText, sellQuantityValue, sellQuantityUnit, displayLabel, sku, isDefault }) => {
         const optionValues = parseOptionText(optionText, options);
         return {
           variantType,
           value: value || undefined,
           ...(optionValues.length ? { optionValues } : {}),
+          sellQuantity: { value: Number(sellQuantityValue || 1), unitCode: sellQuantityUnit || form.baseUnit },
           displayLabel: displayLabel || null,
           sku: sku || null,
           isDefault,
@@ -420,6 +466,24 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
           <RowsEditor kind="option" rows={form.options} onChange={(options) => set('options', options)} />
         </div>
 
+        <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
+          <p className="label !mb-2">Unit and conversion policy</p>
+          <p className="mb-3 text-xs text-slate-500">Define a canonical base unit and exact conversion factors. This governs variants, packs, bundles, pricing bases and quantity validation.</p>
+          <div className="mb-3 grid gap-3 sm:grid-cols-4">
+            <Field label="Dimension"><Select value={form.unitDimension} onChange={(e) => set('unitDimension', e.target.value)}>{['count', 'mass', 'volume', 'length', 'area', 'time', 'digital', 'custom'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
+            <Field label="Base unit"><Input value={form.baseUnit} onChange={(e) => set('baseUnit', e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_'))} /></Field>
+            <Field label="Precision"><Input type="number" min="0" max="6" value={form.unitPrecision} onChange={(e) => set('unitPrecision', e.target.value)} /></Field>
+            <div className="pt-7"><Checkbox label="Allow fractional quantities" checked={form.allowFractional} onChange={(e) => set('allowFractional', e.target.checked)} /></div>
+          </div>
+          <RowsEditor kind="unit" rows={form.units} onChange={(units) => set('units', units)} />
+        </div>
+
+        <div>
+          <p className="label !mb-2">Option dependencies</p>
+          <p className="mb-2 text-xs text-slate-500">Model constraints such as “Storage 1 TB is available only when Color is Black”. Invalid SKU combinations are rejected server-side.</p>
+          <RowsEditor kind="rule" rows={form.optionRules} onChange={(optionRules) => set('optionRules', optionRules)} />
+        </div>
+
         <div>
           <p className="label !mb-2">Sellable variants</p>
           <p className="mb-2 text-xs text-slate-500">Build combinations with <code>color=Red, size=M</code>. Ordering never changes variant identity.</p>
@@ -476,9 +540,19 @@ function fromDoc(m) {
     maxOrderQty: m.maxOrderQty ?? 100,
     attributes: (m.attributes || []).map((a) => ({ key: a.key, value: a.value, unit: a.unit || '' })),
     options: (m.options || []).map((o) => ({ code: o.code, name: o.name, values: (o.values || []).join(', '), displayType: o.displayType || 'text' })),
+    optionRules: (m.optionRules || []).map((rule) => ({
+      whenCode: rule.when?.code || '', whenValues: (rule.when?.values || []).join(', '),
+      thenCode: rule.then?.code || '', allowedValues: (rule.then?.allowedValues || []).join(', '), excludedValues: (rule.then?.excludedValues || []).join(', '),
+    })),
+    unitDimension: m.unitPolicy?.dimension || 'count',
+    baseUnit: m.unitPolicy?.baseUnit || m.defaultSellingUnit || 'piece',
+    allowFractional: Boolean(m.unitPolicy?.allowFractional),
+    unitPrecision: m.unitPolicy?.precision ?? 0,
+    units: (m.unitPolicy?.units || [{ code: m.defaultSellingUnit || 'piece', label: SELLING_UNIT_LABEL[m.defaultSellingUnit] || 'Piece', toBaseFactor: 1, precision: 0 }]).map((unit) => ({ ...unit })),
     variants: (m.variants || []).map((v) => ({
       variantType: v.variantType || 'other', value: v.optionValues?.length ? '' : (v.value || ''),
       optionText: (v.optionValues || []).map((o) => `${o.code}=${o.value}`).join(', '),
+      sellQuantityValue: v.sellQuantity?.value ?? 1, sellQuantityUnit: v.sellQuantity?.unitCode || m.unitPolicy?.baseUnit || m.defaultSellingUnit || 'piece',
       displayLabel: v.displayLabel || '', sku: v.sku || '', isDefault: Boolean(v.isDefault),
     })),
     images: (m.images || []).map((i) => ({

@@ -9,6 +9,7 @@ import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import deriveAvailability from '../utils/catalog/availability.js';
+import { normalizeUnitPolicy, assertQuantity } from '../utils/catalog/unitConversion.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import {
@@ -61,6 +62,12 @@ class TenantProductService {
     if (payload.price && payload.price.sellingPrice != null && payload.price.mrp != null) {
       this.assertPriceValid(payload.price);
     }
+    const unitPolicy = normalizeUnitPolicy(master.unitPolicy, master.defaultSellingUnit);
+    const priceBasis = payload.priceBasis || {
+      quantity: 1,
+      unitCode: unitPolicy.baseUnit,
+    };
+    assertQuantity(priceBasis.quantity, priceBasis.unitCode, unitPolicy);
 
     const creatingActive = (payload.status || TENANT_LISTING_STATUS.DRAFT) === TENANT_LISTING_STATUS.ACTIVE;
     if (creatingActive) {
@@ -69,6 +76,8 @@ class TenantProductService {
       // set + master ACTIVE" — previously unenforced; a priceless listing is
       // otherwise orderable at ₹0 via the cart's `sellingPrice ?? 0`).
       this.assertActivatable({ listing: { price: payload.price || {} }, master });
+      const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+      await catalogStructureService.assertPublishable(master);
     }
 
     // Plan entitlement: the products cap counts ACTIVE listings. Drafts are
@@ -86,6 +95,7 @@ class TenantProductService {
       variantId,
       sellerSku: payload.sellerSku || null,
       price: payload.price || { mrp: null, sellingPrice: null },
+      priceBasis,
       orderLimits: payload.orderLimits || {},
       sellingPolicy: payload.sellingPolicy || {},
       merchandising: payload.merchandising || {},
@@ -199,6 +209,7 @@ class TenantProductService {
             status: row.status || TENANT_LISTING_STATUS.DRAFT,
             orderLimits: row.orderLimits || {},
             sellerSku: row.sellerSku || null,
+            priceBasis: row.priceBasis || null,
             sellingPolicy: row.sellingPolicy || {},
             merchandising: row.merchandising || {},
             channels: row.channels || {},
@@ -279,6 +290,43 @@ class TenantProductService {
     return listing;
   }
 
+  async updateOffer({ tenantId, listingId, patch, expectedVersion, actorId = null, req = null }) {
+    const listing = await this.getListing({ tenantId, listingId });
+    const master = await ProductMaster.findById(listing.productMasterId);
+    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    if (patch.priceBasis) assertQuantity(
+      patch.priceBasis.quantity,
+      patch.priceBasis.unitCode,
+      normalizeUnitPolicy(master.unitPolicy, master.defaultSellingUnit),
+    );
+    const policy = { ...(listing.sellingPolicy?.toObject?.() || listing.sellingPolicy || {}), ...(patch.sellingPolicy || {}) };
+    if (policy.availableFrom && policy.availableUntil && new Date(policy.availableUntil) <= new Date(policy.availableFrom)) {
+      throw badRequest('Offer availability end must be after its start', 'OFFER_DATES_INVALID');
+    }
+    const limits = { ...(listing.orderLimits?.toObject?.() || listing.orderLimits || {}), ...(patch.orderLimits || {}) };
+    if (limits.minOrderQty && limits.maxOrderQty && limits.minOrderQty > limits.maxOrderQty) {
+      throw badRequest('Minimum order quantity cannot exceed maximum', 'ORDER_LIMITS_INVALID');
+    }
+    const next = {
+      ...(patch.sellerSku !== undefined ? { sellerSku: patch.sellerSku || null } : {}),
+      ...(patch.priceBasis ? { priceBasis: patch.priceBasis } : {}),
+      ...(patch.sellingPolicy ? { sellingPolicy: policy } : {}),
+      ...(patch.orderLimits ? { orderLimits: limits } : {}),
+      ...(patch.merchandising ? { merchandising: { ...(listing.merchandising?.toObject?.() || listing.merchandising || {}), ...patch.merchandising } } : {}),
+      ...(patch.channels ? { channels: { ...(listing.channels?.toObject?.() || listing.channels || {}), ...patch.channels } } : {}),
+    };
+    await updateWithVersion(listing, expectedVersion, next);
+    await auditService.record({
+      action: 'update', entityType: 'tenant_product', entityId: listing.id,
+      tenantId, actorId, actorType: 'tenant', after: next, req,
+    });
+    await catalogEventService.publish({
+      eventType: 'tenant_product_updated', entityType: 'tenant_product', entityId: listing.id,
+      tenantId, payload: { id: listing.id, fields: Object.keys(next) },
+    });
+    return listing;
+  }
+
   async updatePrice({ tenantId, listingId, price, expectedVersion, actorId = null, reason = PRICE_CHANGE_REASON.MANUAL, source = PRICE_CHANGE_SOURCE.TENANT, req = null }) {
     const listing = await this.getListing({ tenantId, listingId });
     this.assertPriceValid(price);
@@ -319,6 +367,8 @@ class TenantProductService {
       // unset on a DRAFT row.
       const master = await ProductMaster.findById(listing.productMasterId);
       this.assertActivatable({ listing, master });
+      const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+      await catalogStructureService.assertPublishable(master);
     }
 
     // Activating past the plan's products cap is a 402 (deactivations always pass).
@@ -405,11 +455,12 @@ class TenantProductService {
           { $limit: limit },
           {
             $project: {
-              id: 1, tenantId: 1, productMasterId: 1, variantId: 1, price: 1, orderLimits: 1,
+              id: 1, tenantId: 1, productMasterId: 1, variantId: 1, sellerSku: 1,
+              price: 1, priceBasis: 1, orderLimits: 1, sellingPolicy: 1, merchandising: 1, channels: 1,
               stockQty: 1, availability: 1, status: 1, version: 1, createdAt: 1, updatedAt: 1,
               master: {
                 id: '$master._id', title: '$master.title', slug: '$master.slug',
-                skuGlobal: '$master.skuGlobal', type: '$master.type',
+                skuGlobal: '$master.skuGlobal', type: '$master.type', kind: '$master.kind', unitPolicy: '$master.unitPolicy',
                 categoryId: '$master.categoryId', brandId: '$master.brandId',
                 isPerishable: '$master.isPerishable', defaultSellingUnit: '$master.defaultSellingUnit',
                 status: '$master.status',
@@ -419,6 +470,7 @@ class TenantProductService {
                   { $ifNull: ['$variant._id', false] },
                   {
                     id: '$variant._id', variantType: '$variant.variantType', value: '$variant.value',
+                    optionValues: '$variant.optionValues', combinationKey: '$variant.combinationKey', sellQuantity: '$variant.sellQuantity',
                     displayLabel: '$variant.displayLabel', sku: '$variant.sku',
                     sortOrder: '$variant.sortOrder', isDefault: '$variant.isDefault',
                     status: '$variant.status',
@@ -451,10 +503,16 @@ class TenantProductService {
     const withGalleries = attachVariantGalleries(variant ? [variant] : [], images);
     return {
       listing: listing.toObject(),
-      master: master ? { id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal, type: master.type, description: master.description, isPerishable: master.isPerishable, defaultSellingUnit: master.defaultSellingUnit, status: master.status } : null,
+      master: master ? {
+        id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal,
+        type: master.type, kind: master.kind, description: master.description,
+        isPerishable: master.isPerishable, defaultSellingUnit: master.defaultSellingUnit,
+        unitPolicy: master.unitPolicy, options: master.options, optionRules: master.optionRules, status: master.status,
+      } : null,
       images: sortGallery(masterGallery).map((i) => ({ id: i._id, url: i.url, altText: i.altText, isPrimary: i.isPrimary })),
       variant: variant ? {
         id: variant._id, variantType: variant.variantType, value: variant.value,
+        optionValues: variant.optionValues, combinationKey: variant.combinationKey, sellQuantity: variant.sellQuantity,
         displayLabel: variant.displayLabel, sku: variant.sku, sortOrder: variant.sortOrder,
         isDefault: variant.isDefault, status: variant.status,
         images: withGalleries[0]?.images || [],

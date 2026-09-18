@@ -16,6 +16,8 @@ import { whitelistMasterPatch } from '../utils/catalog/fieldOwnership.js';
 import { titleSimilarity, DUPLICATE_TITLE_THRESHOLD } from '../utils/catalog/similarity.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
 import { normalizeOptionDefinitions, normalizeOptionValues, combinationKey } from '../utils/catalog/productStructure.js';
+import { normalizeOptionRules, assertOptionCombinationAllowed } from '../utils/catalog/optionDependencies.js';
+import { normalizeUnitPolicy, assertQuantity } from '../utils/catalog/unitConversion.js';
 import { badRequest, notFound, conflict, AppError } from '../utils/ApiError.js';
 import {
   PRODUCT_MASTER_STATUS,
@@ -31,7 +33,7 @@ import {
 const GLOBAL_FIELDS = [
   'skuGlobal', 'type', 'kind', 'title', 'slug', 'shortDescription', 'description',
   'categoryId', 'brandId', 'barcode', 'tags', 'manufacturer', 'modelNumber',
-  'countryOfOrigin', 'identifiers', 'condition', 'warranty', 'seo', 'options',
+  'countryOfOrigin', 'identifiers', 'condition', 'warranty', 'seo', 'options', 'optionRules', 'unitPolicy',
   'fulfillmentProfile', 'isPerishable', 'requiresColdChain',
   'defaultSellingUnit', 'minOrderQty', 'maxOrderQty', 'complianceStatus',
 ];
@@ -109,8 +111,12 @@ class ProductMasterService {
   /** Normalize option definitions and variant combinations as one invariant. */
   normalizeStructure(payload) {
     const options = normalizeOptionDefinitions(payload.options || []);
+    const optionRules = normalizeOptionRules(payload.optionRules || [], options);
+    const unitPolicy = normalizeUnitPolicy(payload.unitPolicy, payload.defaultSellingUnit);
     const variants = (payload.variants || []).map((variant) => {
       const optionValues = normalizeOptionValues(variant.optionValues || [], options);
+      assertOptionCombinationAllowed(optionValues, optionRules);
+      if (variant.sellQuantity) assertQuantity(variant.sellQuantity.value, variant.sellQuantity.unitCode, unitPolicy);
       return {
         ...variant,
         optionValues,
@@ -126,13 +132,16 @@ class ProductMasterService {
     if (variants.filter((v) => v.isDefault).length > 1) {
       throw badRequest('Only one variant can be the default', 'MULTIPLE_DEFAULT_VARIANTS');
     }
-    return { ...payload, options, variants };
+    return { ...payload, options, optionRules, unitPolicy, variants };
   }
 
   /** Create a master (admin: ACTIVE; tenant proposal: PENDING_REVIEW). */
   async createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, req = null }) {
     payload = this.normalizeStructure(payload);
-    await categoryService.getById(payload.categoryId);
+    const category = await categoryService.getById(payload.categoryId);
+    if ((category.complianceRequirements || []).some((requirement) => requirement.required !== false)) {
+      payload.complianceStatus = 'pending';
+    }
     const { ok, errors } = await categoryService.validateAttributes(payload.categoryId, payload.attributes || []);
     if (!ok) throw badRequest('Category attribute validation failed', 'CATEGORY_ATTRIBUTE_ERROR', errors);
 
@@ -293,21 +302,33 @@ class ProductMasterService {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
 
-    if (patch.options) {
-      patch.options = normalizeOptionDefinitions(patch.options);
+    if (patch.options || patch.optionRules) {
+      const options = patch.options ? normalizeOptionDefinitions(patch.options) : master.options;
+      const optionRules = normalizeOptionRules(patch.optionRules || master.optionRules || [], options);
+      patch.options = options;
+      patch.optionRules = optionRules;
       const variants = await ProductVariant.find({ productMasterId: master.id }).lean();
       for (const variant of variants) {
-        // Existing combinations must remain representable after an option edit.
-        normalizeOptionValues(variant.optionValues || [], patch.options);
+        const values = normalizeOptionValues(variant.optionValues || [], options);
+        assertOptionCombinationAllowed(values, optionRules);
+      }
+    }
+    if (patch.unitPolicy) {
+      patch.unitPolicy = normalizeUnitPolicy(patch.unitPolicy, patch.defaultSellingUnit || master.defaultSellingUnit);
+      const variants = await ProductVariant.find({ productMasterId: master.id }).lean();
+      for (const variant of variants) {
+        if (variant.sellQuantity?.unitCode) assertQuantity(variant.sellQuantity.value, variant.sellQuantity.unitCode, patch.unitPolicy);
       }
     }
 
     if (patch.categoryId && String(patch.categoryId) !== String(master.categoryId || '')) {
       const currentAttrs = await ProductAttributeValue.find({ productMasterId: master.id }).lean();
+      const targetCategory = await categoryService.getById(patch.categoryId);
       const { ok, errors } = await categoryService.validateAttributes(
         patch.categoryId,
         currentAttrs.map((a) => ({ key: a.attributeKey, value: a.value }))
       );
+      if ((targetCategory.complianceRequirements || []).some((requirement) => requirement.required !== false)) patch.complianceStatus = 'pending';
       if (!ok) throw badRequest('Category attribute validation failed', 'CATEGORY_ATTRIBUTE_ERROR', errors);
     }
     if (patch.slug) await assertSlugFree(ProductMaster, patch.slug, {}, master.id);
@@ -359,17 +380,24 @@ class ProductMasterService {
     }
 
     // Re-validate the (possibly stale) values against current state.
-    if (clean.options) {
-      clean.options = normalizeOptionDefinitions(clean.options);
+    if (clean.options || clean.optionRules) {
+      clean.options = clean.options ? normalizeOptionDefinitions(clean.options) : master.options;
+      clean.optionRules = normalizeOptionRules(clean.optionRules || master.optionRules || [], clean.options);
       const variants = await ProductVariant.find({ productMasterId: master.id }).lean();
-      for (const variant of variants) normalizeOptionValues(variant.optionValues || [], clean.options);
+      for (const variant of variants) {
+        const values = normalizeOptionValues(variant.optionValues || [], clean.options);
+        assertOptionCombinationAllowed(values, clean.optionRules);
+      }
     }
+    if (clean.unitPolicy) clean.unitPolicy = normalizeUnitPolicy(clean.unitPolicy, clean.defaultSellingUnit || master.defaultSellingUnit);
     if (clean.categoryId && String(clean.categoryId) !== String(master.categoryId || '')) {
       const currentAttrs = await ProductAttributeValue.find({ productMasterId: master.id }).lean();
+      const targetCategory = await categoryService.getById(clean.categoryId);
       const { ok, errors } = await categoryService.validateAttributes(
         clean.categoryId,
         currentAttrs.map((a) => ({ key: a.attributeKey, value: a.value }))
       );
+      if ((targetCategory.complianceRequirements || []).some((requirement) => requirement.required !== false)) clean.complianceStatus = 'pending';
       if (!ok) throw badRequest('Category attribute validation failed', 'CATEGORY_ATTRIBUTE_ERROR', errors);
     }
     if (clean.slug) await assertSlugFree(ProductMaster, clean.slug, {}, master.id);
@@ -416,6 +444,7 @@ class ProductMasterService {
         identifiers: v.identifiers || {},
         weight: v.weight || {},
         dimensions: v.dimensions || {},
+        sellQuantity: v.sellQuantity || { value: 1, unitCode: master.unitPolicy?.baseUnit || master.defaultSellingUnit },
         sortOrder: v.sortOrder ?? i,
         isDefault: v.isDefault || false,
         status: ENTITY_STATUS.ACTIVE,
@@ -506,6 +535,8 @@ class ProductMasterService {
     if (master.status === PRODUCT_MASTER_STATUS.DEPRECATED) {
       throw conflict('Master is already deprecated', 'ALREADY_DEPRECATED');
     }
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    await catalogStructureService.assertMasterDeprecatable(master.id);
     master.status = PRODUCT_MASTER_STATUS.DEPRECATED;
     master.review = { ...master.review, reviewedBy: actorId, reviewedAt: new Date(), note };
     master.version += 1;
@@ -558,6 +589,8 @@ class ProductMasterService {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
     const optionValues = normalizeOptionValues(payload?.optionValues || [], master.options || []);
+    assertOptionCombinationAllowed(optionValues, master.optionRules || []);
+    if (payload?.sellQuantity) assertQuantity(payload.sellQuantity.value, payload.sellQuantity.unitCode, normalizeUnitPolicy(master.unitPolicy, master.defaultSellingUnit));
     const { images: nestedImages, ...variantFields } = payload || {};
     variantFields.optionValues = optionValues;
     variantFields.combinationKey = combinationKey(optionValues, variantFields);
@@ -610,13 +643,15 @@ class ProductMasterService {
     if (!variant) throw notFound('Variant not found on this master', 'VARIANT_NOT_FOUND');
     const allowed = [
       'displayLabel', 'sortOrder', 'isDefault', 'sku', 'barcode', 'identifiers',
-      'weight', 'dimensions', 'status', 'value', 'variantType', 'optionValues',
+      'weight', 'dimensions', 'sellQuantity', 'status', 'value', 'variantType', 'optionValues',
     ];
     if (patch.optionValues) {
       patch.optionValues = normalizeOptionValues(patch.optionValues, master.options || []);
+      assertOptionCombinationAllowed(patch.optionValues, master.optionRules || []);
       patch.combinationKey = combinationKey(patch.optionValues, { ...variant.toObject(), ...patch });
       allowed.push('combinationKey');
     }
+    if (patch.sellQuantity) assertQuantity(patch.sellQuantity.value, patch.sellQuantity.unitCode, normalizeUnitPolicy(master.unitPolicy, master.defaultSellingUnit));
     const before = pick(variant.toObject(), Object.keys(patch).filter((k) => allowed.includes(k)));
     for (const k of allowed) {
       if (patch[k] !== undefined) variant[k] = patch[k];
@@ -645,6 +680,8 @@ class ProductMasterService {
     await updateWithVersion(master, expectedVersion, {});
     const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId });
     if (!variant) throw notFound('Variant not found on this master', 'VARIANT_NOT_FOUND');
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    await catalogStructureService.assertVariantRemovable(masterId, variantId);
     // A deleted variant's gallery must not dangle: soft-delete its scoped rows
     // so fallback resolution never resurrects photos of a dead variant.
     await ProductImage.updateMany(
@@ -805,7 +842,19 @@ class ProductMasterService {
     doc.variants = attachVariantGalleries(variants, images);
     // Master gallery only (variantId == null) — variant rows live on variants.
     doc.images = sortGallery(groupImagesByVariant(images).master);
-    doc.attributes = attributes.map((a) => ({ key: a.attributeKey, value: a.value, unit: a.unit }));
+    doc.attributes = attributes.map((a) => ({ key: a.attributeKey, value: a.value, valueType: a.valueType, unit: a.unit }));
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    const structures = await catalogStructureService.getStructures(id);
+    const variantAttributes = new Map();
+    for (const attribute of structures.variantAttributes) {
+      const key = String(attribute.productVariantId);
+      if (!variantAttributes.has(key)) variantAttributes.set(key, []);
+      variantAttributes.get(key).push({ key: attribute.attributeKey, value: attribute.value, valueType: attribute.valueType, unit: attribute.unit });
+    }
+    doc.variants = doc.variants.map((variant) => ({ ...variant, attributes: variantAttributes.get(String(variant._id || variant.id)) || [] }));
+    doc.packages = structures.packages;
+    doc.bundleComponents = structures.bundleComponents;
+    doc.compliance = structures.compliance;
     doc.category = category ? { id: category._id, name: category.name, slug: category.slug } : null;
     doc.brand = brand ? { id: brand._id, name: brand.name, slug: brand.slug } : null;
     return doc;

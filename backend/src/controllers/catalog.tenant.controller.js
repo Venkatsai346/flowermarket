@@ -76,6 +76,15 @@ class CatalogTenantController {
     res.status(200).json(success(detail, { message: 'Listing fetched' }));
   });
 
+  updateOffer = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...patch } = req.body;
+    const listing = await tenantProductService.updateOffer({
+      tenantId: req.tenantId, listingId: req.params.id, patch, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(listing, { message: 'Listing offer updated' }));
+  });
+
   updatePrice = asyncHandler(async (req, res) => {
     const { price, reason, expectedVersion } = req.body;
     const listing = await tenantProductService.updatePrice({

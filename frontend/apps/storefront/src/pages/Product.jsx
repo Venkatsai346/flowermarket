@@ -94,7 +94,7 @@ export default function Product() {
   );
   const selectedOptions = Object.fromEntries((selected?.optionValues || []).map((o) => [o.code, o.value]));
   const effListing = selected
-    ? { listingId: selected.listingId, price: selected.price, stockQty: selected.stockQty, variantId: selected.variantId }
+    ? { listingId: selected.listingId, price: selected.price, priceBasis: selected.priceBasis, stockQty: selected.stockQty, variantId: selected.variantId }
     : listing;
 
   const pick = (v) => {
@@ -336,8 +336,8 @@ export default function Product() {
               <Money value={price} className="text-3xl font-bold text-slate-900" />
               {mrp && mrp > price && <Money value={mrp} strike className="pb-1 text-sm" />}
             </div>
-            {product.defaultSellingUnit && (
-              <p className="mt-1 text-xs text-slate-400">per {product.defaultSellingUnit}</p>
+            {(effListing.priceBasis?.unitCode || product.defaultSellingUnit) && (
+              <p className="mt-1 text-xs text-slate-400">per {effListing.priceBasis?.quantity || 1} {effListing.priceBasis?.unitCode || product.defaultSellingUnit}</p>
             )}
 
             <div className="mt-4">
@@ -417,7 +417,7 @@ export default function Product() {
               <p className="mt-6 text-sm leading-relaxed text-slate-600">{product.description}</p>
             )}
 
-            {(product.manufacturer || product.modelNumber || product.countryOfOrigin || product.identifiers?.gtin || product.fulfillmentProfile?.weight?.value) && (
+            {(product.manufacturer || product.modelNumber || product.countryOfOrigin || product.identifiers?.gtin || product.fulfillmentProfile?.weight?.value || product.unitPolicy) && (
               <section className="mt-8 overflow-hidden rounded-2xl border border-slate-200">
                 <h2 className="border-b border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">Product information</h2>
                 <dl className="grid grid-cols-2 gap-x-5 gap-y-3 p-4 text-sm">
@@ -427,7 +427,29 @@ export default function Product() {
                   {product.countryOfOrigin && <><dt className="text-slate-500">Country of origin</dt><dd className="font-medium text-slate-800">{product.countryOfOrigin}</dd></>}
                   {product.identifiers?.gtin && <><dt className="text-slate-500">GTIN</dt><dd className="font-mono text-xs text-slate-800">{product.identifiers.gtin}</dd></>}
                   {product.fulfillmentProfile?.weight?.value != null && <><dt className="text-slate-500">Shipping weight</dt><dd className="font-medium text-slate-800">{product.fulfillmentProfile.weight.value} {product.fulfillmentProfile.weight.unit}</dd></>}
+                  {product.unitPolicy && <><dt className="text-slate-500">Available units</dt><dd className="font-medium text-slate-800">{(product.unitPolicy.units || []).map((unit) => unit.label).join(', ')}</dd></>}
                 </dl>
+              </section>
+            )}
+
+            {(product.packages || []).length > 0 && (
+              <section className="mt-5 rounded-2xl border border-slate-200 p-4">
+                <h2 className="text-sm font-semibold text-slate-800">Pack sizes</h2>
+                <div className="mt-3 flex flex-wrap gap-2">{product.packages.map((pack) => <span key={pack.code} className="rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-700"><strong>{pack.label}</strong> · {pack.quantity} {pack.unitCode}{pack.containedPackageCode ? ` per ${pack.containedPackageCode}` : ''}</span>)}</div>
+              </section>
+            )}
+
+            {product.kind === 'bundle' && (product.bundleComponents || []).length > 0 && (
+              <section className="mt-5 rounded-2xl border border-slate-200 p-4">
+                <h2 className="text-sm font-semibold text-slate-800">What’s included</h2>
+                <ul className="mt-3 space-y-2">{product.bundleComponents.map((component) => <li key={component._id || `${component.componentMasterId}-${component.selectionGroup}`} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm"><span>{component.product?.title || 'Bundle item'}{component.variant && <span className="ml-1 text-slate-400">· {component.variant.displayLabel || component.variant.value}</span>}</span><span className="font-semibold">{component.quantity} {component.unitCode}</span></li>)}</ul>
+              </section>
+            )}
+
+            {(product.compliance || []).length > 0 && (
+              <section className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
+                <h2 className="text-sm font-semibold text-emerald-900">Verified standards & compliance</h2>
+                <div className="mt-3 flex flex-wrap gap-2">{product.compliance.map((record) => <span key={`${record.type}-${record.code}`} className="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 shadow-sm">{record.title} · {record.code}</span>)}</div>
               </section>
             )}
           </div>

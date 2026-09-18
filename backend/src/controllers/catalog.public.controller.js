@@ -143,7 +143,7 @@ class CatalogPublicController {
     // the id PDP must enforce the same gate, or a PENDING_REVIEW/REJECTED/
     // DEPRECATED master keeps a public shareable page (and, for rejected
     // masters, a listing the cascade missed).
-    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE || master.complianceStatus === 'pending') {
       throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     }
     if (!listings?.length) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
@@ -187,6 +187,7 @@ class CatalogPublicController {
         sortOrder: v?.sortOrder ?? 0,
         isDefault: Boolean(v?.isDefault),
         price: l.price,
+        priceBasis: l.priceBasis,
         sellerSku: l.sellerSku || null,
         merchandising: l.merchandising || {},
         orderLimits: l.orderLimits,
@@ -236,6 +237,12 @@ class CatalogPublicController {
         title: selected.merchandising?.titleOverride || master.title,
         canonicalTitle: master.title,
         shortDescription: selected.merchandising?.descriptionOverride || master.shortDescription,
+        compliance: (master.compliance || []).filter((record) =>
+          record.status === 'verified' && (!record.validUntil || new Date(record.validUntil) > new Date())
+        ).map((record) => ({
+          type: record.type, code: record.code, title: record.title, authority: record.authority,
+          jurisdiction: record.jurisdiction, validUntil: record.validUntil, restrictions: record.restrictions,
+        })),
         imageUrl,
         images,
         imageSource: selected.imageSource,
@@ -245,6 +252,7 @@ class CatalogPublicController {
         listingId: selected.listingId,
         variantId: selected.variantId,
         price: selected.price,
+        priceBasis: selected.priceBasis,
         status: 'active',
         orderLimits: selected.orderLimits,
         stockQty: selected.stockQty,

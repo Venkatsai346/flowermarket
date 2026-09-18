@@ -39,6 +39,7 @@ const CartItemSchema = new Schema(
     titleSnapshot: { type: String, default: null, maxlength: 200 },
     imageUrlSnapshot: { type: String, default: null },
     unitSnapshot: { type: String, default: null },
+    unitQuantitySnapshot: { type: Number, default: 1, min: Number.EPSILON },
 
     lineTotal: { type: Number, default: 0, min: 0 }, // qty * sellingPrice
     isReturnable: { type: Boolean, default: true },
