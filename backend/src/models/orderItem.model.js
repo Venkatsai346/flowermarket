@@ -29,6 +29,7 @@ const OrderItemSchema = new Schema(
       title: { type: String, required: true, maxlength: 200 },
       imageUrl: { type: String, default: null },
       unit: { type: String, default: null },
+      unitQuantity: { type: Number, default: 1, min: Number.EPSILON },
     },
     priceAtOrder: {
       mrp: { type: Number, min: 0, default: null },

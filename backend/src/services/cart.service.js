@@ -173,6 +173,8 @@ class CartService {
     if (!master || master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
       throw badRequest('Product master is not active', 'MASTER_NOT_AVAILABLE');
     }
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    await catalogStructureService.assertPublishable(master);
 
     const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
     const available = stock.qtyAvailable ?? 0;
@@ -212,6 +214,8 @@ class CartService {
       existing.lineTotal = lineTotal;
       existing.titleSnapshot = titleSnapshot;
       existing.imageUrlSnapshot = imageUrlSnapshot;
+      existing.unitSnapshot = listing.priceBasis?.unitCode || master.defaultSellingUnit || null;
+      existing.unitQuantitySnapshot = listing.priceBasis?.quantity || 1;
       existing.updatedAt = new Date();
       await existing.save();
     } else {
@@ -226,7 +230,8 @@ class CartService {
         stockSnapshot: { availableQty: available, checkedAt: new Date() },
         titleSnapshot,
         imageUrlSnapshot,
-        unitSnapshot: master.defaultSellingUnit || null,
+        unitSnapshot: listing.priceBasis?.unitCode || master.defaultSellingUnit || null,
+        unitQuantitySnapshot: listing.priceBasis?.quantity || 1,
         lineTotal,
         isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),
       });
@@ -412,6 +417,14 @@ class CartService {
     // than from a series of reads taken milliseconds apart (which could disagree
     // with each other mid-cart if a price changed while the loop was running).
     const { listingFor, availableFor } = await this.liveLinesFor({ tenantId, items });
+    const masterIds = [...new Set(items.map((item) => String(listingFor(item.tenantProductId)?.productMasterId || '')).filter(Boolean))];
+    const masters = masterIds.length ? await ProductMaster.find({ _id: { $in: masterIds }, status: PRODUCT_MASTER_STATUS.ACTIVE }).lean() : [];
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    const complianceResults = await Promise.all(masters.map(async (master) => {
+      try { await catalogStructureService.assertPublishable(master); return [String(master._id), true]; }
+      catch { return [String(master._id), false]; }
+    }));
+    const publishable = new Map(complianceResults);
 
     const diffs = [];
     let changed = false;
@@ -419,9 +432,13 @@ class CartService {
 
     for (const item of items) {
       const listing = listingFor(item.tenantProductId);
-      if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
+      const masterId = String(listing?.productMasterId || '');
+      if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE || publishable.get(masterId) !== true) {
         changed = true;
-        diffs.push({ itemId: item.id, listingId: item.tenantProductId, issue: 'unavailable' });
+        diffs.push({
+          itemId: item.id, listingId: item.tenantProductId,
+          issue: listing && publishable.get(masterId) === false ? 'compliance_unavailable' : 'unavailable',
+        });
         continue;
       }
       const livePrice = listing.price?.sellingPrice ?? 0;

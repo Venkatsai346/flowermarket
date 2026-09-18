@@ -72,6 +72,8 @@ class MongoSearchProvider {
     };
 
     if (filters.categoryId) match.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.brandId) match.brandId = new mongoose.Types.ObjectId(String(filters.brandId));
+    if (filters.productType) match.productType = filters.productType;
     if (filters.vendorId) match.vendorId = new mongoose.Types.ObjectId(String(filters.vendorId));
     if (filters.inStock) match.inStock = true;
     if (filters.minPrice != null || filters.maxPrice != null) {
@@ -110,6 +112,19 @@ class MongoSearchProvider {
       status: 'active',
       isDeleted: { $ne: true },
     };
+    if (filters.categoryId) base.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.brandId) base.brandId = new mongoose.Types.ObjectId(String(filters.brandId));
+    if (filters.productType) base.productType = filters.productType;
+    if (filters.vendorId) base.vendorId = new mongoose.Types.ObjectId(String(filters.vendorId));
+    if (filters.inStock) base.inStock = true;
+    if (filters.minPrice != null || filters.maxPrice != null) {
+      base.pricePaise = {
+        ...(filters.minPrice != null ? { $gte: Math.round(filters.minPrice * 100) } : {}),
+        ...(filters.maxPrice != null ? { $lte: Math.round(filters.maxPrice * 100) } : {}),
+      };
+    }
+    if (filters.colour) base['attributes.colour'] = filters.colour;
+
     const terms = parsed?.expanded?.length ? parsed.expanded : parsed?.tokens || [];
     if (terms.length) {
       const safe = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));

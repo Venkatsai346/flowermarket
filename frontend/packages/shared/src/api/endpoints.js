@@ -197,6 +197,12 @@ export function createEndpoints(client) {
       removeImage: (id, imageId, body) => c.del(`/catalog/admin/masters/${id}/images/${imageId}`, { body }),
       setImagePrimary: (id, imageId, body) => c.patch(`/catalog/admin/masters/${id}/images/${imageId}/primary`, body),
       setMasterAttributes: (id, body) => c.put(`/catalog/admin/masters/${id}/attributes`, body),
+      masterStructures: (id) => c.get(`/catalog/admin/masters/${id}/structures`),
+      masterIntegrity: (id) => c.get(`/catalog/admin/masters/${id}/integrity`),
+      setVariantAttributes: (id, variantId, body) => c.put(`/catalog/admin/masters/${id}/variants/${variantId}/attributes`, body),
+      setPackages: (id, body) => c.put(`/catalog/admin/masters/${id}/packages`, body),
+      setBundleComponents: (id, body) => c.put(`/catalog/admin/masters/${id}/bundle-components`, body),
+      setCompliance: (id, body) => c.put(`/catalog/admin/masters/${id}/compliance`, body),
 
       // catalog governance
       changeRequests: (q = {}) => c.get('/catalog/admin/change-requests', { query: q }),
@@ -209,14 +215,16 @@ export function createEndpoints(client) {
     /** Phase 4/Phase 9 — tenant-scoped listings, stock, change requests and bulk. */
     catalogTenant: {
       proposeMaster: (body) => c.post('/catalog/tenant/masters/propose', body),
+      availableMasters: (q = {}) => c.get('/catalog/tenant/masters', { query: q }),
       listings: (q = {}) => c.get('/catalog/tenant/listings', { query: q }),
       listing: (id) => c.get(`/catalog/tenant/listings/${id}`),
       createListing: (body) => c.post('/catalog/tenant/listings', body),
       bulkCreateListings: (body) => c.post('/catalog/tenant/listings/bulk', body),
       masterVariants: (id) => c.get(`/catalog/tenant/masters/${id}/variants`),
       updatePrice: (id, body) => c.patch(`/catalog/tenant/listings/${id}/price`, body),
+      updateOffer: (id, body) => c.patch(`/catalog/tenant/listings/${id}/offer`, body),
       updateStatus: (id, body) => c.patch(`/catalog/tenant/listings/${id}/status`, body),
-      deactivateListing: (id) => c.post(`/catalog/tenant/listings/${id}/deactivate`),
+      deactivateListing: (id, body = {}) => c.post(`/catalog/tenant/listings/${id}/deactivate`, body),
       stock: (id) => c.get(`/catalog/tenant/listings/${id}/stock`),
       setStock: (id, body) => c.put(`/catalog/tenant/listings/${id}/stock`, body),
       adjustStock: (id, body) => c.patch(`/catalog/tenant/listings/${id}/stock`, body),

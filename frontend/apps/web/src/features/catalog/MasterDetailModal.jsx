@@ -32,8 +32,16 @@ import Button from '../../components/ui/Button.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Checkbox, Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
 import { LoadingBlock } from '../../components/ui/Spinner.jsx';
+import AdvancedStructuresPanel from './AdvancedStructuresPanel.jsx';
 
 const STATUS_META = PRODUCT_MASTER_STATUS_META;
+const parseCombination = (text, definitions = []) => String(text || '').split(',').map((part) => {
+  const [rawCode, ...rest] = part.split('=');
+  const code = rawCode.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  const value = rest.join('=').trim();
+  const def = definitions.find((o) => o.code === code);
+  return code && value ? { code, name: def?.name || code, value } : null;
+}).filter(Boolean);
 
 /**
  * Rich master detail — attributes, variants, images, review/deprecate and
@@ -64,8 +72,8 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
   // sub-forms
   const [confirm, setConfirm] = useState(null); // {kind:'approve'|'reject'|'deprecate'}
   const [note, setNote] = useState('');
-  const [variantForm, setVariantForm] = useState({ variantType: 'weight', value: '', displayLabel: '', sku: '', isDefault: false });
-  const [imageForm, setImageForm] = useState({ url: '', altText: '', isPrimary: false });
+  const [variantForm, setVariantForm] = useState({ variantType: 'other', value: '', optionText: '', displayLabel: '', sku: '', isDefault: false });
+  const [imageForm, setImageForm] = useState({ url: '', altText: '', mediaType: 'image', role: 'gallery', isPrimary: false });
   const [attrsEdit, setAttrsEdit] = useState(null); // rows array or null
   const [uploading, setUploading] = useState(false);
   const imageInputRef = useRef(null);
@@ -113,11 +121,17 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
 
   const addVariant = async (e) => {
     e.preventDefault();
-    if (!variantForm.value.trim()) return;
+    const optionValues = parseCombination(variantForm.optionText, m.options || []);
+    if (!variantForm.value.trim() && !optionValues.length) return;
+    const { optionText, ...payload } = variantForm;
     try {
-      await run(() => api.catalogAdmin.addVariant(m.id, { ...variantForm, expectedVersion: m.version }));
+      await run(() => api.catalogAdmin.addVariant(m.id, {
+        ...payload,
+        ...(optionValues.length ? { optionValues } : {}),
+        expectedVersion: m.version,
+      }));
       toast.success('Variant added');
-      setVariantForm({ variantType: 'weight', value: '', displayLabel: '', sku: '', isDefault: false });
+      setVariantForm({ variantType: 'other', value: '', optionText: '', displayLabel: '', sku: '', isDefault: false });
       load(true); onChanged?.();
     } catch (err) {
       if (!guard(err)) toast.error(errMsg(err));
@@ -130,7 +144,7 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
     try {
       await run(() => api.catalogAdmin.addImage(m.id, { ...imageForm, expectedVersion: m.version }));
       toast.success('Image added');
-      setImageForm({ url: '', altText: '', isPrimary: false });
+      setImageForm({ url: '', altText: '', mediaType: 'image', role: 'gallery', isPrimary: false });
       load(true); onChanged?.();
     } catch (err) {
       if (!guard(err)) toast.error(errMsg(err));
@@ -226,6 +240,12 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
           <Info label="Brand" value={m.brand?.name || '—'} />
           <Info label="Selling unit" value={SELLING_UNIT_LABEL[m.defaultSellingUnit] || m.defaultSellingUnit || '—'} />
           <Info label="Barcode" value={m.barcode || '—'} mono />
+          <Info label="Kind" value={m.kind || 'physical'} />
+          <Info label="Manufacturer" value={m.manufacturer || '—'} />
+          <Info label="Model" value={m.modelNumber || '—'} mono />
+          <Info label="Condition" value={m.condition || 'new'} />
+          <Info label="GTIN" value={m.identifiers?.gtin || '—'} mono />
+          <Info label="Origin" value={m.countryOfOrigin || '—'} />
           <Info label="Min / max qty" value={`${m.minOrderQty ?? 1} / ${m.maxOrderQty ?? 100}`} />
           <Info label="Cold chain" value={m.requiresColdChain ? 'Yes' : 'No'} />
           <Info label="Created" value={fmtDate(m.createdAt)} />
@@ -305,7 +325,8 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
             <Select className="!w-32" value={variantForm.variantType} onChange={(e) => setVariantForm({ ...variantForm, variantType: e.target.value })}>
               {Object.keys(VARIANT_TYPE_LABEL).map((t) => <option key={t} value={t}>{VARIANT_TYPE_LABEL[t]}</option>)}
             </Select>
-            <Input className="!w-44" placeholder="value" value={variantForm.value} onChange={(e) => setVariantForm({ ...variantForm, value: e.target.value })} />
+            <Input className="!w-32" placeholder="legacy value" value={variantForm.value} onChange={(e) => setVariantForm({ ...variantForm, value: e.target.value })} />
+            <Input className="min-w-[220px] flex-1" placeholder="color=Red, size=M" value={variantForm.optionText} onChange={(e) => setVariantForm({ ...variantForm, optionText: e.target.value })} />
             <Input className="!w-36" placeholder="label" value={variantForm.displayLabel} onChange={(e) => setVariantForm({ ...variantForm, displayLabel: e.target.value })} />
             <Input className="!w-32" placeholder="SKU" value={variantForm.sku} onChange={(e) => setVariantForm({ ...variantForm, sku: e.target.value })} />
             <label className="flex items-center gap-1.5 text-xs text-slate-600">
@@ -324,7 +345,11 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
             <div className="flex flex-wrap gap-3 p-3">
               {images.map((img, i) => (
                 <div key={img.id || img._id || i} className="group/img relative">
-                  <img src={img.url} alt={img.altText || m.title} className={cn('h-20 w-20 rounded-lg border border-slate-200 object-cover', img.isPrimary && 'ring-2 ring-rose-400')} />
+                  {img.mediaType === 'video' ? (
+                    <video src={img.url} muted className={cn('h-20 w-20 rounded-lg border border-slate-200 bg-slate-900 object-cover', img.isPrimary && 'ring-2 ring-rose-400')} />
+                  ) : (
+                    <img src={img.url} alt={img.altText || m.title} className={cn('h-20 w-20 rounded-lg border border-slate-200 object-cover', img.isPrimary && 'ring-2 ring-rose-400')} />
+                  )}
                   {img.isPrimary && <span className="absolute -top-2 -right-2 grid h-5 w-5 place-items-center rounded-full bg-rose-600 text-white"><BadgeCheck className="h-3 w-3" /></span>}
                   <span className="absolute inset-x-1 bottom-1 hidden justify-center gap-1 group-hover/img:flex">
                     {!img.isPrimary && (
@@ -357,7 +382,13 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
             <Button type="button" size="sm" variant="secondary" icon={UploadCloud} loading={uploading} onClick={() => imageInputRef.current?.click()}>
               Upload
             </Button>
-            <Input className="!w-64 flex-1" placeholder="https://…/image.jpg (or paste URL)" value={imageForm.url} onChange={(e) => setImageForm({ ...imageForm, url: e.target.value })} />
+            <Select className="!w-28" value={imageForm.mediaType} onChange={(e) => setImageForm({ ...imageForm, mediaType: e.target.value })}>
+              <option value="image">Image</option><option value="video">Video</option><option value="model_3d">3D model</option><option value="document">Document</option>
+            </Select>
+            <Select className="!w-28" value={imageForm.role} onChange={(e) => setImageForm({ ...imageForm, role: e.target.value })}>
+              {['gallery', 'thumbnail', 'swatch', 'lifestyle', 'size_chart', 'manual'].map((role) => <option key={role} value={role}>{role.replace('_', ' ')}</option>)}
+            </Select>
+            <Input className="!w-64 flex-1" placeholder="https://…/asset (or upload image)" value={imageForm.url} onChange={(e) => setImageForm({ ...imageForm, url: e.target.value })} />
             <Input className="!w-36" placeholder="alt text" value={imageForm.altText} onChange={(e) => setImageForm({ ...imageForm, altText: e.target.value })} />
             <label className="flex items-center gap-1.5 text-xs text-slate-600">
               <input type="checkbox" className="accent-rose-600" checked={imageForm.isPrimary} onChange={(e) => setImageForm({ ...imageForm, isPrimary: e.target.checked })} /> primary
@@ -365,6 +396,8 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
             <Button type="submit" size="sm" variant="secondary" loading={busy}>Add image</Button>
           </form>
         </section>
+
+        <AdvancedStructuresPanel master={m} onChanged={() => { load(true); onChanged?.(); }} />
       </div>
 
       {/* review / deprecate confirm */}
@@ -420,7 +453,7 @@ function VariantRow({ v, masterId, version, onMutated, onConflict }) {
   const inputRef = useRef(null);
 
   const vid = v.id || v._id;
-  const label = v.displayLabel || v.value;
+  const label = v.displayLabel || (v.optionValues || []).map((o) => o.value).join(' / ') || v.value;
   const ownPhotos = v.imageSource === 'variant';
   const gallery = v.images || [];
 

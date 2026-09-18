@@ -276,7 +276,12 @@ class OrderService {
       const oi = await (await import('../models/orderItem.model.js')).default.find({ orderId: order._id }).lean();
       const listingMap = await Promise.all(oi.map(async (x) => {
         const cartItem = await CartItem.findOne({ cartId: order.cartId, tenantProductId: x.tenantProductId }).lean();
-        return cartItem || { tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty, priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title, lineTotal: x.lineTotal, isReturnable: x.isReturnable };
+        return cartItem || {
+          tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty,
+          priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title,
+          unitSnapshot: x.skuSnapshot?.unit, unitQuantitySnapshot: x.skuSnapshot?.unitQuantity || 1,
+          lineTotal: x.lineTotal, isReturnable: x.isReturnable,
+        };
       }));
       items.push(...listingMap.filter(Boolean));
     }
@@ -985,7 +990,10 @@ class OrderService {
           productMasterId: i.productMasterId,
           variantId: i.variantId || null,
           vendorId: i.productMasterId ? (vendorByMaster.get(String(i.productMasterId)) || null) : null,
-          skuSnapshot: { skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null, unit: i.unitSnapshot || null },
+          skuSnapshot: {
+            skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null,
+            unit: i.unitSnapshot || null, unitQuantity: i.unitQuantitySnapshot || 1,
+          },
           priceAtOrder: { mrp: i.priceSnapshot?.mrp ?? null, sellingPrice: i.priceSnapshot?.sellingPrice ?? 0, currency: i.priceSnapshot?.currency || 'INR' },
           qty: i.qty,
           lineTotal: line.lineTotal ?? i.lineTotal ?? 0,

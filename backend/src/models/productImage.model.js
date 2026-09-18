@@ -25,7 +25,17 @@ const ProductImageSchema = new Schema(
     // Nullable scope: null = master gallery, set = this variant's gallery.
     variantId: { type: Types.ObjectId, ref: 'ProductVariant', default: null, index: true },
     url: { type: String, required: true, trim: true },
-    altText: { type: String, default: null, maxlength: 200 },
+    altText: { type: String, default: null, maxlength: 300 },
+    mediaType: { type: String, enum: ['image', 'video', 'model_3d', 'document'], default: 'image' },
+    role: { type: String, enum: ['gallery', 'thumbnail', 'swatch', 'lifestyle', 'size_chart', 'manual'], default: 'gallery' },
+    mimeType: { type: String, default: null, maxlength: 100 },
+    width: { type: Number, default: null, min: 1 },
+    height: { type: Number, default: null, min: 1 },
+    fileSize: { type: Number, default: null, min: 0 },
+    focalPoint: {
+      x: { type: Number, default: 0.5, min: 0, max: 1 },
+      y: { type: Number, default: 0.5, min: 0, max: 1 },
+    },
     isPrimary: { type: Boolean, default: false },
     sortOrder: { type: Number, default: 0 },
     uploadedBy: { type: Types.ObjectId, ref: 'User', default: null },

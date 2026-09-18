@@ -30,9 +30,12 @@ const blank = () => ({
   imageUrl: '',
   bannerUrl: '',
   attributeSchema: [],
+  complianceRequirements: [],
 });
 
-const blankField = () => ({ key: '', label: '', type: 'string', required: false, options: '', unit: '', min: '', max: '' });
+const blankField = () => ({ key: '', label: '', type: 'string', appliesTo: 'master', required: false, options: '', unit: '', min: '', max: '', filterable: false, facetable: false });
+const blankCompliance = () => ({ code: '', type: 'certificate', label: '', required: true, requiresExpiry: false, jurisdictions: 'IN' });
+const updateAt = (rows, index, patch) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row);
 
 function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
   const { busy, run } = useAction();
@@ -63,10 +66,18 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
         label: f.label || null,
         type: f.type,
         required: f.required,
+        appliesTo: f.appliesTo || 'master',
+        filterable: Boolean(f.filterable),
+        facetable: Boolean(f.facetable),
         options: f.options ? f.options.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
         unit: f.unit || null,
         min: f.min === '' ? undefined : Number(f.min),
         max: f.max === '' ? undefined : Number(f.max),
+      })),
+      complianceRequirements: form.complianceRequirements.filter((item) => item.code && item.label).map((item) => ({
+        ...item,
+        code: item.code.toUpperCase(),
+        jurisdictions: item.jurisdictions.split(',').map((value) => value.trim()).filter(Boolean),
       })),
     };
     try {
@@ -159,13 +170,18 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
                 <Select className="!w-32" value={f.type} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, type: e.target.value } : x) }))}>
                   {FIELD_TYPES.map((t) => <option key={t} value={t}>{ATTRIBUTE_FIELD_TYPE_LABEL[t]}</option>)}
                 </Select>
-                {f.type === 'select' && (
+                <Select className="!w-28" value={f.appliesTo || 'master'} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, appliesTo: e.target.value } : x) }))}>
+                  <option value="master">Master</option><option value="variant">Variant</option><option value="both">Both</option>
+                </Select>
+                {['select', 'multi_select'].includes(f.type) && (
                   <Input className="!w-44" placeholder="options (comma)" value={f.options} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, options: e.target.value } : x) }))} />
                 )}
                 <Input className="!w-20" placeholder="unit" value={f.unit} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, unit: e.target.value } : x) }))} />
                 <label className="flex items-center gap-1.5 text-xs text-slate-600">
                   <input type="checkbox" className="accent-rose-600" checked={f.required} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, required: e.target.checked } : x) }))} /> req
                 </label>
+                <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={f.filterable} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, filterable: e.target.checked } : x) }))} /> filter</label>
+                <label className="flex items-center gap-1.5 text-xs text-slate-600"><input type="checkbox" checked={f.facetable} onChange={(e) => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.map((x, j) => j === i ? { ...x, facetable: e.target.checked } : x) }))} /> facet</label>
                 <button type="button" className="btn-ghost btn-sm !p-1.5 ml-auto" onClick={() => setForm((s) => ({ ...s, attributeSchema: s.attributeSchema.filter((_, j) => j !== i) }))}>
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -175,6 +191,22 @@ function CategoryModal({ open, onClose, initial, parents, onSaved, editing }) {
               Add schema field
             </Button>
           </div>
+        </div>
+
+        <div>
+          <p className="label !mb-2">Compliance requirements</p>
+          <p className="mb-2 text-xs text-slate-400">Required evidence blocks storefront activation until verified.</p>
+          <div className="space-y-2">{form.complianceRequirements.map((item, index) => (
+            <div key={index} className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-2">
+              <Select className="!w-32" value={item.type} onChange={(e) => setForm((state) => ({ ...state, complianceRequirements: updateAt(state.complianceRequirements, index, { type: e.target.value }) }))}>{['certificate', 'license', 'regulatory_id', 'standard', 'restriction', 'safety', 'environmental'].map((type) => <option key={type}>{type}</option>)}</Select>
+              <Input className="!w-28" placeholder="code" value={item.code} onChange={(e) => setForm((state) => ({ ...state, complianceRequirements: updateAt(state.complianceRequirements, index, { code: e.target.value }) }))} />
+              <Input className="min-w-[180px] flex-1" placeholder="Requirement label" value={item.label} onChange={(e) => setForm((state) => ({ ...state, complianceRequirements: updateAt(state.complianceRequirements, index, { label: e.target.value }) }))} />
+              <Input className="!w-28" placeholder="IN, US" value={item.jurisdictions} onChange={(e) => setForm((state) => ({ ...state, complianceRequirements: updateAt(state.complianceRequirements, index, { jurisdictions: e.target.value }) }))} />
+              <label className="text-xs"><input type="checkbox" checked={item.requiresExpiry} onChange={(e) => setForm((state) => ({ ...state, complianceRequirements: updateAt(state.complianceRequirements, index, { requiresExpiry: e.target.checked }) }))} /> expiry</label>
+              <button type="button" className="btn-ghost btn-sm" onClick={() => setForm((state) => ({ ...state, complianceRequirements: state.complianceRequirements.filter((_, rowIndex) => rowIndex !== index) }))}><Trash2 className="h-3.5 w-3.5" /></button>
+            </div>
+          ))}</div>
+          <Button type="button" variant="ghost" size="sm" icon={Plus} onClick={() => setForm((state) => ({ ...state, complianceRequirements: [...state.complianceRequirements, blankCompliance()] }))}>Add requirement</Button>
         </div>
       </form>
     </Modal>
@@ -196,10 +228,17 @@ function fromDoc(c) {
       label: f.label || '',
       type: f.type || 'string',
       required: Boolean(f.required),
+      appliesTo: f.appliesTo || 'master',
+      filterable: Boolean(f.filterable),
+      facetable: Boolean(f.facetable),
       options: (f.options || []).join(', '),
       unit: f.unit || '',
       min: f.min ?? '',
       max: f.max ?? '',
+    })),
+    complianceRequirements: (c.complianceRequirements || []).map((item) => ({
+      code: item.code || '', type: item.type || 'certificate', label: item.label || '', required: item.required !== false,
+      requiresExpiry: Boolean(item.requiresExpiry), jurisdictions: (item.jurisdictions || ['IN']).join(', '),
     })),
   };
 }
