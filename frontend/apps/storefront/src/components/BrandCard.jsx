@@ -10,13 +10,13 @@ import { Money } from './ui.jsx';
  */
 export default function BrandCard({ brand }) {
   if (!brand) return null;
-  const to = `/search?brand=${brand.id}&brandName=${encodeURIComponent(brand.name || '')}`;
+  const to = `/brands/${brand.id}`;
   const count = Number(brand.productCount) || 0;
 
   return (
     <Link
       to={to}
-      className="card group flex flex-col overflow-hidden transition duration-200 hover:-translate-y-0.5 hover:border-transparent"
+      className="card group flex flex-col overflow-hidden transition duration-300 hover:-translate-y-1 hover:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
       onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 12px 32px -12px var(--brand-ring)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.boxShadow = ''; }}
       aria-label={`Shop ${brand.name} — ${count} product${count === 1 ? '' : 's'}`}

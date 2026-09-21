@@ -16,7 +16,7 @@ export default function CategoryCard({ node, showChildren = true }) {
   const extra = Math.max(0, (node.children || []).length - kids.length);
 
   return (
-    <div className="card group flex flex-col overflow-hidden transition duration-200 hover:-translate-y-0.5 hover:shadow-lift">
+    <div className="card group flex flex-col overflow-hidden transition duration-300 hover:-translate-y-1 hover:shadow-lift focus-within:ring-2 focus-within:ring-offset-2">
       <Link to={to} className="relative block aspect-[16/10] overflow-hidden bg-slate-100" aria-label={`Browse ${node.name}`}>
         <FloralImage
           src={node.bannerUrl || node.imageUrl}

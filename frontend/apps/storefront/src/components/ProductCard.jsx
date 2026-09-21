@@ -1,7 +1,7 @@
 
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Heart, Plus } from 'lucide-react';
+import { BadgeCheck, Check, Heart, Package, Plus, ShieldCheck, Sparkles } from 'lucide-react';
 import { inr } from '@flower-market/shared';
 import { Money, Stepper } from './ui.jsx';
 import FloralImage from './FloralImage.jsx';
@@ -45,6 +45,7 @@ export default function ProductCard({
   const line = {
     listingId: listing.listingId,
     price: listing.price,
+    priceBasis: listing.priceBasis,
     stockQty: listing.stockQty ?? 0,
     product: p,
   };
@@ -95,6 +96,7 @@ function GroupedCard({
       sellingPrice: sel.price?.sellingPrice ?? 0,
       mrp: sel.price?.mrp ?? null,
     },
+    priceBasis: sel.priceBasis || listing.priceBasis,
     stockQty: sel.stockQty ?? 0,
     product: {
       ...p,
@@ -210,6 +212,10 @@ function CardShell({
 
   // Wishlist identity comes from the active product.
   const product = line.product || {};
+  const basisQuantity = line.priceBasis?.quantity || 1;
+  const basisUnit = line.priceBasis?.unitCode || unit;
+  const verified = (product.compliance || []).length > 0 || product.complianceStatus === 'compliant';
+  const packCount = (product.packages || []).length;
 
   const slug =
     product.slug ||
@@ -255,11 +261,16 @@ function CardShell({
           </span>
         )}
 
-        {off > 0 && (
-          <span className="absolute left-2 top-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white">
-            {off}% off
-          </span>
-        )}
+        <span className="absolute left-2 top-2 flex flex-col items-start gap-1.5">
+          {off > 0 && (
+            <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white shadow-sm">
+              {off}% off
+            </span>
+          )}
+          {product.kind === 'bundle' && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-700/90 px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur"><Sparkles className="h-3 w-3" />Bundle</span>
+          )}
+        </span>
 
         <button
           type="button"
@@ -278,7 +289,7 @@ function CardShell({
             'absolute right-2 top-2 rounded-full p-1.5 shadow-sm transition',
             wishlisted
               ? 'bg-rose-100 text-rose-600'
-              : 'bg-white/80 text-slate-400 opacity-0 group-hover:opacity-100',
+              : 'bg-white/90 text-slate-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100',
           )}
           aria-label={
             wishlisted
@@ -303,14 +314,25 @@ function CardShell({
       </Link>
 
       <div className="flex flex-1 flex-col gap-1 p-3">
-        <h3 className="line-clamp-2 text-sm font-medium leading-snug text-slate-800">
+        {(product.brand?.name || product.brandName) && (
+          <p className="flex items-center gap-1 truncate text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+            {product.brand?.name || product.brandName}{product.brand?.isVerified && <BadgeCheck className="h-3 w-3 text-sky-500" />}
+          </p>
+        )}
+        <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-800 transition group-hover:text-slate-950">
           {title}
         </h3>
 
-        {unit && (
-          <p className="text-[11px] text-slate-400">
-            per {unit}
+        {basisUnit && (
+          <p className="text-[11px] font-medium text-slate-400">
+            {basisQuantity === 1 ? 'per' : 'price for'} {basisQuantity} {basisUnit}
           </p>
+        )}
+        {(verified || packCount > 0) && (
+          <div className="mt-0.5 flex flex-wrap gap-1.5">
+            {verified && <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><ShieldCheck className="h-3 w-3" />Verified</span>}
+            {packCount > 0 && <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500"><Package className="h-3 w-3" />{packCount} pack option{packCount === 1 ? '' : 's'}</span>}
+          </div>
         )}
 
         {selector}

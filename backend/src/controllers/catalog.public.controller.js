@@ -181,6 +181,8 @@ class CatalogPublicController {
         variantType: v?.variantType || null,
         value: v?.value || null,
         optionValues: v?.optionValues || [],
+        attributes: v?.attributes || [],
+        sellQuantity: v?.sellQuantity || null,
         combinationKey: v?.combinationKey || null,
         label: v ? variantDisplayLabel(v) : null,
         sku: v?.sku || null,

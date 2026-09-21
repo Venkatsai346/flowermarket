@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Info, Plus, Trash2, UploadCloud } from 'lucide-react';
+import { Boxes, Image, Info, PackageCheck, Plus, Settings2, Sparkles, Trash2, UploadCloud } from 'lucide-react';
 import {
   PRODUCT_TYPE_META,
   SELLING_UNIT_LABEL,
@@ -13,10 +13,20 @@ import { uploadFile, uploadErrorText, MEDIA_PURPOSE } from '../../lib/upload.js'
 import Button from '../../components/ui/Button.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Checkbox, Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
+import { Guidance, ReviewItem, SectionIntro, SubmissionError, WizardNav } from './CatalogFormUX.jsx';
 
 const PRODUCT_TYPES = Object.keys(PRODUCT_TYPE_META);
 const UNITS = Object.keys(SELLING_UNIT_LABEL);
 const VARIANT_TYPES = Object.keys(VARIANT_TYPE_LABEL);
+
+const FORM_STEPS = [
+  { id: 'identity', label: 'Identity', caption: 'Core product record' },
+  { id: 'structure', label: 'Structure', caption: 'Attributes & options' },
+  { id: 'variants', label: 'Variants', caption: 'Sellable combinations' },
+  { id: 'media', label: 'Media', caption: 'Customer assets' },
+  { id: 'review', label: 'Review', caption: 'Validate & publish' },
+];
+
 
 const blank = () => ({
   skuGlobal: '',
@@ -183,6 +193,8 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
   const [form, setForm] = useState(() => (initial ? fromDoc(initial) : blank()));
   const [error, setError] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [step, setStep] = useState('identity');
+  const [errorCode, setErrorCode] = useState('');
   const imageInputRef = useRef(null);
   const isEdit = Boolean(initial);
 
@@ -205,7 +217,12 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
     }
   };
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (k, v) => { setError(null); setForm((f) => ({ ...f, [k]: v })); };
+  const fail = (message, targetStep = step, code = '') => {
+    setError(message); setErrorCode(code); setStep(targetStep); toast.error(message);
+    requestAnimationFrame(() => document.querySelector('[role=\"alert\"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+    return undefined;
+  };
 
   // ---- category required-attribute guidance (schema is enforced server-side) ----
   const categorySchema = useMemo(() => {
@@ -231,16 +248,22 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
 
   const submit = async (e) => {
     e.preventDefault();
-    setError(null);
-    if (!isEdit && !form.skuGlobal.trim()) return setError('SKU is required');
-    if (!form.title.trim()) return setError('Title is required');
-    if (!form.categoryId) return setError('Category is required');
+    setError(null); setErrorCode('');
+    if (!isEdit && !form.skuGlobal.trim()) return fail('Add a unique global SKU before continuing.', 'identity');
+    if (!form.title.trim()) return fail('Add a customer-facing product title before continuing.', 'identity');
+    if (!form.categoryId) return fail('Choose a category so its attribute and compliance rules can be applied.', 'identity');
     if (form.attributes.some((a) => a.key && !/^[a-z0-9_]+$/.test(a.key))) {
-      return setError('Attribute keys can only contain lowercase letters, numbers and underscores');
+      return fail('Attribute keys can only contain lowercase letters, numbers and underscores.', 'structure');
     }
+    if (Number(form.minOrderQty) > Number(form.maxOrderQty)) return fail('Maximum order quantity must be greater than or equal to the minimum.', 'identity');
+    const optionCodes = form.options.filter((item) => item.code).map((item) => item.code);
+    if (new Set(optionCodes).size !== optionCodes.length) return fail('Every option dimension needs a unique stable code.', 'structure');
+    const baseDefinition = form.units.find((unit) => unit.code === form.baseUnit);
+    if (!baseDefinition || Number(baseDefinition.toBaseFactor) !== 1) return fail('The base unit must appear in allowed units with a conversion factor of exactly 1.', 'structure');
+    if (form.units.some((unit) => !(Number(unit.toBaseFactor) > 0))) return fail('Every unit conversion factor must be greater than zero.', 'structure');
     const missing = requiredFields.filter((f) => !(form.attributes.find((a) => a.key === f.key)?.value || '').trim());
     if (missing.length) {
-      return setError(`${missing.map((f) => f.label || f.key).join(', ')} ${missing.length === 1 ? 'is' : 'are'} required for this category`);
+      return fail(`${missing.map((f) => f.label || f.key).join(', ')} ${missing.length === 1 ? 'is' : 'are'} required for this category.`, 'structure');
     }
     const options = form.options.filter((o) => o.code && o.name).map((o, index) => ({
       code: o.code,
@@ -333,9 +356,19 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
         onClose?.();
         return;
       }
-      setError(errMsg(err));
+      fail(errMsg(err), err.code === 'VALIDATION_ERROR' ? 'review' : step, err.code);
     }
   };
+
+  const completed = [
+    form.title && form.categoryId && (isEdit || form.skuGlobal) ? 'identity' : null,
+    form.units.some((unit) => unit.code === form.baseUnit && Number(unit.toBaseFactor) === 1) ? 'structure' : null,
+    form.variants.length || !form.options.length ? 'variants' : null,
+    form.images.some((image) => image.url) ? 'media' : null,
+  ].filter(Boolean);
+
+  const go = (next) => { setError(null); setErrorCode(''); setStep(next); };
+  const stepIndex = FORM_STEPS.findIndex((item) => item.id === step);
 
   return (
     <Modal
@@ -343,19 +376,30 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
       onClose={onClose}
       title={isEdit ? `Edit master · ${initial.skuGlobal}` : 'New product master'}
       subtitle={isEdit ? `v${initial.version} — changes carry the current version (optimistic lock)` : 'Global catalog item — pricing/stock live on tenant listings'}
-      size="lg"
+      size="xl"
+      closeOnOverlay={false}
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button loading={busy} onClick={submit}>{isEdit ? 'Save changes' : 'Create master'}</Button>
+          {stepIndex > 0 && <Button variant="ghost" onClick={() => go(FORM_STEPS[stepIndex - 1].id)}>Back</Button>}
+          {step !== 'review'
+            ? <Button onClick={() => go(FORM_STEPS[Math.min(stepIndex + 1, FORM_STEPS.length - 1)].id)}>Continue</Button>
+            : <Button loading={busy} icon={PackageCheck} onClick={submit}>{isEdit ? 'Save changes' : 'Create master'}</Button>}
         </>
       }
     >
-      <form onSubmit={submit} className="space-y-5">
-        {error && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700">{error}</div>}
+      <form onSubmit={(event) => {
+        if (step === 'review') return submit(event);
+        event.preventDefault();
+        go(FORM_STEPS[Math.min(stepIndex + 1, FORM_STEPS.length - 1)].id);
+        return undefined;
+      }} className="space-y-5">
+        <WizardNav steps={FORM_STEPS} active={step} completed={completed} onChange={go} />
+        <SubmissionError message={error} code={errorCode} />
 
+        {step === 'identity' && <div className="space-y-6 animate-in">
         <div>
-          <p className="label !mb-2">Identity</p>
+          <SectionIntro eyebrow="Product foundation" title="Identity & taxonomy" description="Create the durable catalog identity used by every store offer, SKU, search document and order snapshot." icon={Sparkles} />
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Title" required>
               <Input required value={form.title} onChange={(e) => set('title', e.target.value)} placeholder="Red Roses (Bunch of 20)" />
@@ -446,8 +490,11 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
           </div>
         </div>
 
+        </div>}
+
+        {step === 'structure' && <div className="space-y-6 animate-in">
         <div>
-          <p className="label !mb-2">Attributes</p>
+          <SectionIntro eyebrow="Catalog intelligence" title="Attributes" description="Structured facts power search, filters, comparison, compliance and customer confidence. Category-required values cannot be skipped." icon={Settings2} />
           {requiredFields.length > 0 && (
             <p className="mb-2 flex items-start gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -461,13 +508,13 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
         </div>
 
         <div>
-          <p className="label !mb-2">Option dimensions</p>
+          <SectionIntro title="Option dimensions" description="Define the vocabulary customers use to configure a product. Stable codes become part of canonical SKU identity." badge="Up to 6" icon={Boxes} />
           <p className="mb-2 text-xs text-slate-500">Define up to six reusable dimensions such as Color, Size, Material or Storage.</p>
           <RowsEditor kind="option" rows={form.options} onChange={(options) => set('options', options)} />
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-slate-50/50 p-4">
-          <p className="label !mb-2">Unit and conversion policy</p>
+          <SectionIntro title="Unit & conversion policy" description="One canonical base unit keeps pricing, inventory, packs, checkout and tax documents mathematically consistent." icon={Settings2} />
           <p className="mb-3 text-xs text-slate-500">Define a canonical base unit and exact conversion factors. This governs variants, packs, bundles, pricing bases and quantity validation.</p>
           <div className="mb-3 grid gap-3 sm:grid-cols-4">
             <Field label="Dimension"><Select value={form.unitDimension} onChange={(e) => set('unitDimension', e.target.value)}>{['count', 'mass', 'volume', 'length', 'area', 'time', 'digital', 'custom'].map((value) => <option key={value}>{value}</option>)}</Select></Field>
@@ -479,27 +526,52 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
         </div>
 
         <div>
-          <p className="label !mb-2">Option dependencies</p>
+          <SectionIntro title="Option dependencies" description="Express compatibility rules without creating impossible variants or dead-end storefront selections." icon={Settings2} />
           <p className="mb-2 text-xs text-slate-500">Model constraints such as “Storage 1 TB is available only when Color is Black”. Invalid SKU combinations are rejected server-side.</p>
           <RowsEditor kind="rule" rows={form.optionRules} onChange={(optionRules) => set('optionRules', optionRules)} />
         </div>
 
-        <div>
-          <p className="label !mb-2">Sellable variants</p>
+        </div>}
+
+        {step === 'variants' && <div className="animate-in">
+          <SectionIntro eyebrow="Sellable identity" title="Sellable variants" description="Each row is an exact, order-independent SKU combination with its own quantity basis and optional seller-facing code." icon={Boxes} />
           <p className="mb-2 text-xs text-slate-500">Build combinations with <code>color=Red, size=M</code>. Ordering never changes variant identity.</p>
           <RowsEditor kind="variant" rows={form.variants} onChange={(variants) => set('variants', variants)} />
-        </div>
+        </div>}
 
-        <div>
-          <div className="mb-2 flex items-center justify-between">
-            <p className="label !mb-0">Images</p>
+        {step === 'media' && <div className="animate-in">
+          <SectionIntro eyebrow="Customer experience" title="Media library" description="Use a primary image plus descriptive gallery, lifestyle, swatch, manual, video or 3D assets. Alt text keeps the catalog accessible." icon={Image} />
+          <div className="mb-2 flex items-center justify-end">
             <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={uploadImage} />
             <Button type="button" variant="secondary" size="sm" icon={UploadCloud} loading={uploading} onClick={() => imageInputRef.current?.click()}>
               Upload from device
             </Button>
           </div>
           <RowsEditor kind="image" rows={form.images} onChange={(images) => set('images', images)} />
-        </div>
+        </div>}
+
+        {step === 'review' && (
+          <div className="animate-in space-y-5">
+            <SectionIntro eyebrow="Preflight" title="Review catalog readiness" description="Confirm the canonical record now. Seller price, channels and stock are managed separately as tenant listings." icon={PackageCheck} />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Identity</p>
+                <ReviewItem label="Product" value={form.title} ready={Boolean(form.title)} />
+                <ReviewItem label="Global SKU" value={form.skuGlobal} ready={Boolean(form.skuGlobal)} />
+                <ReviewItem label="Kind / class" value={`${form.kind} · ${form.type}`} />
+                <ReviewItem label="Category" value={(categories || []).find((c) => rid(c) === form.categoryId)?.name} ready={Boolean(form.categoryId)} />
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Structure</p>
+                <ReviewItem label="Attributes" value={`${form.attributes.filter((item) => item.key && item.value).length} values`} />
+                <ReviewItem label="Options / rules" value={`${form.options.length} dimensions · ${form.optionRules.length} rules`} />
+                <ReviewItem label="Variants" value={`${form.variants.length} sellable combinations`} ready={!form.options.length || Boolean(form.variants.length)} />
+                <ReviewItem label="Unit policy" value={`${form.baseUnit} · ${form.units.length} convertible units`} />
+              </div>
+            </div>
+            <Guidance title="What happens after save" tone="emerald">The backend validates category schemas, option dependencies, canonical combinations, conversion factors and optimistic version. Then use Advanced structures for variant specifications, packs, bundle components and compliance evidence before activating store listings.</Guidance>
+          </div>
+        )}
       </form>
     </Modal>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, Droplets, FileText, Leaf, Play, Scissors, Snowflake, Sun, Truck } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, Droplets, FileText, Leaf, PackageCheck, Play, Scissors, ShieldCheck, Snowflake, Sun, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -132,7 +132,8 @@ export default function Product() {
     : product.imageUrl
       ? [{ url: product.imageUrl, altText: product.title, isPrimary: true }]
       : [];
-  const attrs = attrMap(product.attributes);
+  const attrs = { ...attrMap(product.attributes), ...attrMap(selected?.attributes) };
+  const specificationRows = Object.entries(attrs).filter(([key]) => !['care_notes'].includes(key));
   const vase = attrs.vase_life_days;
   const colour = attrs.color || attrs.colour;
   const stems = attrs.stem_count || attrs.stems;
@@ -236,9 +237,11 @@ export default function Product() {
           </div>
 
           <div className="flex flex-col">
-            {product.category?.name && (
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{product.category.name}</p>
-            )}
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              {product.category?.name && <Link to={`/browse?category=${product.category.id}`} className="transition hover:text-slate-700">{product.category.name}</Link>}
+              {product.category?.name && product.brand?.name && <span>·</span>}
+              {product.brand?.name && <Link to={`/search?brand=${product.brand.id}&brandName=${encodeURIComponent(product.brand.name)}`} className="inline-flex items-center gap-1 transition hover:text-slate-700">{product.brand.name}<BadgeCheck className="h-3.5 w-3.5 text-sky-500" /></Link>}
+            </div>
             <h1 className="font-display mt-1 text-3xl tracking-tight text-slate-900 sm:text-4xl">{product.title}</h1>
             {product.shortDescription && (
               <p className="mt-2 text-sm leading-relaxed text-slate-600">{product.shortDescription}</p>
@@ -383,7 +386,7 @@ export default function Product() {
               )}
             </div>
 
-            <div className="mt-6">
+            <div className="sticky bottom-3 z-20 mt-6 rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-lift backdrop-blur lg:static lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
               {out ? (
                 <Button className="w-full" variant="outline" disabled>Out of stock</Button>
               ) : qty > 0 ? (
@@ -417,6 +420,20 @@ export default function Product() {
               <p className="mt-6 text-sm leading-relaxed text-slate-600">{product.description}</p>
             )}
 
+            {specificationRows.length > 0 && (
+              <section className="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <h2 className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800"><PackageCheck className="h-4 w-4" style={{ color: 'var(--brand)' }} />Specifications{selected?.label && <span className="font-normal text-slate-400">· {selected.label}</span>}</h2>
+                <dl className="grid sm:grid-cols-2">
+                  {specificationRows.map(([key, item]) => (
+                    <div key={key} className="flex items-center justify-between gap-4 border-b border-slate-100 px-4 py-3 text-sm odd:sm:border-r">
+                      <dt className="capitalize text-slate-500">{key.replace(/_/g, ' ')}</dt>
+                      <dd className="text-right font-semibold text-slate-800">{typeof item.value === 'object' ? JSON.stringify(item.value) : String(item.value)}{item.unit ? ` ${item.unit}` : ''}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            )}
+
             {(product.manufacturer || product.modelNumber || product.countryOfOrigin || product.identifiers?.gtin || product.fulfillmentProfile?.weight?.value || product.unitPolicy) && (
               <section className="mt-8 overflow-hidden rounded-2xl border border-slate-200">
                 <h2 className="border-b border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">Product information</h2>
@@ -434,8 +451,9 @@ export default function Product() {
 
             {(product.packages || []).length > 0 && (
               <section className="mt-5 rounded-2xl border border-slate-200 p-4">
-                <h2 className="text-sm font-semibold text-slate-800">Pack sizes</h2>
-                <div className="mt-3 flex flex-wrap gap-2">{product.packages.map((pack) => <span key={pack.code} className="rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-700"><strong>{pack.label}</strong> · {pack.quantity} {pack.unitCode}{pack.containedPackageCode ? ` per ${pack.containedPackageCode}` : ''}</span>)}</div>
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><PackageCheck className="h-4 w-4" style={{ color: 'var(--brand)' }} />Available pack hierarchy</h2>
+                <p className="mt-1 text-xs text-slate-500">Packaging levels and quantities defined by the manufacturer.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">{product.packages.map((pack) => <div key={pack.code} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-700"><span><strong className="block text-slate-900">{pack.label}</strong><span className="font-mono text-[10px] uppercase text-slate-400">{pack.level || 'pack'} · {pack.code}</span></span><span className="text-right font-semibold">{pack.quantity} {pack.unitCode}{pack.containedPackageCode ? <small className="block font-normal text-slate-400">contains {pack.containedPackageCode}</small> : null}</span></div>)}</div>
               </section>
             )}
 
@@ -448,8 +466,9 @@ export default function Product() {
 
             {(product.compliance || []).length > 0 && (
               <section className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
-                <h2 className="text-sm font-semibold text-emerald-900">Verified standards & compliance</h2>
-                <div className="mt-3 flex flex-wrap gap-2">{product.compliance.map((record) => <span key={`${record.type}-${record.code}`} className="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-emerald-800 shadow-sm">{record.title} · {record.code}</span>)}</div>
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-emerald-900"><ShieldCheck className="h-4 w-4" />Verified standards & compliance</h2>
+                <p className="mt-1 text-xs text-emerald-800/70">Only currently verified, unexpired records are shown.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">{product.compliance.map((record) => <div key={`${record.type}-${record.code}`} className="rounded-xl border border-emerald-100 bg-white p-3 shadow-sm"><p className="flex items-center gap-1.5 text-xs font-bold text-emerald-900"><BadgeCheck className="h-3.5 w-3.5" />{record.title}</p><p className="mt-1 font-mono text-[10px] text-emerald-700">{record.code}</p>{(record.authority || record.jurisdiction) && <p className="mt-1 text-[10px] text-slate-500">{[record.authority, record.jurisdiction].filter(Boolean).join(' · ')}</p>}{record.validUntil && <p className="mt-1 text-[10px] font-medium text-slate-400">Valid until {new Date(record.validUntil).toLocaleDateString('en-IN')}</p>}</div>)}</div>
               </section>
             )}
           </div>

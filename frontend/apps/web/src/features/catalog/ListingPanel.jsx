@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Boxes, Download, Layers, PackagePlus, Pencil, RefreshCw, Trash2, Warehouse } from 'lucide-react';
+import { Boxes, CheckCircle2, Download, Eye, Layers, PackagePlus, Pencil, RefreshCw, Settings2, Trash2, Warehouse } from 'lucide-react';
 import { inr, pickMeta } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
@@ -17,6 +17,7 @@ import Pagination from '../../components/ui/Pagination.jsx';
 import Stat from '../../components/ui/Stat.jsx';
 import Table from '../../components/ui/Table.jsx';
 import { LISTING_STATUS_META, LISTING_STATUS_OPTIONS } from './catalogMeta.js';
+import { Guidance, SectionIntro, SubmissionError } from './CatalogFormUX.jsx';
 
 const blank = () => ({
   productMasterId: '',
@@ -38,17 +39,20 @@ function CreateListingModal({ masters, onClose, onSaved }) {
   const [variantId, setVariantId] = useState('');
   const [variantOptions, setVariantOptions] = useState(null);
   const [error, setError] = useState('');
+  const selectedMaster = (masters || []).find((master) => rid(master) === form.productMasterId);
+  const allowedUnits = selectedMaster?.unitPolicy?.units || [];
   const hasPrices = form.mrp !== '' && form.sellingPrice !== '' && Number(form.sellingPrice) > 0;
-  const canSave = form.productMasterId && hasPrices;
+  const validBasis = Number(form.priceBasisQuantity) > 0 && (!allowedUnits.length || allowedUnits.some((unit) => unit.code === form.priceBasisUnit));
+  const canSave = form.productMasterId && hasPrices && validBasis;
 
-  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (k, v) => { setError(''); setForm((f) => ({ ...f, [k]: v })); };
 
   // When the chosen master has variants, offer one of them (or the master row).
   useEffect(() => {
     setVariantId('');
     if (!form.productMasterId) { setVariantOptions(null); return; }
-    const selectedMaster = (masters || []).find((master) => rid(master) === form.productMasterId);
-    setForm((current) => ({ ...current, priceBasisUnit: selectedMaster?.unitPolicy?.baseUnit || selectedMaster?.defaultSellingUnit || 'piece' }));
+    const master = (masters || []).find((item) => rid(item) === form.productMasterId);
+    setForm((current) => ({ ...current, priceBasisUnit: master?.unitPolicy?.baseUnit || master?.defaultSellingUnit || 'piece' }));
     let live = true;
     api.catalogTenant.masterVariants(form.productMasterId)
       .then((r) => { if (live) setVariantOptions((r.data?.variants || []).filter((v) => v.variant)); })
@@ -66,7 +70,14 @@ function CreateListingModal({ masters, onClose, onSaved }) {
       costPrice: form.costPrice === '' ? null : Number(form.costPrice),
       currency: 'INR',
     };
-    if (mrp != null && mrp < price.sellingPrice) return setError('MRP must be greater than or equal to the selling price.');
+    if (mrp != null && mrp < price.sellingPrice) {
+      const message = 'MRP must be greater than or equal to the selling price.';
+      setError(message); toast.error(message); return;
+    }
+    if (!validBasis) {
+      const message = 'Choose a positive price-basis quantity using one of the master’s allowed units.';
+      setError(message); toast.error(message); return;
+    }
     try {
       await run(() => api.catalogTenant.createListing({
         productMasterId: form.productMasterId,
@@ -83,7 +94,8 @@ function CreateListingModal({ masters, onClose, onSaved }) {
       onClose();
       onSaved?.();
     } catch (err) {
-      setError(errMsg(err));
+      const message = errMsg(err);
+      setError(message); toast.error(message);
     }
   };
 
@@ -91,8 +103,9 @@ function CreateListingModal({ masters, onClose, onSaved }) {
     <Modal
       open
       onClose={onClose}
-      title="Create listing"
-      subtitle="Attaches an active global master to this store with its own price."
+      title="Create a store offer"
+      subtitle="Connect a governed catalog product to this store’s price, channels and inventory."
+      size="lg"
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -100,9 +113,11 @@ function CreateListingModal({ masters, onClose, onSaved }) {
         </>
       }
     >
-      <form onSubmit={submit} className="space-y-4">
-        {error && <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700">{error}</div>}
-        <Field label="Product master" required hint="Only active masters can be listed.">
+      <form onSubmit={submit} className="space-y-6">
+        <SubmissionError message={error} />
+        <section>
+          <SectionIntro eyebrow="Step 1" title="Choose what this store sells" description="A listing never duplicates product truth. It references one active master—or one exact variant—and owns only seller price, stock, merchandising and channel policy." icon={PackagePlus} />
+        <Field label="Product master" required hint="Only active, publishable masters appear here. Compliance requirements are checked again if you activate the offer.">
           <Select value={form.productMasterId} onChange={(e) => set('productMasterId', e.target.value)}>
             <option value="">Select master…</option>
             {(masters || []).map((m) => <option key={rid(m)} value={rid(m)}>{m.title} · {m.skuGlobal}</option>)}
@@ -121,8 +136,18 @@ function CreateListingModal({ masters, onClose, onSaved }) {
             </Select>
           </Field>
         )}
+        {selectedMaster && (
+          <div className="mt-3 grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-3">
+            <div><p className="text-[10px] font-bold uppercase text-slate-400">Catalog identity</p><p className="mt-1 text-xs font-semibold text-slate-800">{selectedMaster.skuGlobal}</p></div>
+            <div><p className="text-[10px] font-bold uppercase text-slate-400">Base unit</p><p className="mt-1 text-xs font-semibold text-slate-800">{selectedMaster.unitPolicy?.baseUnit || selectedMaster.defaultSellingUnit}</p></div>
+            <div><p className="text-[10px] font-bold uppercase text-slate-400">Compliance</p><p className="mt-1 text-xs font-semibold capitalize text-slate-800">{selectedMaster.complianceStatus || 'not required'}</p></div>
+          </div>
+        )}
+        </section>
+        <section>
+          <SectionIntro eyebrow="Step 2" title="Price & quantity identity" description="The price basis tells customers—and downstream cart, order and GST documents—exactly how much product this price buys." icon={Settings2} />
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Selling price (₹)" required>
+          <Field label="Selling price (₹)" required hint="The current customer price before cart-level promotions.">
             <Input type="number" min="0" step="0.01" value={form.sellingPrice} onChange={(e) => set('sellingPrice', e.target.value)} />
           </Field>
           <Field label="MRP (₹)" hint="Leave blank when no MRP.">
@@ -134,8 +159,13 @@ function CreateListingModal({ masters, onClose, onSaved }) {
           <Field label="Seller SKU" hint="Your store-specific stock keeping unit.">
             <Input value={form.sellerSku} onChange={(e) => set('sellerSku', e.target.value)} />
           </Field>
-          <Field label="Price basis" hint="The quantity covered by this price.">
-            <div className="flex gap-2"><Input className="!w-24" type="number" min="0.000001" step="any" value={form.priceBasisQuantity} onChange={(e) => set('priceBasisQuantity', e.target.value)} /><Input value={form.priceBasisUnit} onChange={(e) => set('priceBasisUnit', e.target.value)} /></div>
+          <Field label="Price basis" required hint="Example: ₹120 per 500 gram. Unit must belong to the master conversion policy.">
+            <div className="flex gap-2">
+              <Input className="!w-28" type="number" min="0.000001" step="any" value={form.priceBasisQuantity} onChange={(e) => set('priceBasisQuantity', e.target.value)} />
+              {allowedUnits.length ? (
+                <Select value={form.priceBasisUnit} onChange={(e) => set('priceBasisUnit', e.target.value)}>{allowedUnits.map((unit) => <option key={unit.code} value={unit.code}>{unit.label} ({unit.code})</option>)}</Select>
+              ) : <Input value={form.priceBasisUnit} onChange={(e) => set('priceBasisUnit', e.target.value)} />}
+            </div>
           </Field>
           <Field label="Storefront title override">
             <Input value={form.titleOverride} onChange={(e) => set('titleOverride', e.target.value)} />
@@ -154,7 +184,12 @@ function CreateListingModal({ masters, onClose, onSaved }) {
             </Select>
           </Field>
         </div>
-        <p className="text-xs text-slate-400">Activating a listing will surface it to customers as soon as pricing is valid.</p>
+        </section>
+        <Guidance title={form.status === 'active' ? 'Activation preflight' : 'Safe draft workflow'} tone={form.status === 'active' ? 'amber' : 'blue'}>
+          {form.status === 'active'
+            ? 'Saving as active asks the backend to verify master status, required compliance, price basis and channel policy immediately. If any gate fails, this form stays open and shows the exact server reason.'
+            : 'Draft keeps the offer private while you finish compliance, merchandising and inventory. Activate from the listing workspace when every readiness gate is green.'}
+        </Guidance>
       </form>
     </Modal>
   );
@@ -356,9 +391,11 @@ function ListingModal({ row, onClose, onSaved }) {
   const [stockData, setStockData] = useState(null);
   const [loadingStock, setLoadingStock] = useState(true);
   const [serverError, setServerError] = useState('');
+  const [pane, setPane] = useState('commercial');
   const listingId = row.id || row._id;
   const version = currentVersion;
   const status = row.status || 'draft';
+  const fail = (err) => { const message = errMsg(err); setServerError(message); toast.error(message); };
 
   const onChanged = () => { loadStock(); onSaved?.(); };
 
@@ -369,7 +406,7 @@ function ListingModal({ row, onClose, onSaved }) {
       setStockData(r.data);
       setStockQty(String(r.data.qtyOnHand ?? 0));
     } catch (e) {
-      setServerError(errMsg(e));
+      fail(e);
     } finally {
       setLoadingStock(false);
     }
@@ -392,13 +429,15 @@ function ListingModal({ row, onClose, onSaved }) {
       toast.success('Listing price updated');
       onChanged();
     } catch (err) {
-      setServerError(errMsg(err));
+      fail(err);
     }
   };
 
   const saveOffer = async (e) => {
     e.preventDefault();
     setServerError('');
+    if (!(Number(offerForm.priceBasisQuantity) > 0)) return fail('Price-basis quantity must be greater than zero.');
+    if (row.master?.unitPolicy?.units?.length && !row.master.unitPolicy.units.some((unit) => unit.code === offerForm.priceBasisUnit)) return fail('Choose a unit allowed by this product’s conversion policy.');
     try {
       const response = await run(() => api.catalogTenant.updateOffer(listingId, {
         sellerSku: offerForm.sellerSku || null,
@@ -411,7 +450,7 @@ function ListingModal({ row, onClose, onSaved }) {
       setCurrentVersion(response.data?.version || version + 1);
       toast.success('Offer policy updated');
       onChanged();
-    } catch (err) { setServerError(errMsg(err)); }
+    } catch (err) { fail(err); }
   };
 
   const saveStock = async (e) => {
@@ -422,7 +461,7 @@ function ListingModal({ row, onClose, onSaved }) {
       toast.success('Stock snapshot set');
       onChanged();
     } catch (err) {
-      setServerError(errMsg(err));
+      fail(err);
     }
   };
 
@@ -433,7 +472,7 @@ function ListingModal({ row, onClose, onSaved }) {
       toast.success(`Listing ${next}`);
       onChanged();
     } catch (err) {
-      setServerError(errMsg(err));
+      fail(err);
     }
   };
 
@@ -444,7 +483,7 @@ function ListingModal({ row, onClose, onSaved }) {
       toast.success('Listing deactivated');
       onChanged();
     } catch (err) {
-      setServerError(errMsg(err));
+      fail(err);
     }
   };
 
@@ -468,7 +507,19 @@ function ListingModal({ row, onClose, onSaved }) {
         </div>
       }
     >
-      {serverError && <div className="mb-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-sm text-rose-700">{serverError}</div>}
+      <SubmissionError message={serverError} />
+
+      <div className="mb-5 flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1.5">
+        {[
+          ['commercial', 'Price & inventory', Warehouse],
+          ['offer', 'Offer & channels', Settings2],
+          ['readiness', 'Readiness', CheckCircle2],
+        ].map(([value, label, Icon]) => (
+          <button key={value} type="button" onClick={() => { setPane(value); setServerError(''); }} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition ${pane === value ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`}>
+            <Icon className="h-3.5 w-3.5" />{label}
+          </button>
+        ))}
+      </div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-xl bg-slate-50 p-3.5">
@@ -489,7 +540,7 @@ function ListingModal({ row, onClose, onSaved }) {
         </div>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      {pane === 'commercial' && <div className="grid gap-5 lg:grid-cols-2 animate-in">
         <form onSubmit={savePrice} className="rounded-xl border border-slate-200 p-4">
           <p className="text-sm font-semibold text-slate-800">Price</p>
           <div className="mt-3 grid grid-cols-3 gap-3">
@@ -513,14 +564,14 @@ function ListingModal({ row, onClose, onSaved }) {
             </>
           )}
         </form>
-      </div>
+      </div>}
 
-      <form onSubmit={saveOffer} className="mt-5 rounded-xl border border-slate-200 p-4">
+      {pane === 'offer' && <form onSubmit={saveOffer} className="animate-in rounded-xl border border-slate-200 p-4">
         <p className="text-sm font-semibold text-slate-800">Offer identity, quantity basis & channels</p>
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field label="Seller SKU"><Input value={offerForm.sellerSku} onChange={(e) => setOfferForm({ ...offerForm, sellerSku: e.target.value })} /></Field>
           <Field label="Storefront title"><Input value={offerForm.titleOverride} onChange={(e) => setOfferForm({ ...offerForm, titleOverride: e.target.value })} /></Field>
-          <Field label="Price basis"><div className="flex gap-2"><Input className="!w-20" type="number" min="0.000001" step="any" value={offerForm.priceBasisQuantity} onChange={(e) => setOfferForm({ ...offerForm, priceBasisQuantity: e.target.value })} /><Input value={offerForm.priceBasisUnit} onChange={(e) => setOfferForm({ ...offerForm, priceBasisUnit: e.target.value })} /></div></Field>
+          <Field label="Price basis" hint="Immutable commerce identity copied into cart, order and tax snapshots."><div className="flex gap-2"><Input className="!w-20" type="number" min="0.000001" step="any" value={offerForm.priceBasisQuantity} onChange={(e) => setOfferForm({ ...offerForm, priceBasisQuantity: e.target.value })} />{row.master?.unitPolicy?.units?.length ? <Select value={offerForm.priceBasisUnit} onChange={(e) => setOfferForm({ ...offerForm, priceBasisUnit: e.target.value })}>{row.master.unitPolicy.units.map((unit) => <option key={unit.code} value={unit.code}>{unit.label} ({unit.code})</option>)}</Select> : <Input value={offerForm.priceBasisUnit} onChange={(e) => setOfferForm({ ...offerForm, priceBasisUnit: e.target.value })} />}</div></Field>
           <Field label="Lead time (days)"><Input type="number" min="0" max="365" value={offerForm.leadTimeDays} onChange={(e) => setOfferForm({ ...offerForm, leadTimeDays: e.target.value })} /></Field>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-5">
@@ -529,7 +580,29 @@ function ListingModal({ row, onClose, onSaved }) {
           <label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={offerForm.allowBackorder} onChange={(e) => setOfferForm({ ...offerForm, allowBackorder: e.target.checked })} /> Allow backorder</label>
           <Button className="ml-auto" type="submit" size="sm" loading={busy}>Save offer</Button>
         </div>
-      </form>
+      </form>}
+
+      {pane === 'readiness' && (
+        <div className="animate-in space-y-4">
+          <SectionIntro eyebrow="Publishability" title="Storefront readiness" description="Activation is a governed transition, not just a visibility toggle. These signals explain what customers and downstream systems will receive." icon={Eye} />
+          <div className="grid gap-3 sm:grid-cols-2">
+            {[
+              ['Master status', row.master?.status === 'active', row.master?.status || 'unknown'],
+              ['Compliance', !row.master?.complianceStatus || ['compliant', 'not_required'].includes(row.master.complianceStatus), row.master?.complianceStatus || 'checked on activation'],
+              ['Valid selling price', Number(priceForm.sellingPrice) > 0, inr(Number(priceForm.sellingPrice) || 0)],
+              ['Quantity identity', Number(offerForm.priceBasisQuantity) > 0 && Boolean(offerForm.priceBasisUnit), `${offerForm.priceBasisQuantity} ${offerForm.priceBasisUnit}`],
+              ['Storefront channel', offerForm.storefront, offerForm.storefront ? 'enabled' : 'hidden'],
+              ['Inventory or backorder', Number(stockData?.qtyAvailable ?? 0) > 0 || offerForm.allowBackorder, `${stockData?.qtyAvailable ?? 0} available`],
+            ].map(([label, ready, value]) => (
+              <div key={label} className={`flex items-center gap-3 rounded-2xl border p-3 ${ready ? 'border-emerald-200 bg-emerald-50/60' : 'border-amber-200 bg-amber-50/60'}`}>
+                <span className={`grid h-8 w-8 place-items-center rounded-xl ${ready ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}><CheckCircle2 className="h-4 w-4" /></span>
+                <div><p className="text-xs font-bold text-slate-800">{label}</p><p className="text-[11px] capitalize text-slate-500">{value}</p></div>
+              </div>
+            ))}
+          </div>
+          <Guidance title="Server-authoritative checks" tone="blue">Current compliance validity, product lifecycle, unit policy, status transition and optimistic version are revalidated by the backend when you activate. The console never guesses around a failed gate.</Guidance>
+        </div>
+      )}
     </Modal>
   );
 }
