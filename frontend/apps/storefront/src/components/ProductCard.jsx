@@ -214,7 +214,10 @@ function CardShell({
   const product = line.product || {};
   const basisQuantity = line.priceBasis?.quantity || 1;
   const basisUnit = line.priceBasis?.unitCode || unit;
-  const verified = (product.compliance || []).length > 0 || product.complianceStatus === 'compliant';
+  // Never infer a public claim from the master's aggregate status: individual
+  // evidence may have expired since indexing. Only disclose records the public
+  // projection has already verified and date-filtered.
+  const verified = (product.compliance || []).length > 0;
   const packCount = (product.packages || []).length;
 
   const slug =
