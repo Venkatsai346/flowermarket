@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Boxes, History, Inbox, UploadCloud, Zap } from 'lucide-react';
+import { lazy, Suspense, useState } from 'react';
+import { BookOpen, Boxes, History, Inbox, UploadCloud, Zap } from 'lucide-react';
 import { useAuthStore } from '@flower-market/shared';
 import { cn } from '../../lib/utils.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
@@ -9,10 +9,13 @@ import AuditPanel from './AuditPanel.jsx';
 import EventPanel from './EventPanel.jsx';
 import BulkPanel from './BulkPanel.jsx';
 
+const CatalogGuidanceBook = lazy(() => import('./CatalogGuidanceBook.jsx'));
+
 // Listings + bulk are tenant-scoped (store owners included); review/audit/
 // events are platform operations hitting super_admin-only APIs.
 const TABS = [
   ['listings', 'Listings', Boxes, ['admin', 'super_admin']],
+  ['guide', 'Guidance book', BookOpen, ['admin', 'super_admin']],
   ['review', 'Review queue', Inbox, ['super_admin']],
   ['audit', 'Audit', History, ['super_admin']],
   ['events', 'Events', Zap, ['super_admin']],
@@ -50,6 +53,7 @@ export default function CatalogOpsPage() {
       </nav>
 
       {activeTab === 'listings' && <ListingPanel />}
+      {activeTab === 'guide' && <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400">Opening the guidance book…</div>}><CatalogGuidanceBook /></Suspense>}
       {activeTab === 'review' && <ReviewQueuePanel />}
       {activeTab === 'audit' && <AuditPanel />}
       {activeTab === 'events' && <EventPanel />}
