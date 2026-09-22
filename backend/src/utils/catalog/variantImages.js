@@ -107,6 +107,12 @@ export function attachVariantGalleries(variants, images) {
         id: idKey(g._id ?? g.id),
         url: g.url,
         altText: g.altText || null,
+        mediaType: g.mediaType || 'image',
+        role: g.role || 'gallery',
+        mimeType: g.mimeType || null,
+        width: g.width || null,
+        height: g.height || null,
+        focalPoint: g.focalPoint || null,
         isPrimary: Boolean(g.isPrimary),
         sortOrder: g.sortOrder ?? 0,
       })),
@@ -116,10 +122,13 @@ export function attachVariantGalleries(variants, images) {
   });
 }
 
-/** Human label for a variant: explicit displayLabel wins, else the raw value. */
+/** Human label for a variant: explicit label, option combination, legacy value. */
 export function variantDisplayLabel(variant) {
   if (!variant) return '';
-  return variant.displayLabel || variant.value || '';
+  return variant.displayLabel
+    || (variant.optionValues || []).map((o) => o.value).filter(Boolean).join(' / ')
+    || variant.value
+    || '';
 }
 
 /**

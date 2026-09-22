@@ -135,6 +135,7 @@ class CatalogPublicController {
       productMasterService.getMaster(masterId),
       TenantProduct.find({
         tenantId, productMasterId: masterId, status: 'active',
+        'channels.storefront': { $ne: false },
         'price.sellingPrice': { $ne: null }, // never render an unpriced listing
       }).lean(),
     ]);
@@ -142,7 +143,7 @@ class CatalogPublicController {
     // the id PDP must enforce the same gate, or a PENDING_REVIEW/REJECTED/
     // DEPRECATED master keeps a public shareable page (and, for rejected
     // masters, a listing the cascade missed).
-    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE || master.complianceStatus === 'pending') {
       throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     }
     if (!listings?.length) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
@@ -170,6 +171,7 @@ class CatalogPublicController {
       const v = l.variantId ? variantById.get(String(l.variantId)) : null;
       const gallery = v?.images?.length ? v.images : (master.images || []).map((img) => ({
         id: img._id ?? img.id, url: img.url, altText: img.altText || master.title,
+        mediaType: img.mediaType || 'image', role: img.role || 'gallery', mimeType: img.mimeType || null,
         isPrimary: Boolean(img.isPrimary), sortOrder: img.sortOrder ?? 0,
       }));
       const stockQty = stockByListing[String(l._id)] ?? 0;
@@ -178,11 +180,18 @@ class CatalogPublicController {
         variantId: l.variantId ? String(l.variantId) : null,
         variantType: v?.variantType || null,
         value: v?.value || null,
+        optionValues: v?.optionValues || [],
+        attributes: v?.attributes || [],
+        sellQuantity: v?.sellQuantity || null,
+        combinationKey: v?.combinationKey || null,
         label: v ? variantDisplayLabel(v) : null,
         sku: v?.sku || null,
         sortOrder: v?.sortOrder ?? 0,
         isDefault: Boolean(v?.isDefault),
         price: l.price,
+        priceBasis: l.priceBasis,
+        sellerSku: l.sellerSku || null,
+        merchandising: l.merchandising || {},
         orderLimits: l.orderLimits,
         stockQty,
         availability: { status: stockQty > 0 ? 'in_stock' : 'out_of_stock', qtyAvailable: stockQty },
@@ -217,6 +226,9 @@ class CatalogPublicController {
     const images = (selected.images || []).map((img) => ({
       url: img.url,
       altText: img.altText || master.title,
+      mediaType: img.mediaType || 'image',
+      role: img.role || 'gallery',
+      mimeType: img.mimeType || null,
       isPrimary: Boolean(img.isPrimary),
     }));
     const imageUrl = images.find((i) => i.isPrimary)?.url || images[0]?.url || null;
@@ -224,6 +236,16 @@ class CatalogPublicController {
     return {
       product: {
         ...master,
+        category: master.category ? { id: master.category.id, name: master.category.name, slug: master.category.slug } : null,
+        title: selected.merchandising?.titleOverride || master.title,
+        canonicalTitle: master.title,
+        shortDescription: selected.merchandising?.descriptionOverride || master.shortDescription,
+        compliance: (master.compliance || []).filter((record) =>
+          record.status === 'verified' && (!record.validUntil || new Date(record.validUntil) > new Date())
+        ).map((record) => ({
+          type: record.type, code: record.code, title: record.title, authority: record.authority,
+          jurisdiction: record.jurisdiction, validUntil: record.validUntil, restrictions: record.restrictions,
+        })),
         imageUrl,
         images,
         imageSource: selected.imageSource,
@@ -233,6 +255,7 @@ class CatalogPublicController {
         listingId: selected.listingId,
         variantId: selected.variantId,
         price: selected.price,
+        priceBasis: selected.priceBasis,
         status: 'active',
         orderLimits: selected.orderLimits,
         stockQty: selected.stockQty,

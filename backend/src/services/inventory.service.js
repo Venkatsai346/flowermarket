@@ -48,7 +48,10 @@ class InventoryService {
       { $set: { qtyOnHand: qty, lastUpdatedAt: new Date() } },
       { new: true, upsert: true }
     );
-    const before = row.qtyOnHand - qty; // pre-value: upsert insert → 0, else (new - set)
+    // Absolute counts are intentionally last-write-wins. Mongo cannot return
+    // both pre/post images from this single atomic operation, so avoid lying
+    // in the audit trail with the former `row.qtyOnHand - qty` (always zero).
+    const before = null;
     await this.refreshListingStock(listing, row);
     await this.logOp({ tenantId, listingId, op: INVENTORY_OP_TYPE.ADJUSTMENT, qty, before, after: qty, actorId, req });
     return row;
@@ -243,21 +246,38 @@ class InventoryService {
   async commitForOrder({ tenantId, items }) {
     const committed = [];
     const failed = [];
-    for (const it of items) {
+    for (const it of items || []) {
+      if (!it?.listingId || !Number.isInteger(it.qty) || it.qty <= 0) {
+        failed.push({ listingId: it?.listingId || null, qty: it?.qty, reason: 'invalid_quantity' });
+        continue;
+      }
+      // Each inventory mutation is deliberately sequential so compensation preserves item order.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
         {
           tenantId,
           tenantProductId: it.listingId,
-          $expr: { $gte: ['$qtyOnHand', it.qty] },
+          // Checkout, PDP and catalog reads all use the default sellable row.
+          // Never decrement an arbitrary warehouse row when several exist.
+          warehouseId: null,
+          // Respect internal reservations: checkout cannot consume stock held
+          // by another order while the storefront reports it unavailable.
+          $expr: { $gte: [{ $subtract: ['$qtyOnHand', '$qtyReserved'] }, it.qty] },
         },
-        { $inc: { qtyOnHand: -it.qty }, $set: { lastUpdatedAt: new Date() } },
+        { $inc: { qtyOnHand: -it.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
         { new: true }
       );
       if (row) {
         committed.push({ listingId: it.listingId, qty: it.qty, row });
+        // Each inventory mutation is deliberately sequential so compensation preserves item order.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, 1);
         }
       } else {
@@ -269,21 +289,32 @@ class InventoryService {
 
   /** COMPENSATION — restore qtyOnHand (and undo the soldCount bump) for items that were committed. */
   async restoreForOrder({ tenantId, items }) {
-    for (const it of items) {
+    let restored = 0;
+    for (const it of items || []) {
+      if (!it?.listingId || !Number.isInteger(it.qty) || it.qty <= 0) continue;
+      // Each inventory mutation is deliberately sequential so compensation preserves item order.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
-        { tenantId, tenantProductId: it.listingId },
-        { $inc: { qtyOnHand: it.qty }, $set: { lastUpdatedAt: new Date() } },
+        { tenantId, tenantProductId: it.listingId, warehouseId: null },
+        { $inc: { qtyOnHand: it.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
         { new: true }
       );
       if (row) {
+        restored += 1;
+        // Each inventory mutation is deliberately sequential so compensation preserves item order.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, -1);
         }
       }
     }
-    return { restored: items.length };
+    return { restored };
   }
 
   // ---------------- helpers ----------------

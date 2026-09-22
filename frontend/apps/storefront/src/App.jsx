@@ -30,6 +30,7 @@ const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
 const Browse = lazy(() => import('./pages/Browse.jsx'));
 const About = lazy(() => import('./pages/About.jsx'));
 const Brands = lazy(() => import('./pages/Brands.jsx'));
+const Brand = lazy(() => import('./pages/Brand.jsx'));
 const Categories = lazy(() => import('./pages/Categories.jsx'));
 
 /**
@@ -207,6 +208,7 @@ export default function App() {
             <Route path="/wishlist" element={<Wishlist />} />
             <Route path="/browse" element={<Browse />} />
             <Route path="/brands" element={<Brands />} />
+            <Route path="/brands/:id" element={<Brand />} />
             <Route path="/categories" element={<Categories />} />
             <Route path="/about" element={<About />} />
             <Route path="/addresses" element={<Addresses />} />

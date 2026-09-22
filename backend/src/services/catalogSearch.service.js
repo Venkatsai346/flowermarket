@@ -43,6 +43,7 @@ class CatalogSearchService {
       // Defense in depth: a priceless listing must never reach the customer,
       // even if one slipped past the activation gate (legacy data, race).
       'price.sellingPrice': { $ne: null },
+      'channels.storefront': { $ne: false },
     };
 
     const pipeline = [
@@ -56,7 +57,24 @@ class CatalogSearchService {
         },
       },
       { $unwind: { path: '$master', preserveNullAndEmptyArrays: false } },
-      { $match: { 'master.status': PRODUCT_MASTER_STATUS.ACTIVE, 'master.isDeleted': { $ne: true } } },
+      { $match: { 'master.status': PRODUCT_MASTER_STATUS.ACTIVE, 'master.complianceStatus': { $ne: 'pending' }, 'master.isDeleted': { $ne: true } } },
+      // Resolve variants before count/facets/pagination so archived, deleted or
+      // dangling variant listings never inflate totals or surface as a false
+      // master-level row. A null variantId is the legitimate master listing.
+      {
+        $lookup: {
+          from: 'productvariants', localField: 'variantId', foreignField: '_id', as: 'variant',
+        },
+      },
+      { $unwind: { path: '$variant', preserveNullAndEmptyArrays: true } },
+      {
+        $match: {
+          $or: [
+            { variantId: null },
+            { 'variant._id': { $ne: null }, 'variant.status': 'active', 'variant.isDeleted': { $ne: true } },
+          ],
+        },
+      },
     ];
 
     // ---- filters ----
@@ -101,15 +119,6 @@ class CatalogSearchService {
     const rows = await TenantProduct.aggregate([
       ...pipeline,
       {
-        $lookup: {
-          from: 'productvariants',
-          localField: 'variantId',
-          foreignField: '_id',
-          as: 'variant',
-        },
-      },
-      { $unwind: { path: '$variant', preserveNullAndEmptyArrays: true } },
-      {
         $project: {
           _id: 0,
           listingId: { $toString: '$_id' },
@@ -117,6 +126,7 @@ class CatalogSearchService {
             $cond: [{ $ifNull: ['$variant._id', false] }, { $toString: '$variant._id' }, null],
           },
           price: 1,
+          priceBasis: 1,
           stockQty: 1,
           availability: 1,
           variant: {
@@ -126,6 +136,8 @@ class CatalogSearchService {
                 id: { $toString: '$variant._id' },
                 variantType: '$variant.variantType',
                 value: '$variant.value',
+                optionValues: '$variant.optionValues',
+                combinationKey: '$variant.combinationKey',
                 displayLabel: '$variant.displayLabel',
                 sku: '$variant.sku',
                 sortOrder: '$variant.sortOrder',
@@ -136,16 +148,26 @@ class CatalogSearchService {
           },
           product: {
             id: { $toString: '$master._id' },
-            title: '$master.title',
+            title: { $ifNull: ['$merchandising.titleOverride', '$master.title'] },
+            canonicalTitle: '$master.title',
             slug: '$master.slug',
             skuGlobal: '$master.skuGlobal',
             type: '$master.type',
-            shortDescription: '$master.shortDescription',
+            kind: '$master.kind',
+            complianceStatus: '$master.complianceStatus',
+            shortDescription: { $ifNull: ['$merchandising.descriptionOverride', '$master.shortDescription'] },
             categoryId: '$master.categoryId',
             brandId: '$master.brandId',
             isPerishable: '$master.isPerishable',
             requiresColdChain: '$master.requiresColdChain',
             defaultSellingUnit: '$master.defaultSellingUnit',
+            unitPolicy: '$master.unitPolicy',
+            options: '$master.options',
+            optionRules: '$master.optionRules',
+            manufacturer: '$master.manufacturer',
+            modelNumber: '$master.modelNumber',
+            condition: '$master.condition',
+            fulfillmentProfile: '$master.fulfillmentProfile',
             soldCount: '$master.soldCount',
             searchText: '$master.searchText',
           },
@@ -321,7 +343,10 @@ class CatalogSearchService {
             sku: v?.sku || null,
             sortOrder: v?.sortOrder ?? 0,
             isDefault: Boolean(v?.isDefault),
+            optionValues: v?.optionValues || [],
+            sellQuantity: v?.sellQuantity || null,
             price: l.price,
+            priceBasis: l.priceBasis,
             stockQty: l.stockQty ?? 0,
             availability: l.availability,
             imageUrl: gallery[0]?.url || null,
@@ -427,7 +452,7 @@ class CatalogSearchService {
    */
   async storefrontBrands({ tenantId }) {
     const rows = await TenantProduct.aggregate([
-      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true } } },
+      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null } } },
       {
         $lookup: {
           from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master',
@@ -441,11 +466,19 @@ class CatalogSearchService {
           'master.brandId': { $ne: null },
         },
       },
+      // A master can have many listed variants; storefront copy says
+      // "products", so count each master once while retaining its from-price.
       {
         $group: {
-          _id: '$master.brandId',
-          productCount: { $sum: 1 },
+          _id: { brandId: '$master.brandId', masterId: '$master._id' },
           fromPrice: { $min: '$price.sellingPrice' },
+        },
+      },
+      {
+        $group: {
+          _id: '$_id.brandId',
+          productCount: { $sum: 1 },
+          fromPrice: { $min: '$fromPrice' },
         },
       },
       { $lookup: { from: 'brands', localField: '_id', foreignField: '_id', as: 'brand' } },
@@ -499,7 +532,7 @@ class CatalogSearchService {
    */
   async storefrontCategories({ tenantId }) {
     const counted = await TenantProduct.aggregate([
-      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true } } },
+      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null } } },
       {
         $lookup: {
           from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master',
@@ -515,9 +548,15 @@ class CatalogSearchService {
       },
       {
         $group: {
-          _id: '$master.categoryId',
-          productCount: { $sum: 1 },
+          _id: { categoryId: '$master.categoryId', masterId: '$master._id' },
           fromPrice: { $min: '$price.sellingPrice' },
+        },
+      },
+      {
+        $group: {
+          _id: '$_id.categoryId',
+          productCount: { $sum: 1 },
+          fromPrice: { $min: '$fromPrice' },
         },
       },
     ]);

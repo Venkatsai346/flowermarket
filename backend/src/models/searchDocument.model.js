@@ -28,14 +28,22 @@ const SearchDocumentSchema = new Schema(
     vendorId: { type: Types.ObjectId, ref: 'Vendor', default: null, index: true },
     // ---- variant (null for master-level listings) ----
     variantId: { type: Types.ObjectId, ref: 'ProductVariant', default: null, index: true },
-    variantLabel: { type: String, default: null, maxlength: 160 },
+    variantLabel: { type: String, default: null, maxlength: 240 },
     variantType: { type: String, default: null, maxlength: 40 },
+    optionValues: { type: [Schema.Types.Mixed], default: [], validate: (v) => v.length <= 6 },
 
     // ---- text ----
     title: { type: String, required: true, maxlength: 200 },
     slug: { type: String, default: null, maxlength: 200 },
     searchText: { type: String, default: '' },
     brandName: { type: String, default: null, maxlength: 120 },
+    brandId: { type: Types.ObjectId, ref: 'Brand', default: null, index: true },
+    productType: { type: String, default: null, maxlength: 60, index: true },
+    productKind: { type: String, enum: ['physical', 'digital', 'service', 'bundle'], default: 'physical', index: true },
+    unitPolicy: { type: Schema.Types.Mixed, default: null },
+    packageCodes: { type: [String], default: [], validate: (value) => value.length <= 100 },
+    complianceCodes: { type: [String], default: [], validate: (value) => value.length <= 100 },
+    variantAttributes: { type: [Schema.Types.Mixed], default: [], validate: (value) => value.length <= 100 },
     categoryId: { type: Types.ObjectId, ref: 'Category', default: null, index: true },
     categoryPath: { type: [String], default: [] },
     tags: { type: [String], default: [] },

@@ -6,16 +6,19 @@ import { validate } from '../middleware/validate.js';
 import { USER_ROLES } from '../constants/enums.js';
 import {
   masterProposeSchema,
+  masterQuerySchema,
   listingCreateSchema,
   listingBulkSchema,
   listingQuerySchema,
   listingUpdatePriceSchema,
+  listingUpdateOfferSchema,
   listingUpdateStatusSchema,
   changeRequestCreateSchema,
   changeRequestQuerySchema,
   idParamSchema,
   stockSetSchema,
   stockAdjustSchema,
+  versionOnlySchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -34,6 +37,9 @@ router.use(authenticate, authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN, USE
 router.post('/masters/propose', validate(masterProposeSchema), CatalogTenantController.proposeMaster);
 
 // ---- listings (tenant-scoped writes, optimistic-locked) ----
+// Read-only master discovery for store owners. The controller forcibly applies
+// status=active even if a caller supplies another status.
+router.get('/masters', validate(masterQuerySchema, 'query'), CatalogTenantController.listAvailableMasters);
 router.post('/listings', validate(listingCreateSchema), CatalogTenantController.createListing);
 // NOTE: declared BEFORE /listings/:id reads so 'bulk' never matches :id.
 router.post('/listings/bulk', validate(listingBulkSchema), CatalogTenantController.bulkCreateListings);
@@ -42,8 +48,9 @@ router.get('/masters/:id/variants', validate(idParamSchema, 'params'), CatalogTe
 router.get('/listings', validate(listingQuerySchema, 'query'), CatalogTenantController.listListings);
 router.get('/listings/:id', validate(idParamSchema, 'params'), CatalogTenantController.getListing);
 router.patch('/listings/:id/price', validate(idParamSchema, 'params'), validate(listingUpdatePriceSchema), CatalogTenantController.updatePrice);
+router.patch('/listings/:id/offer', validate(idParamSchema, 'params'), validate(listingUpdateOfferSchema), CatalogTenantController.updateOffer);
 router.patch('/listings/:id/status', validate(idParamSchema, 'params'), validate(listingUpdateStatusSchema), CatalogTenantController.updateStatus);
-router.post('/listings/:id/deactivate', validate(idParamSchema, 'params'), CatalogTenantController.deactivateListing);
+router.post('/listings/:id/deactivate', validate(idParamSchema, 'params'), validate(versionOnlySchema), CatalogTenantController.deactivateListing);
 
 // ---- inventory ----
 // NOTE (F-12): the tenant-facing reserve/release endpoints were removed.

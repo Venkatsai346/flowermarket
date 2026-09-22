@@ -20,7 +20,14 @@ import {
   imageCreateSchema,
   variantImageCreateSchema,
   imagePrimarySchema,
+  versionOnlySchema,
+  masterReviewSchema,
+  masterDeprecateSchema,
   attributeSetSchema,
+  variantAttributeSetSchema,
+  packageSetSchema,
+  bundleComponentSetSchema,
+  complianceSetSchema,
   changeRequestReviewSchema,
   changeRequestQuerySchema,
   auditQuerySchema,
@@ -62,16 +69,22 @@ router.post('/masters', validate(masterCreateSchema), CatalogAdminController.cre
 router.get('/masters', validate(masterQuerySchema, 'query'), CatalogAdminController.listMasters);
 router.get('/masters/:id', validate(idParamSchema, 'params'), CatalogAdminController.getMaster);
 router.patch('/masters/:id', validate(idParamSchema, 'params'), validate(masterUpdateSchema), CatalogAdminController.updateMaster);
-router.post('/masters/:id/review', validate(idParamSchema, 'params'), CatalogAdminController.reviewMaster);
-router.post('/masters/:id/deprecate', validate(idParamSchema, 'params'), CatalogAdminController.deprecateMaster);
+router.post('/masters/:id/review', validate(idParamSchema, 'params'), validate(masterReviewSchema), CatalogAdminController.reviewMaster);
+router.post('/masters/:id/deprecate', validate(idParamSchema, 'params'), validate(masterDeprecateSchema), CatalogAdminController.deprecateMaster);
 router.post('/masters/:id/variants', validate(idParamSchema, 'params'), validate(variantCreateSchema), CatalogAdminController.addVariant);
 router.patch('/masters/:id/variants/:variantId', validate(masterVariantParamSchema, 'params'), validate(variantUpdateSchema), CatalogAdminController.updateVariant);
-router.delete('/masters/:id/variants/:variantId', validate(masterVariantParamSchema, 'params'), CatalogAdminController.removeVariant);
+router.delete('/masters/:id/variants/:variantId', validate(masterVariantParamSchema, 'params'), validate(versionOnlySchema), CatalogAdminController.removeVariant);
 router.post('/masters/:id/variants/:variantId/images', validate(masterVariantParamSchema, 'params'), validate(variantImageCreateSchema), CatalogAdminController.addVariantImage);
 router.post('/masters/:id/images', validate(idParamSchema, 'params'), validate(imageCreateSchema), CatalogAdminController.addImage);
-router.delete('/masters/:id/images/:imageId', validate(masterImageParamSchema, 'params'), CatalogAdminController.removeImage);
+router.delete('/masters/:id/images/:imageId', validate(masterImageParamSchema, 'params'), validate(versionOnlySchema), CatalogAdminController.removeImage);
 router.patch('/masters/:id/images/:imageId/primary', validate(masterImageParamSchema, 'params'), validate(imagePrimarySchema), CatalogAdminController.setImagePrimary);
 router.put('/masters/:id/attributes', validate(idParamSchema, 'params'), validate(attributeSetSchema), CatalogAdminController.setAttributes);
+router.get('/masters/:id/structures', validate(idParamSchema, 'params'), CatalogAdminController.getStructures);
+router.get('/masters/:id/integrity', validate(idParamSchema, 'params'), CatalogAdminController.getIntegrityReport);
+router.put('/masters/:id/variants/:variantId/attributes', validate(masterVariantParamSchema, 'params'), validate(variantAttributeSetSchema), CatalogAdminController.setVariantAttributes);
+router.put('/masters/:id/packages', validate(idParamSchema, 'params'), validate(packageSetSchema), CatalogAdminController.setPackages);
+router.put('/masters/:id/bundle-components', validate(idParamSchema, 'params'), validate(bundleComponentSetSchema), CatalogAdminController.setBundleComponents);
+router.put('/masters/:id/compliance', validate(idParamSchema, 'params'), validate(complianceSetSchema), CatalogAdminController.setCompliance);
 
 // ---- review queue ----
 router.get('/change-requests', validate(changeRequestQuerySchema, 'query'), CatalogAdminController.listChangeRequests);
