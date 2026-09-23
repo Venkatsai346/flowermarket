@@ -58,7 +58,7 @@ const parseCombination = (text, definitions = []) => String(text || '').split(',
  * sub-resource management. Every mutation carries `master.version` (refetched
  * after each change) so concurrent edits surface VERSION_CONFLICT.
  */
-export default function MasterDetailModal({ masterId, onClose, onChanged }) {
+export default function MasterDetailModal({ masterId, onClose, onChanged, onEdit }) {
   const { busy, run } = useAction();
   const [m, setM] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -238,6 +238,7 @@ export default function MasterDetailModal({ masterId, onClose, onChanged }) {
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Close</Button>
+          {onEdit && <Button variant="secondary" onClick={() => onEdit(m)} icon={Pencil}>Edit master</Button>}
           {pendingReview && (
             <>
               <Button variant="danger" onClick={() => setConfirm('reject')} icon={X}>Reject</Button>

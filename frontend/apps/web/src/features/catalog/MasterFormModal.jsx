@@ -16,6 +16,7 @@ import Button from '../../components/ui/Button.jsx';
 import Modal from '../../components/ui/Modal.jsx';
 import { Checkbox, Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
 import { Guidance, RecoveryNotice, ReviewItem, SectionIntro, SubmissionError, WizardNav } from './CatalogFormUX.jsx';
+import { BrandPicker, CategoryPicker } from './CatalogPickers.jsx';
 
 const PRODUCT_TYPES = Object.keys(PRODUCT_TYPE_META);
 const UNITS = Object.keys(SELLING_UNIT_LABEL);
@@ -259,6 +260,18 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
   };
 
   const set = (k, v) => { setError(null); setForm((f) => ({ ...f, [k]: v })); };
+  const selectCategory = (categoryId) => {
+    const category = (categories || []).find((item) => rid(item) === categoryId);
+    const allowedKeys = new Set((category?.attributeSchema || []).map((field) => field.key));
+    const removed = form.attributes.filter((attribute) => attribute.key && !allowedKeys.has(attribute.key)).length;
+    setError(null);
+    setForm((current) => ({
+      ...current,
+      categoryId,
+      attributes: current.attributes.filter((attribute) => allowedKeys.has(attribute.key)),
+    }));
+    if (removed) toast.info(`${removed} specification ${removed === 1 ? 'was' : 'were'} removed because the category changed`);
+  };
   const fail = (message, targetStep = step, code = '') => {
     setError(message); setErrorCode(code); setStep(targetStep); toast.error(message);
     requestAnimationFrame(() => document.querySelector('[role=\"alert\"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
@@ -502,17 +515,22 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
             <Field label="Slug" hint="Auto-generated from title when blank">
               <Input value={form.slug} onChange={(e) => set('slug', slugify(e.target.value))} placeholder="red-roses-bunch-20" className="font-mono" />
             </Field>
-            <Field label="Category" required>
-              <Select required value={form.categoryId} onChange={(e) => set('categoryId', e.target.value)}>
-                <option value="">Select category…</option>
-                {(categories || []).map((c) => <option key={rid(c)} value={rid(c)}>{c.name}</option>)}
-              </Select>
+            <Field label="Category" required hint="Choose a governed leaf category. It controls required specifications and compliance guidance.">
+              <CategoryPicker
+                value={form.categoryId}
+                onChange={selectCategory}
+                categories={categories}
+                selectedCategory={initial?.category}
+                required
+              />
             </Field>
-            <Field label="Brand" hint="Optional — unverified brands can still be assigned">
-              <Select value={form.brandId} onChange={(e) => set('brandId', e.target.value)}>
-                <option value="">No brand</option>
-                {(brands || []).map((b) => <option key={rid(b)} value={rid(b)}>{b.name}</option>)}
-              </Select>
+            <Field label="Brand" hint="Searches the complete registry. Leave empty for unbranded or commodity goods.">
+              <BrandPicker
+                value={form.brandId}
+                onChange={(brandId) => set('brandId', brandId)}
+                brands={brands}
+                selectedBrand={initial?.brand}
+              />
             </Field>
           </div>
         </div>

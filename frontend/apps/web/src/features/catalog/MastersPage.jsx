@@ -14,6 +14,7 @@ import { Input, Select } from '../../components/ui/Field.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
 import MasterFormModal from './MasterFormModal.jsx';
 import MasterDetailModal from './MasterDetailModal.jsx';
+import { BrandPicker, CategoryPicker } from './CatalogPickers.jsx';
 
 const STATUSES = [
   ['', 'All statuses'],
@@ -23,6 +24,14 @@ const STATUSES = [
   ['deprecated', 'Deprecated'],
 ];
 const TYPES = Object.keys(PRODUCT_TYPE_META);
+
+function flattenCategoryTree(nodes = [], parentId = null) {
+  return nodes.flatMap((node) => {
+    const id = rid(node);
+    const item = { ...node, parentId: node.parentId || parentId };
+    return [item, ...flattenCategoryTree(node.children || [], id)];
+  });
+}
 
 export default function MastersPage() {
   const [page, setPage] = useState(1);
@@ -47,14 +56,15 @@ export default function MastersPage() {
       }),
     [page, search, status, categoryId, brandId, type]
   );
-  const cats = useApi(() => api.catalogAdmin.categories({ limit: 100 }), []);
+  const cats = useApi(() => api.catalogAdmin.categoryTree(), []);
   const brands = useApi(() => api.catalogAdmin.brands({ limit: 100 }), []);
+  const categories = useMemo(() => flattenCategoryTree(cats.data || []), [cats.data]);
 
   const catName = useMemo(() => {
     const map = new Map();
-    (cats.data || []).forEach((c) => map.set(rid(c), c.name));
+    categories.forEach((c) => map.set(rid(c), c.name));
     return map;
-  }, [cats.data]);
+  }, [categories]);
   const brandName = useMemo(() => {
     const map = new Map();
     (brands.data || []).forEach((b) => map.set(rid(b), b.name));
@@ -86,14 +96,23 @@ export default function MastersPage() {
           <Select className="!w-40" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
             {STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </Select>
-          <Select className="!w-44" value={categoryId} onChange={(e) => { setCategoryId(e.target.value); setPage(1); }}>
-            <option value="">All categories</option>
-            {(cats.data || []).map((c) => <option key={rid(c)} value={rid(c)}>{c.name}</option>)}
-          </Select>
-          <Select className="!w-44" value={brandId} onChange={(e) => { setBrandId(e.target.value); setPage(1); }}>
-            <option value="">All brands</option>
-            {(brands.data || []).map((b) => <option key={rid(b)} value={rid(b)}>{b.name}</option>)}
-          </Select>
+          <div className="w-full sm:w-52">
+            <CategoryPicker
+              value={categoryId}
+              onChange={(next) => { setCategoryId(next); setPage(1); }}
+              categories={categories}
+              placeholder="All categories"
+            />
+          </div>
+          <div className="w-full sm:w-52">
+            <BrandPicker
+              value={brandId}
+              onChange={(next) => { setBrandId(next); setPage(1); }}
+              brands={brands.data || []}
+              placeholder="All brands"
+              emptyLabel="All brands"
+            />
+          </div>
           <Select className="!w-40" value={type} onChange={(e) => { setType(e.target.value); setPage(1); }}>
             <option value="">All types</option>
             {TYPES.map((t) => <option key={t} value={t}>{PRODUCT_TYPE_META[t].label}</option>)}
@@ -137,6 +156,7 @@ export default function MastersPage() {
           masterId={selected}
           onClose={() => setSelected(null)}
           onChanged={() => masters.refetch()}
+          onEdit={(master) => { setSelected(null); setForm({ mode: 'edit', master }); }}
         />
       )}
 
@@ -145,7 +165,7 @@ export default function MastersPage() {
           open
           onClose={() => setForm(null)}
           initial={form.mode === 'edit' ? form.master : null}
-          categories={cats.data || []}
+          categories={categories}
           brands={brands.data || []}
           onSaved={(doc, refetchOnly) => {
             if (refetchOnly) { masters.refetch(); return; }
