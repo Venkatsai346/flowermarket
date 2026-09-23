@@ -1846,7 +1846,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -1863,7 +1863,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -1880,7 +1880,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -1996,7 +1996,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -2013,7 +2013,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -2030,7 +2030,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -2146,7 +2146,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -2163,7 +2163,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -2180,7 +2180,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -2296,7 +2296,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -2313,7 +2313,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -2330,7 +2330,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -2446,7 +2446,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -2463,7 +2463,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -2480,7 +2480,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -2596,7 +2596,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -2613,7 +2613,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -2630,7 +2630,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -2746,7 +2746,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=20 cm cm` |
+| Variant specifications | `plant_height_cm=20 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — 7 inch / 35 cm / Terracotta
@@ -2763,7 +2763,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=35 cm cm` |
+| Variant specifications | `plant_height_cm=35 cm` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — 10 inch / 50 cm / Black
@@ -2780,7 +2780,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `plant_height_cm=50 cm cm` |
+| Variant specifications | `plant_height_cm=50 cm` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -44250,7 +44250,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -44276,7 +44276,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Penguin Random House India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -44396,7 +44396,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -44422,7 +44422,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | HarperCollins India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -44542,7 +44542,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -44568,7 +44568,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Hachette India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -44688,7 +44688,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -44714,7 +44714,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Simon & Schuster India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -44834,7 +44834,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -44860,7 +44860,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Pan Macmillan India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -44980,7 +44980,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45006,7 +45006,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Bloomsbury India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -45126,7 +45126,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45152,7 +45152,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Rupa Publications | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -45272,7 +45272,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45298,7 +45298,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | S. Chand | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -45418,7 +45418,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45444,7 +45444,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Arihant Publications | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -45564,7 +45564,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45590,7 +45590,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Oswaal Books | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -45710,7 +45710,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45736,7 +45736,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | MTG Learning Media | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -45856,7 +45856,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -45882,7 +45882,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Scholastic India | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -46002,7 +46002,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -46028,7 +46028,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Oxford University Press | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -46148,7 +46148,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -46174,7 +46174,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Cambridge University Press | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -46294,7 +46294,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -46320,7 +46320,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Westland Books | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -46440,7 +46440,7 @@
 | Master barcode | — (leave blank) |
 | GTIN | — (leave blank) |
 | MPN | — (leave blank) |
-| ISBN | <REPLACE_WITH_VALID_ISBN> |
+| ISBN | — (leave blank until a verified ISBN exists) |
 | HSN | — (leave blank) |
 | Warranty | — (not supplied) |
 | Compliance status at draft | `not_required` (confirm product-specific applicability) |
@@ -46466,7 +46466,7 @@
 |---|---|---|---|
 | `author` | Reference author — replace with the published credit | — | Reference value |
 | `publisher` | Juggernaut Books | — | Reference value |
-| `isbn13` | <REPLACE_WITH_VALID_ISBN13> | — | **VERIFY BEFORE PUBLISH** |
+| `isbn13` | 0000000000000 | — | **PLACEHOLDER — REPLACE BEFORE PUBLISH** |
 
 #### Product option vocabulary
 
@@ -56450,7 +56450,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -56467,7 +56467,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -56484,7 +56484,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -56597,7 +56597,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -56614,7 +56614,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -56631,7 +56631,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -56744,7 +56744,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -56761,7 +56761,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -56778,7 +56778,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -56891,7 +56891,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -56908,7 +56908,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -56925,7 +56925,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57038,7 +57038,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57055,7 +57055,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57072,7 +57072,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57185,7 +57185,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57202,7 +57202,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57219,7 +57219,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57332,7 +57332,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57349,7 +57349,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57366,7 +57366,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57479,7 +57479,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57496,7 +57496,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57513,7 +57513,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57626,7 +57626,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57643,7 +57643,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57660,7 +57660,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57773,7 +57773,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57790,7 +57790,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57807,7 +57807,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -57920,7 +57920,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -57937,7 +57937,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -57954,7 +57954,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -58067,7 +58067,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -58084,7 +58084,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -58101,7 +58101,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -58214,7 +58214,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -58231,7 +58231,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -58248,7 +58248,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
@@ -58361,7 +58361,7 @@
 | Sort order / default | 0 / Yes |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1 seat` |
+| Variant specifications | `platform=Windows`; `license_term=one_time`; `seat_count=1` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 2 — macOS / monthly / 5 seats
@@ -58378,7 +58378,7 @@
 | Sort order / default | 1 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5 seats` |
+| Variant specifications | `platform=macOS`; `license_term=monthly`; `seat_count=5` |
 | Variant media | **[] — intentionally empty** |
 
 ##### Variant 3 — Web / annual / 10 seats
@@ -58395,7 +58395,7 @@
 | Sort order / default | 2 / No |
 | Weight override | — (inherit/leave blank until measured) |
 | Dimension override | — (inherit/leave blank until measured) |
-| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10 seats` |
+| Variant specifications | `platform=Web`; `license_term=annual`; `seat_count=10` |
 | Variant media | **[] — intentionally empty** |
 
 #### Media & post-create checklist
