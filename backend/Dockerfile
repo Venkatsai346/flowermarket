@@ -46,7 +46,7 @@ WORKDIR /app
 COPY --from=prune /app/node_modules ./node_modules
 COPY package.json ./
 COPY src/ ./src/
-COPY scripts/seed-default-tenant.js ./scripts/
+COPY scripts/seed-default-tenant.js scripts/seed-catalog-taxonomy.js ./scripts/
 
 # Create storage directory for local media (dev fallback)
 RUN mkdir -p storage/local && chown -R fm:fm /app
