@@ -90,7 +90,7 @@ function namedSample(key, category, brand, reference) {
     ingredients: 'Copy the complete approved ingredient declaration from the product label',
     usage_instructions: 'Use only as directed on the approved product label', batch_number: `BATCH-${reference}`,
     manufacturer_name: brand, storage_instructions: 'Store according to the approved label in a cool, dry place away from direct sunlight',
-    fssai_license_number: '<REPLACE_WITH_VERIFIED_FSSAI_NUMBER>', batch_or_lot: `LOT-${reference}`, serving_size: 'As declared on pack',
+    fssai_license_number: `PENDING-${reference}`, batch_or_lot: `LOT-${reference}`, serving_size: 'As declared on pack',
     recommended_usage: 'Use only according to the approved label and professional guidance where applicable',
     warnings: 'Copy all mandatory warnings verbatim from the approved label or licence',
     variety: 'Premium reference variety', country_or_region: 'India — verify actual origin',
@@ -112,7 +112,7 @@ function sampleValue(field, category, brand, reference) {
   const named = namedSample(field.key, category, brand, reference);
   if (named !== undefined) return named;
   if (field.key === 'network_generation') return '5G';
-  if (field.type === 'select') return field.options?.[0] ?? `<REPLACE_WITH_VALID_${field.key.toUpperCase()}>`;
+  if (field.type === 'select') return field.options?.[0] ?? 'standard';
   if (field.type === 'multi_select') return field.options?.slice(0, Math.min(2, field.options.length)) ?? [`Verified ${titleCase(field.key)}`];
   if (field.type === 'number') {
     if (NUMERIC_SAMPLES[field.key] !== undefined) return NUMERIC_SAMPLES[field.key];
@@ -191,6 +191,35 @@ function unitPolicy(categorySlug) {
   };
 }
 
+function buildCompliance(category, reference) {
+  return (category.compliance || []).map((requirement) => ({
+    variantId: null,
+    type: requirement.type,
+    code: requirement.code,
+    title: requirement.label,
+    authority: null,
+    jurisdiction: {
+      country: requirement.jurisdictions?.[0] || 'IN',
+      state: null,
+      regions: [],
+    },
+    status: 'pending',
+    validFrom: null,
+    validUntil: null,
+    issuerReference: null,
+    documents: [],
+    restrictions: ['Commercial activation requires authoritative evidence review'],
+    metadata: {
+      source: 'catalog-product-master-seed',
+      reference,
+      categorySlug: category.id,
+      categoryRequired: requirement.required !== false,
+      requiresExpiry: Boolean(requirement.requiresExpiry),
+      evidencePending: true,
+    },
+  }));
+}
+
 function makeBlueprint(category, brand, index) {
   const identity = `${category.id}:${brand}`;
   const reference = hash(identity, 5);
@@ -212,13 +241,14 @@ function makeBlueprint(category, brand, index) {
       sellQuantity: { value: 1, unitCode: defaultUnit(category.id)[0] }, sortOrder: variantIndex,
       isDefault: variantIndex === 0, weight: { value: null, unit: 'g' },
       dimensions: { length: null, width: null, height: null, unit: 'cm' }, images: [],
-      attributes: optionValues
-        .filter((option) => options.find((definition) => definition.code === option.code)?.field)
-        .map((option) => {
-          const field = options.find((definition) => definition.code === option.code).field;
+      attributes: category.attributes
+        .filter((field) => ['variant', 'both'].includes(field.appliesTo))
+        .map((field) => {
+          const option = optionValues.find((candidate) => candidate.code === field.key);
+          const rawValue = option?.value ?? sampleValue(field, category, brand, reference);
           return {
-            key: option.code,
-            value: field.type === 'number' ? Number.parseFloat(option.value) : option.value,
+            key: field.key,
+            value: field.type === 'number' && typeof rawValue !== 'number' ? Number.parseFloat(rawValue) : rawValue,
             unit: field.unit || null,
           };
         }),
@@ -228,8 +258,13 @@ function makeBlueprint(category, brand, index) {
   const perishable = ['fresh-flowers', 'bouquets', 'live-plants', 'fresh-produce'].includes(category.id);
   const noShipping = ['digital-products', 'services'].includes(category.id);
   const type = CLASS_BY_CATEGORY[category.id] || code(category.id);
+  const bundleComponentCategorySlugs = category.id === 'bouquets'
+    ? ['fresh-flowers']
+    : category.id === 'gift-hampers' ? ['fresh-flowers', 'packaged-food'] : [];
   return {
     index, reference, categorySlug: category.id, categoryName: category.name, brandName: brand,
+    compliance: buildCompliance(category, reference),
+    bundleComponentCategorySlugs,
     payload: {
       skuGlobal, type, kind: category.kind, title,
       slug: `${slugify(brand)}-${category.id}-reference-${reference.toLowerCase()}`.slice(0, 200),
@@ -264,7 +299,7 @@ function makeBlueprint(category, brand, index) {
       })),
       optionRules: [],
       attributes: category.attributes
-        .filter((field) => field.appliesTo !== 'variant' && field.required)
+        .filter((field) => ['master', 'both'].includes(field.appliesTo || 'master'))
         .map((field) => ({ key: field.key, value: sampleValue(field, category, brand, reference), unit: field.unit || null })),
       variants,
       images: [],
@@ -282,10 +317,21 @@ export function buildCatalogProductMasterBlueprints() {
   return rows;
 }
 
+const complianceRecords = CATEGORY_PLAYBOOKS.reduce((total, category) =>
+  total + (CATEGORY_BRAND_ASSIGNMENTS[category.id]?.length || 0) * (category.compliance?.length || 0), 0);
+const requiredComplianceRecords = CATEGORY_PLAYBOOKS.reduce((total, category) =>
+  total + (CATEGORY_BRAND_ASSIGNMENTS[category.id]?.length || 0)
+    * (category.compliance || []).filter((requirement) => requirement.required !== false).length, 0);
+const bundleComponents = (CATEGORY_BRAND_ASSIGNMENTS.bouquets?.length || 0)
+  + (CATEGORY_BRAND_ASSIGNMENTS['gift-hampers']?.length || 0) * 2;
+
 export const CATALOG_PRODUCT_MASTER_COUNTS = Object.freeze({
   categories: CATEGORY_PLAYBOOKS.length,
   uniqueBrands: new Set(Object.values(CATEGORY_BRAND_ASSIGNMENTS).flat()).size,
   relationships: Object.values(CATEGORY_BRAND_ASSIGNMENTS).flat().length,
   productMasters: 409,
   variants: 1227,
+  complianceRecords,
+  requiredComplianceRecords,
+  bundleComponents,
 });

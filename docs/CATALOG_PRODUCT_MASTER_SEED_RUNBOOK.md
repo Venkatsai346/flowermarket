@@ -15,6 +15,11 @@ The seed is deterministic, dependency-aware, dry-run-first, idempotent, and resu
 | Category–brand relationships | 409 |
 | Product masters | 409 |
 | Variants | 1,227 |
+| Master-level category attributes | 3,340 |
+| Variant-level category attributes | 2,226 |
+| Pending compliance records | 1,403 |
+| Category-required compliance records represented | 952 |
+| Bundle component relationships | 28 |
 | Unique master + variant SKUs | 1,636 |
 | Master media | 0 |
 | Variant media | 0 |
@@ -41,7 +46,11 @@ The script verifies that this user exists and is an active `super_admin` before 
 - Existing editorial changes, extra attributes, extra variants, lifecycle state, and tenant listings are preserved.
 - New reference masters default to `pending_review`. Activating unverified reference data requires the explicit `--active` flag.
 - Master and variant media arrays are hard-validated as empty.
-- Required master and variant EAV values are validated against both the canonical playbooks and the actual category schemas in MongoDB.
+- Every category-defined master and variant EAV field—required and optional—is populated and validated against both the canonical playbooks and the actual category schemas in MongoDB.
+- Every category compliance requirement is materialized as a product-level `pending` record with jurisdiction, governance metadata, and no fabricated evidence.
+- Existing verified/pending/rejected compliance records and their evidence are preserved; reruns append only missing canonical requirement records.
+- Existing operator-authored bundle compositions are never replaced; empty seeded bundles receive deterministic physical-product components.
+- Legacy textual placeholders are replaced during repair, while unrelated operator-authored attributes and extensions are preserved.
 
 ## Prerequisites
 
@@ -71,6 +80,8 @@ Expected summary:
 409 product masters · 1227 variants · 27 categories
 341 unique brands · 409 category/brand relationships
 1636 unique master/variant SKUs · 0 media records
+3340 master attributes · 2226 variant attributes · 1403 pending compliance records
+28 deterministic bundle component relationships
 ```
 
 ### 2. Database-backed dry run
@@ -135,10 +146,12 @@ Each reference master contains:
 
 - exact existing category and brand references;
 - identity, descriptions, tags, SEO, warranty, fulfilment, and unit policy;
-- required master-scope category attributes;
+- all master-scope category attributes, including every required field;
 - controlled option definitions;
 - exactly three variants with unique SKUs and one default;
-- required variant-scope EAV rows;
+- all variant-scope EAV rows, including every required field;
+- every category compliance requirement as a pending, jurisdiction-aware record;
+- deterministic non-recursive components for bouquet and gift-hamper bundle masters, unless an operator has already authored a composition;
 - zero master images;
 - zero variant images.
 
@@ -147,7 +160,7 @@ Each reference master contains:
 A rerun classifies every blueprint row as:
 
 - `CREATE`: no deterministic master exists;
-- `REPAIR`: the exact master exists but one or more expected required attributes or variants are missing;
+- `REPAIR`: the exact master exists but expected category attributes, variants, variant attributes, or compliance requirement records are missing;
 - `UNCHANGED`: all expected seed-owned structural records exist.
 
 Repair mode only adds missing deterministic structure. It does not reset titles, descriptions, SEO, lifecycle status, category, brand, complete variants, extra variants, or operator-authored extensions.
@@ -187,4 +200,4 @@ Then verify in the admin console:
 
 ## Governance warning
 
-This seed creates structured reference/demo catalog identities, not verified commercial claims. A real brand name does not prove that the brand manufactures, authorizes, certifies, or sells the illustrative product. Never invent or retain placeholder GTIN, barcode, ISBN, HSN, FSSAI, BIS, CDSCO, hallmark, battery, safety, ingredient, warranty, or origin data in a published record.
+This seed creates structurally complete reference/demo catalog identities, not verified commercial claims. A real brand name does not prove that the brand manufactures, authorizes, certifies, or sells the illustrative product. Compliance rows deliberately remain `pending` with empty evidence arrays: software cannot truthfully manufacture certificates, licence numbers, issuer references, expiry dates, or regulator evidence. Never promote those rows to `verified`, and never activate a commercial listing, until an authorized operator attaches authoritative evidence. Never invent or retain placeholder GTIN, barcode, ISBN, HSN, FSSAI, BIS, CDSCO, hallmark, battery, safety, ingredient, warranty, or origin data in a published record.

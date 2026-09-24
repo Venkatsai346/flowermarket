@@ -20,6 +20,8 @@ import ProductMaster from '../src/models/productMaster.model.js';
 import ProductVariant from '../src/models/productVariant.model.js';
 import ProductAttributeValue from '../src/models/productAttributeValue.model.js';
 import ProductVariantAttributeValue from '../src/models/productVariantAttributeValue.model.js';
+import ProductCompliance from '../src/models/productCompliance.model.js';
+import ProductBundleComponent from '../src/models/productBundleComponent.model.js';
 import productMasterService from '../src/services/productMaster.service.js';
 import catalogStructureService from '../src/services/catalogStructure.service.js';
 import categoryService from '../src/services/category.service.js';
@@ -47,6 +49,7 @@ const DUMMY_ID = '000000000000000000000001';
 const fail = (message) => { throw new Error(message); };
 const id = (value) => String(value?._id || value?.id || value || '');
 const normalizeName = (value) => String(value || '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
+const isLegacyPlaceholder = (value) => typeof value === 'string' && /^<REPLACE[_ ].*>$/i.test(value.trim());
 const brandSlug = (value) => String(value || '')
   .normalize('NFKD')
   .replace(/[\u0300-\u036f]/g, '')
@@ -88,6 +91,10 @@ function assertBlueprint() {
   const masterSkus = new Set();
   const masterSlugs = new Set();
   const variantSkus = new Set();
+  let complianceRecordCount = 0;
+  let masterAttributeCount = 0;
+  let variantAttributeCount = 0;
+  let bundleComponentCount = 0;
   const playbookBySlug = new Map(CATEGORY_PLAYBOOKS.map((playbook) => [playbook.id, playbook]));
 
   if (rows.length !== CATALOG_PRODUCT_MASTER_COUNTS.productMasters) {
@@ -104,13 +111,20 @@ function assertBlueprint() {
     masterSkus.add(row.payload.skuGlobal); masterSlugs.add(row.payload.slug);
 
     if (row.payload.images.length) errors.push(`${row.payload.skuGlobal}: master media must be empty`);
+    bundleComponentCount += row.bundleComponentCategorySlugs.length;
+    if (row.payload.kind === 'bundle' && !row.bundleComponentCategorySlugs.length) errors.push(`${row.payload.skuGlobal}: bundle requires component blueprints`);
+    if (row.payload.kind !== 'bundle' && row.bundleComponentCategorySlugs.length) errors.push(`${row.payload.skuGlobal}: non-bundle cannot define components`);
     if (row.payload.variants.length !== 3) errors.push(`${row.payload.skuGlobal}: expected exactly 3 reference variants`);
     if (row.payload.variants.filter((variant) => variant.isDefault).length !== 1) errors.push(`${row.payload.skuGlobal}: needs exactly one default variant`);
 
-    const requiredMaster = playbook.attributes.filter((field) => field.required && field.appliesTo !== 'variant').map((field) => field.key);
-    const requiredVariant = playbook.attributes.filter((field) => field.required && field.appliesTo === 'variant').map((field) => field.key);
+    const masterFields = playbook.attributes.filter((field) => ['master', 'both'].includes(field.appliesTo || 'master'));
+    const variantFields = playbook.attributes.filter((field) => ['variant', 'both'].includes(field.appliesTo));
+    const requiredMaster = masterFields.filter((field) => field.required).map((field) => field.key);
+    const requiredVariant = variantFields.filter((field) => field.required).map((field) => field.key);
     const masterKeys = new Set(row.payload.attributes.map((attribute) => attribute.key));
+    masterAttributeCount += row.payload.attributes.length;
     for (const key of requiredMaster) if (!masterKeys.has(key)) errors.push(`${row.payload.skuGlobal}: missing master attribute ${key}`);
+    for (const field of masterFields) if (!masterKeys.has(field.key)) errors.push(`${row.payload.skuGlobal}: missing production master attribute ${field.key}`);
     for (const attribute of row.payload.attributes) {
       const field = playbook.attributes.find((candidate) => candidate.key === attribute.key);
       if (!field || field.appliesTo === 'variant') errors.push(`${row.payload.skuGlobal}: invalid master attribute ${attribute.key}`);
@@ -125,7 +139,9 @@ function assertBlueprint() {
       if (variantSkus.has(variant.sku) || masterSkus.has(variant.sku)) errors.push(`Duplicate variant SKU ${variant.sku}`);
       variantSkus.add(variant.sku);
       const variantKeys = new Set(variant.attributes.map((attribute) => attribute.key));
+      variantAttributeCount += variant.attributes.length;
       for (const key of requiredVariant) if (!variantKeys.has(key)) errors.push(`${variant.sku}: missing variant attribute ${key}`);
+      for (const field of variantFields) if (!variantKeys.has(field.key)) errors.push(`${variant.sku}: missing production variant attribute ${field.key}`);
       for (const attribute of variant.attributes) {
         const field = playbook.attributes.find((candidate) => candidate.key === attribute.key);
         if (!field || field.appliesTo !== 'variant') errors.push(`${variant.sku}: invalid variant attribute ${attribute.key}`);
@@ -133,6 +149,23 @@ function assertBlueprint() {
           const issue = fieldValueError(field, attribute.value);
           if (issue) errors.push(`${variant.sku}/${attribute.key}: ${issue}`);
         }
+      }
+    }
+
+    complianceRecordCount += row.compliance.length;
+    if (row.compliance.length !== (playbook.compliance || []).length) {
+      errors.push(`${row.payload.skuGlobal}: expected ${(playbook.compliance || []).length} compliance records, generated ${row.compliance.length}`);
+    }
+    for (const requirement of playbook.compliance || []) {
+      const record = row.compliance.find((candidate) => candidate.code === requirement.code && candidate.type === requirement.type);
+      if (!record) errors.push(`${row.payload.skuGlobal}: missing compliance ${requirement.type}/${requirement.code}`);
+      else {
+        if (record.status !== 'pending') errors.push(`${row.payload.skuGlobal}/${requirement.code}: seeded compliance must remain pending`);
+        if (record.documents.length) errors.push(`${row.payload.skuGlobal}/${requirement.code}: compliance evidence must not be fabricated`);
+        const modelError = new ProductCompliance({
+          ...record, productMasterId: DUMMY_ID,
+        }).validateSync();
+        if (modelError) errors.push(`${row.payload.skuGlobal}/${requirement.code}: ${modelError.message}`);
       }
     }
 
@@ -147,6 +180,9 @@ function assertBlueprint() {
 
   const expectedVariants = CATALOG_PRODUCT_MASTER_COUNTS.variants;
   if (variantSkus.size !== expectedVariants) errors.push(`Expected ${expectedVariants} unique variant SKUs, generated ${variantSkus.size}`);
+  if (complianceRecordCount !== CATALOG_PRODUCT_MASTER_COUNTS.complianceRecords) errors.push(`Expected ${CATALOG_PRODUCT_MASTER_COUNTS.complianceRecords} compliance records, generated ${complianceRecordCount}`);
+  if (bundleComponentCount !== CATALOG_PRODUCT_MASTER_COUNTS.bundleComponents) errors.push(`Expected ${CATALOG_PRODUCT_MASTER_COUNTS.bundleComponents} bundle components, generated ${bundleComponentCount}`);
+  if (!masterAttributeCount || !variantAttributeCount) errors.push('Production attribute coverage cannot be empty');
   if (new Set(rows.map((row) => row.categorySlug)).size !== CATALOG_PRODUCT_MASTER_COUNTS.categories) errors.push('Not every governed category is covered');
   if (new Set(rows.map((row) => normalizeName(row.brandName))).size !== CATALOG_PRODUCT_MASTER_COUNTS.uniqueBrands) errors.push('Not every governed brand is covered');
   if (errors.length) fail(`Product blueprint validation failed:\n- ${errors.join('\n- ')}`);
@@ -157,7 +193,11 @@ function printCoverage(rows) {
   console.log('\nCatalog product-master blueprint');
   console.log(`  ${rows.length} product masters · ${rows.length * 3} variants · ${CATALOG_PRODUCT_MASTER_COUNTS.categories} categories`);
   console.log(`  ${CATALOG_PRODUCT_MASTER_COUNTS.uniqueBrands} unique brands · ${CATALOG_PRODUCT_MASTER_COUNTS.relationships} category/brand relationships`);
+  const masterAttributes = rows.reduce((total, row) => total + row.payload.attributes.length, 0);
+  const variantAttributes = rows.reduce((total, row) => total + row.payload.variants.reduce((sum, variant) => sum + variant.attributes.length, 0), 0);
   console.log(`  ${rows.length * 4} unique master/variant SKUs · 0 media records`);
+  console.log(`  ${masterAttributes} master attributes · ${variantAttributes} variant attributes · ${CATALOG_PRODUCT_MASTER_COUNTS.complianceRecords} pending compliance records`);
+  console.log(`  ${CATALOG_PRODUCT_MASTER_COUNTS.bundleComponents} deterministic bundle component relationships`);
 }
 
 async function loadDependencies(rows) {
@@ -207,6 +247,14 @@ async function loadDependencies(rows) {
   for (const categorySlug of categorySlugs) {
     const row = rows.find((candidate) => candidate.categorySlug === categorySlug);
     const category = categoryBySlug.get(categorySlug);
+    const databaseRequirements = category.complianceRequirements || [];
+    const expectedComplianceKeys = new Set(row.compliance.map((record) => `${record.type}:${record.code}`));
+    const databaseComplianceKeys = new Set(databaseRequirements.map((requirement) => `${requirement.type}:${requirement.code}`));
+    const missingCompliance = [...databaseComplianceKeys].filter((key) => !expectedComplianceKeys.has(key));
+    const staleCompliance = [...expectedComplianceKeys].filter((key) => !databaseComplianceKeys.has(key));
+    if (missingCompliance.length || staleCompliance.length) {
+      fail(`${categorySlug}: compliance blueprint differs from the database (missing ${missingCompliance.join(', ') || 'none'}; stale ${staleCompliance.join(', ') || 'none'})`);
+    }
     const masterValidation = await categoryService.validateAttributes(category._id, row.payload.attributes, { scope: 'master' });
     if (!masterValidation.ok) fail(`${categorySlug}: master attributes do not match the database schema: ${JSON.stringify(masterValidation.errors)}`);
     for (const variant of row.payload.variants) {
@@ -233,11 +281,14 @@ async function buildPlan(rows, dependencies) {
       { productMasterId: { $in: masters.map((master) => master._id) } },
     ],
   }).lean();
-  const [masterAttributes, variantAttributes] = await Promise.all([
+  const [masterAttributes, variantAttributes, complianceRecords, bundleComponents] = await Promise.all([
     ProductAttributeValue.find({ productMasterId: { $in: masters.map((master) => master._id) } })
-      .select('productMasterId attributeKey').lean(),
+      .select('productMasterId attributeKey value unit').lean(),
     ProductVariantAttributeValue.find({ productVariantId: { $in: variants.map((variant) => variant._id) } })
-      .select('productVariantId attributeKey').lean(),
+      .select('productVariantId attributeKey value unit').lean(),
+    ProductCompliance.find({ productMasterId: { $in: masters.map((master) => master._id) } }).lean(),
+    ProductBundleComponent.find({ bundleMasterId: { $in: masters.map((master) => master._id) } })
+      .select('bundleMasterId').lean(),
   ]);
 
   const masterBySku = new Map(); const masterBySlug = new Map(); const liveMasterByTitle = new Map();
@@ -252,18 +303,25 @@ async function buildPlan(rows, dependencies) {
     if (!variantsByMaster.has(key)) variantsByMaster.set(key, []);
     variantsByMaster.get(key).push(variant);
   }
-  const masterAttributeKeys = new Map();
+  const masterAttributesByKey = new Map();
   for (const attribute of masterAttributes) {
     const key = id(attribute.productMasterId);
-    if (!masterAttributeKeys.has(key)) masterAttributeKeys.set(key, new Set());
-    masterAttributeKeys.get(key).add(attribute.attributeKey);
+    if (!masterAttributesByKey.has(key)) masterAttributesByKey.set(key, new Map());
+    masterAttributesByKey.get(key).set(attribute.attributeKey, attribute);
   }
-  const variantAttributeKeys = new Map();
+  const variantAttributesByKey = new Map();
   for (const attribute of variantAttributes) {
     const key = id(attribute.productVariantId);
-    if (!variantAttributeKeys.has(key)) variantAttributeKeys.set(key, new Set());
-    variantAttributeKeys.get(key).add(attribute.attributeKey);
+    if (!variantAttributesByKey.has(key)) variantAttributesByKey.set(key, new Map());
+    variantAttributesByKey.get(key).set(attribute.attributeKey, attribute);
   }
+  const complianceByMaster = new Map();
+  for (const record of complianceRecords) {
+    const key = id(record.productMasterId);
+    if (!complianceByMaster.has(key)) complianceByMaster.set(key, []);
+    complianceByMaster.get(key).push(record);
+  }
+  const bundleMasterIds = new Set(bundleComponents.map((component) => id(component.bundleMasterId)));
 
   return rows.map((row) => {
     const skuMatch = masterBySku.get(row.payload.skuGlobal);
@@ -302,19 +360,33 @@ async function buildPlan(rows, dependencies) {
       }
     }
 
-    const missingMasterAttributes = row.payload.attributes.filter((attribute) => !masterAttributeKeys.get(id(existing))?.has(attribute.key));
+    const existingMasterAttributes = masterAttributesByKey.get(id(existing));
+    const missingMasterAttributes = row.payload.attributes.filter((attribute) => {
+      const current = existingMasterAttributes?.get(attribute.key);
+      return !current || isLegacyPlaceholder(current.value);
+    });
     const missingVariants = row.payload.variants.filter((variant) => !variantBySku.has(variant.sku));
     const missingVariantAttributes = [];
     for (const variant of row.payload.variants) {
       const existingVariant = variantBySku.get(variant.sku);
       if (!existingVariant) continue;
-      const missing = variant.attributes.filter((attribute) => !variantAttributeKeys.get(id(existingVariant))?.has(attribute.key));
+      const currentAttributes = variantAttributesByKey.get(id(existingVariant));
+      const missing = variant.attributes.filter((attribute) => {
+        const current = currentAttributes?.get(attribute.key);
+        return !current || isLegacyPlaceholder(current.value);
+      });
       if (missing.length) missingVariantAttributes.push({ blueprint: variant, existing: existingVariant, missing });
     }
-    const incomplete = missingMasterAttributes.length || missingVariants.length || missingVariantAttributes.length;
+    const existingCompliance = complianceByMaster.get(id(existing)) || [];
+    const existingComplianceKeys = new Set(existingCompliance
+      .filter((record) => !record.variantId)
+      .map((record) => `${record.type}:${record.code}`));
+    const missingCompliance = row.compliance.filter((record) => !existingComplianceKeys.has(`${record.type}:${record.code}`));
+    const missingBundleComponents = row.bundleComponentCategorySlugs.length > 0 && !bundleMasterIds.has(id(existing));
+    const incomplete = missingMasterAttributes.length || missingVariants.length || missingVariantAttributes.length || missingCompliance.length || missingBundleComponents;
     return {
       action: incomplete ? 'repair' : 'unchanged', row, category, brand, existing,
-      missingMasterAttributes, missingVariants, missingVariantAttributes,
+      missingMasterAttributes, missingVariants, missingVariantAttributes, missingCompliance, missingBundleComponents,
     };
   });
 }
@@ -323,9 +395,12 @@ function printPlan(plan) {
   const count = (action) => plan.filter((item) => item.action === action).length;
   console.log('\nDatabase plan');
   console.log(`  create ${count('create')} · repair ${count('repair')} · unchanged ${count('unchanged')}`);
+  const missingMasterAttributes = plan.reduce((sum, item) => sum + (item.missingMasterAttributes?.length || 0), 0);
   const missingVariants = plan.reduce((sum, item) => sum + (item.missingVariants?.length || 0), 0);
   const missingVariantAttributes = plan.reduce((sum, item) => sum + (item.missingVariantAttributes?.reduce((n, entry) => n + entry.missing.length, 0) || 0), 0);
-  if (count('repair')) console.log(`  repairs: ${missingVariants} variants · ${missingVariantAttributes} variant attributes`);
+  const missingCompliance = plan.reduce((sum, item) => sum + (item.missingCompliance?.length || 0), 0);
+  const missingBundles = plan.filter((item) => item.missingBundleComponents).length;
+  if (count('repair')) console.log(`  repairs: ${missingMasterAttributes} master attributes · ${missingVariants} variants · ${missingVariantAttributes} variant attributes · ${missingCompliance} compliance records · ${missingBundles} bundle structures`);
   for (const item of plan.filter((entry) => entry.action !== 'unchanged')) {
     console.log(`  ${item.action.toUpperCase().padEnd(6)} ${item.row.payload.skuGlobal} · ${item.row.categorySlug} · ${item.row.brandName}`);
   }
@@ -367,17 +442,55 @@ async function createOne(item) {
     return { blueprint, existing };
   });
   await insertVariantAttributes(master._id, pairs);
-  return { master, variants: createdVariants.length };
+  let completedMaster = master;
+  if (item.row.compliance.length) {
+    await catalogStructureService.replaceCompliance({
+      masterId: master._id,
+      records: item.row.compliance,
+      expectedVersion: master.version,
+      actorId: options.actorId,
+    });
+    completedMaster = await ProductMaster.findById(master._id);
+  }
+  return { master: completedMaster, variants: createdVariants.length, compliance: item.row.compliance.length };
+}
+
+function compliancePayload(record) {
+  return {
+    variantId: record.variantId || null,
+    type: record.type,
+    code: record.code,
+    title: record.title,
+    authority: record.authority || null,
+    jurisdiction: {
+      country: record.jurisdiction?.country || 'IN',
+      state: record.jurisdiction?.state || null,
+      regions: record.jurisdiction?.regions || [],
+    },
+    status: record.status || 'draft',
+    validFrom: record.validFrom || null,
+    validUntil: record.validUntil || null,
+    issuerReference: record.issuerReference || null,
+    documents: (record.documents || []).map((document) => ({
+      name: document.name, url: document.url, mimeType: document.mimeType || null, checksum: document.checksum || null,
+    })),
+    restrictions: record.restrictions || [],
+    metadata: record.metadata || {},
+    verifiedBy: record.verifiedBy || null,
+    verifiedAt: record.verifiedAt || null,
+  };
 }
 
 async function repairOne(item) {
   let master = await ProductMaster.findById(item.existing._id);
   if (item.missingMasterAttributes.length) {
     const existingAttributes = await ProductAttributeValue.find({ productMasterId: master._id }).lean();
-    const merged = [
-      ...existingAttributes.map((attribute) => ({ key: attribute.attributeKey, value: attribute.value, unit: attribute.unit || null })),
-      ...item.missingMasterAttributes,
-    ];
+    const mergedByKey = new Map(existingAttributes.map((attribute) => [
+      attribute.attributeKey,
+      { key: attribute.attributeKey, value: attribute.value, unit: attribute.unit || null },
+    ]));
+    for (const attribute of item.missingMasterAttributes) mergedByKey.set(attribute.key, attribute);
+    const merged = [...mergedByKey.values()];
     await productMasterService.setAttributes({
       id: master._id, attributes: merged, expectedVersion: master.version,
       actorId: options.actorId,
@@ -402,10 +515,12 @@ async function repairOne(item) {
 
   for (const entry of item.missingVariantAttributes) {
     const existingRows = await ProductVariantAttributeValue.find({ productVariantId: entry.existing._id }).lean();
-    const merged = [
-      ...existingRows.map((attribute) => ({ key: attribute.attributeKey, value: attribute.value, unit: attribute.unit || null })),
-      ...entry.missing,
-    ];
+    const mergedByKey = new Map(existingRows.map((attribute) => [
+      attribute.attributeKey,
+      { key: attribute.attributeKey, value: attribute.value, unit: attribute.unit || null },
+    ]));
+    for (const attribute of entry.missing) mergedByKey.set(attribute.key, attribute);
+    const merged = [...mergedByKey.values()];
     // Ordered service writes preserve auditing and optimistic-lock semantics.
     // eslint-disable-next-line no-await-in-loop
     await catalogStructureService.setVariantAttributes({
@@ -416,11 +531,80 @@ async function repairOne(item) {
     // eslint-disable-next-line no-await-in-loop
     master = await ProductMaster.findById(master._id);
   }
-  return { master, variants: item.missingVariants.length };
+
+  if (item.missingCompliance.length) {
+    const existingCompliance = await ProductCompliance.find({ productMasterId: master._id }).lean();
+    const merged = [
+      ...existingCompliance.map(compliancePayload),
+      ...item.missingCompliance,
+    ];
+    await catalogStructureService.replaceCompliance({
+      masterId: master._id,
+      records: merged,
+      expectedVersion: master.version,
+      actorId: options.actorId,
+    });
+    master = await ProductMaster.findById(master._id);
+  }
+  return { master, variants: item.missingVariants.length, compliance: item.missingCompliance.length };
 }
 
-async function applyPlan(plan) {
-  const result = { created: 0, repaired: 0, unchanged: 0, variantsCreated: 0, failures: [] };
+async function ensureBundleComponents(rows, result) {
+  const masterRows = await ProductMaster.find({ skuGlobal: { $in: rows.map((row) => row.payload.skuGlobal) } })
+    .select('_id skuGlobal version defaultSellingUnit').lean();
+  const masterBySku = new Map(masterRows.map((master) => [master.skuGlobal, master]));
+  const blueprintsByCategory = new Map();
+  for (const row of rows) {
+    if (!blueprintsByCategory.has(row.categorySlug)) blueprintsByCategory.set(row.categorySlug, []);
+    blueprintsByCategory.get(row.categorySlug).push(row);
+  }
+
+  for (const row of rows.filter((candidate) => candidate.bundleComponentCategorySlugs.length)) {
+    const bundle = masterBySku.get(row.payload.skuGlobal);
+    if (!bundle) continue;
+    // Each replacement is an audited optimistic-version transaction and must remain sequential.
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await ProductBundleComponent.find({ bundleMasterId: bundle._id }).lean();
+    if (existing.length) continue; // Any operator-authored composition wins; never replace it silently.
+    try {
+      const components = row.bundleComponentCategorySlugs.map((categorySlug, index) => {
+        const candidates = blueprintsByCategory.get(categorySlug) || [];
+        const targetBlueprint = candidates.find((candidate) => candidate.brandName === row.brandName) || candidates[0];
+        const target = targetBlueprint && masterBySku.get(targetBlueprint.payload.skuGlobal);
+        if (!target) fail(`${row.reference}: component target for ${categorySlug} was not created`);
+        return {
+          componentMasterId: target._id,
+          componentVariantId: null,
+          quantity: 1,
+          unitCode: target.defaultSellingUnit,
+          selectionGroup: categorySlug.replace(/-/g, '_'),
+          required: true,
+          defaultSelected: true,
+          minSelections: 1,
+          maxSelections: 1,
+          priceAdjustment: 0,
+          sortOrder: index,
+          status: 'active',
+        };
+      });
+      // Bundle writes are sequential so optimistic versions and audit events remain deterministic.
+      // eslint-disable-next-line no-await-in-loop
+      await catalogStructureService.replaceBundleComponents({
+        masterId: bundle._id,
+        components,
+        expectedVersion: bundle.version,
+        actorId: options.actorId,
+      });
+      result.bundleComponentsCreated += components.length;
+    } catch (error) {
+      result.failures.push({ sku: row.payload.skuGlobal, error: `bundle components: ${error.message}` });
+      if (!options.continueOnError) throw error;
+    }
+  }
+}
+
+async function applyPlan(plan, rows) {
+  const result = { created: 0, repaired: 0, unchanged: 0, variantsCreated: 0, complianceCreated: 0, bundleComponentsCreated: 0, failures: [] };
   for (const item of plan) {
     try {
       if (item.action === 'unchanged') { result.unchanged += 1; continue; }
@@ -431,11 +615,13 @@ async function applyPlan(plan) {
       if (item.action === 'create') result.created += 1;
       else result.repaired += 1;
       result.variantsCreated += outcome.variants;
+      result.complianceCreated += outcome.compliance || 0;
     } catch (error) {
       result.failures.push({ sku: item.row.payload.skuGlobal, error: error.message });
       if (!options.continueOnError) throw error;
     }
   }
+  await ensureBundleComponents(rows, result);
   return result;
 }
 
@@ -458,9 +644,10 @@ async function main() {
     return;
   }
 
-  const result = await applyPlan(plan);
+  const result = await applyPlan(plan, rows);
   console.log(`\n✓ Product registry applied: ${result.created} created · ${result.repaired} repaired · ${result.unchanged} unchanged.`);
-  console.log(`  ${result.variantsCreated} variants created during this run · master media 0 · variant media 0 · status ${options.status}`);
+  console.log(`  ${result.variantsCreated} variants · ${result.complianceCreated} pending compliance records · ${result.bundleComponentsCreated} bundle components created during this run`);
+  console.log(`  master media 0 · variant media 0 · status ${options.status}`);
   if (result.failures.length) {
     console.error(`\n${result.failures.length} product master(s) failed and can be retried safely:`);
     for (const failure of result.failures) console.error(`  ${failure.sku}: ${failure.error}`);

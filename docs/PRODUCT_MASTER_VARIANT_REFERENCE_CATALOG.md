@@ -18,6 +18,10 @@
 6. Resolve every `VERIFY` or `<REPLACE…>` marker. Do not activate a commercial listing from reference data alone.
 7. Product masters describe identity only. Add tenant price, stock, tax, channels, lead time, and listing status separately.
 
+### Database-seed enrichment
+
+The production seed enriches these same 409 master identities and 1,227 variants with the complete governed schema: **3,340 master-level attributes**, **2,226 variant-level attributes**, **1,403 category compliance records**, and **28 deterministic bundle component relationships**. Compliance records remain `pending` with no evidence documents until an authorized operator supplies and verifies real regulatory evidence. Product-master and variant media remain empty.
+
 ### Data-entry conventions
 
 - SKUs and slugs are deterministic and unique within this reference document; verify they do not collide with production records.
