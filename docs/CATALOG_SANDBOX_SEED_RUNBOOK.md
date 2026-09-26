@@ -80,15 +80,19 @@ The default audited actor is the required active super-admin:
 6a97b0e9a61173c01d040435
 ```
 
-Configure the intended MongoDB target securely, then run plans before any apply:
+Configure the intended MongoDB target securely, verify/apply database migrations, then run plans before any apply:
 
 ```bash
 # backend/.env (example shape only; use your actual secured connection)
 MONGODB_URI=mongodb://your-host/your-database
 
+npm run db:migrate:status
+npm run db:migrate
 npm run catalog:sandbox:taxonomy:plan
 npm run catalog:sandbox:products:plan
 ```
+
+Migration `004_universal_product_model.js` is mandatory for multi-option variants: it makes `combinationKey`, rather than the legacy `variantType/value` projection, the unique identity. Product seeds inspect the live MongoDB index and fail before writes if the obsolete index remains unique.
 
 The product plan must run after the taxonomy exists. On a new target, therefore apply the taxonomy before requesting the product plan.
 

@@ -11,6 +11,7 @@ import ProductBundleComponent from '../src/models/productBundleComponent.model.j
 import ProductCompliance from '../src/models/productCompliance.model.js';
 import { normalizeUnitPolicy, convertQuantity, assertQuantity } from '../src/utils/catalog/unitConversion.js';
 import { normalizeOptionRules, evaluateOptionCombination } from '../src/utils/catalog/optionDependencies.js';
+import { assertUniversalVariantIndexContract } from '../src/utils/catalog/indexContracts.js';
 
 const options = normalizeOptionDefinitions([
   { name: 'Color', values: ['Red', 'Blue'] },
@@ -94,5 +95,23 @@ const compliance = new ProductCompliance({
   productMasterId: '507f1f77bcf86cd799439011', type: 'certificate', code: 'BIS-123', title: 'BIS conformity', status: 'verified', issuerReference: 'BIS/2026/123',
 });
 assert.equal(compliance.validateSync(), undefined);
+
+const connectionWithIndexes = (indexes) => ({ collection: () => ({ indexes: async () => indexes }) });
+await assertUniversalVariantIndexContract(connectionWithIndexes([{
+  name: 'productMasterId_1_variantType_1_value_1',
+  key: { productMasterId: 1, variantType: 1, value: 1 },
+  unique: false,
+}]));
+await assert.rejects(
+  assertUniversalVariantIndexContract(connectionWithIndexes([{
+    name: 'productMasterId_1_variantType_1_value_1',
+    key: { productMasterId: 1, variantType: 1, value: 1 },
+    unique: true,
+  }])),
+  /Database schema is stale.*npm run db:migrate/s,
+);
+await assertUniversalVariantIndexContract({
+  collection: () => ({ indexes: async () => { const error = new Error('namespace missing'); error.code = 26; throw error; } }),
+});
 
 console.log('UNIVERSAL PRODUCT STRUCTURE: all invariants passed ✔'); // eslint-disable-line no-console

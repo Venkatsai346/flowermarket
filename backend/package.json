@@ -11,6 +11,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed": "node scripts/seed-default-tenant.js",
+    "db:migrate:status": "node src/migrations/migrate.js --status",
+    "db:migrate": "node src/migrations/migrate.js",
     "catalog:taxonomy:sync": "node scripts/sync-catalog-playbooks.js",
     "catalog:taxonomy:sync:check": "node scripts/sync-catalog-playbooks.js --check",
     "catalog:taxonomy:validate": "node scripts/seed-catalog-taxonomy.js --validate-only",

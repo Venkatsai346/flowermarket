@@ -25,6 +25,7 @@ import ProductBundleComponent from '../src/models/productBundleComponent.model.j
 import productMasterService from '../src/services/productMaster.service.js';
 import catalogStructureService from '../src/services/catalogStructure.service.js';
 import categoryService from '../src/services/category.service.js';
+import { assertUniversalVariantIndexContract } from '../src/utils/catalog/indexContracts.js';
 import { masterCreateSchema } from '../src/utils/validators/catalog.validators.js';
 import {
   buildCatalogProductMasterBlueprints,
@@ -634,6 +635,7 @@ async function main() {
   }
 
   await connectDb();
+  await assertUniversalVariantIndexContract(mongoose.connection);
   const dependencies = await loadDependencies(rows);
   const plan = await buildPlan(rows, dependencies);
   printPlan(plan);

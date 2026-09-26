@@ -17,6 +17,7 @@ import ProductVariantAttributeValue from '../src/models/productVariantAttributeV
 import ProductBundleComponent from '../src/models/productBundleComponent.model.js';
 import productMasterService from '../src/services/productMaster.service.js';
 import catalogStructureService from '../src/services/catalogStructure.service.js';
+import { assertUniversalVariantIndexContract } from '../src/utils/catalog/indexContracts.js';
 import { masterCreateSchema } from '../src/utils/validators/catalog.validators.js';
 import { CATEGORY_PLAYBOOKS } from '../src/data/catalogCategoryPlaybooks.js';
 import { CATEGORY_BRAND_ASSIGNMENTS } from '../src/data/catalogBrandBlueprints.js';
@@ -422,6 +423,7 @@ async function main() {
   await connectDb();
   if (!mongoose.connection.name) fail('MongoDB connected without a resolved database name');
   console.log(`\nDatabase target: ${mongoose.connection.name}`);
+  await assertUniversalVariantIndexContract(mongoose.connection);
   const dependencies = await loadDependencies(metrics.rows);
   const plan = await buildPlan(metrics.rows, dependencies);
   printPlan(plan);
