@@ -25,7 +25,9 @@ class CatalogTenantController {
   /**
    * Read-only discovery of ACTIVE global masters for listing creation.
    * Tenant admins cannot call /catalog/admin/masters (correctly SUPER_ADMIN
-   * only), so the console needs this tenant-authorized, publish-gated view.
+   * only), so the console needs this tenant-authorized registry search. A
+   * compliance-pending master may be staged as a draft; activation remains
+   * guarded by catalogStructureService.assertPublishable().
    */
   listAvailableMasters = asyncHandler(async (req, res) => {
     const result = await productMasterService.listMasters({

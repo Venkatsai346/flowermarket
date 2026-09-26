@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Boxes, CheckCircle2, Download, Eye, Layers, PackagePlus, Pencil, RefreshCw, Settings2, Trash2, Warehouse } from 'lucide-react';
+import { Boxes, CheckCircle2, Download, Eye, Layers, PackagePlus, Pencil, Power, RefreshCw, Settings2, ShieldAlert, Trash2, Warehouse } from 'lucide-react';
 import { inr, pickMeta, useAuthStore } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
@@ -18,7 +18,16 @@ import Pagination from '../../components/ui/Pagination.jsx';
 import Stat from '../../components/ui/Stat.jsx';
 import Table from '../../components/ui/Table.jsx';
 import { LISTING_STATUS_META, LISTING_STATUS_OPTIONS } from './catalogMeta.js';
+import { ProductMasterPicker } from './CatalogPickers.jsx';
 import { Guidance, RecoveryNotice, SectionIntro, SubmissionError } from './CatalogFormUX.jsx';
+
+const listingErrorMessage = (error) => {
+  const issues = error?.details?.issues;
+  if (Array.isArray(issues) && issues.length) {
+    return `${errMsg(error)}: ${issues.map((issue) => issue.message || issue.code).filter(Boolean).join(' ')}`;
+  }
+  return errMsg(error);
+};
 
 const blank = () => ({
   productMasterId: '',
@@ -58,9 +67,12 @@ function CreateListingModal({ masters, onClose, onSaved }) {
   const [variantOptions, setVariantOptions] = useState(null);
   const [error, setError] = useState('');
   const previousMasterId = useRef('');
+  const [selectedMasterRemote, setSelectedMasterRemote] = useState(null);
   const actorId = useAuthStore((state) => state.user?.id || state.user?._id || 'anonymous');
   const draft = useRecoverableDraft({ key: `${actorId}:tenant-listing:new`, value: { form, variantId }, initialValue: { form: blank(), variantId: '' } });
-  const selectedMaster = (masters || []).find((master) => rid(master) === form.productMasterId);
+  const selectedMaster = selectedMasterRemote && rid(selectedMasterRemote) === form.productMasterId
+    ? selectedMasterRemote
+    : (masters || []).find((master) => rid(master) === form.productMasterId);
   const allowedUnits = selectedMaster?.unitPolicy?.units || [];
   const hasPrices = form.mrp !== '' && form.sellingPrice !== '' && Number(form.sellingPrice) > 0;
   const validBasis = Number(form.priceBasisQuantity) > 0 && (!allowedUnits.length || allowedUnits.some((unit) => unit.code === form.priceBasisUnit));
@@ -77,7 +89,14 @@ function CreateListingModal({ masters, onClose, onSaved }) {
     setForm((current) => ({ ...current, priceBasisUnit: master?.unitPolicy?.baseUnit || master?.defaultSellingUnit || 'piece' }));
     let live = true;
     api.catalogTenant.masterVariants(form.productMasterId)
-      .then((r) => { if (live) setVariantOptions((r.data?.variants || []).filter((v) => v.variant)); })
+      .then((r) => {
+        if (!live) return;
+        setVariantOptions((r.data?.variants || []).filter((v) => v.variant));
+        if (r.data?.master) {
+          setSelectedMasterRemote(r.data.master);
+          setForm((current) => ({ ...current, priceBasisUnit: r.data.master.unitPolicy?.baseUnit || r.data.master.defaultSellingUnit || current.priceBasisUnit }));
+        }
+      })
       .catch(() => { if (live) setVariantOptions([]); });
     return () => { live = false; };
   }, [form.productMasterId]);
@@ -166,15 +185,19 @@ function CreateListingModal({ masters, onClose, onSaved }) {
       }
     >
       <form onSubmit={submit} className="space-y-6">
-        <RecoveryNotice draft={draft.recovered} onRestore={() => { const recovered = draft.recover(); if (recovered) { previousMasterId.current = recovered.form?.productMasterId || ''; setForm(recovered.form || blank()); setVariantId(recovered.variantId || ''); toast.success('Unfinished listing restored'); } }} onDiscard={draft.discard} />
+        <RecoveryNotice draft={draft.recovered} onRestore={() => { const recovered = draft.recover(); if (recovered) { previousMasterId.current = recovered.form?.productMasterId || ''; setSelectedMasterRemote(null); setForm(recovered.form || blank()); setVariantId(recovered.variantId || ''); toast.success('Unfinished listing restored'); } }} onDiscard={draft.discard} />
         <SubmissionError message={error} />
         <section>
           <SectionIntro eyebrow="Step 1" title="Choose what this store sells" description="A listing never duplicates product truth. It references one active master—or one exact variant—and owns only seller price, stock, merchandising and channel policy." icon={PackagePlus} />
-        <Field label="Product master" required hint="Only active, publishable masters appear here. Compliance requirements are checked again if you activate the offer.">
-          <Select value={form.productMasterId} onChange={(e) => set('productMasterId', e.target.value)}>
-            <option value="">Select master…</option>
-            {(masters || []).map((m) => <option key={rid(m)} value={rid(m)}>{m.title} · {m.skuGlobal}</option>)}
-          </Select>
+        <Field label="Product master" required hint="Search the complete active registry by title or global SKU. Compliance-pending products can be staged as drafts but cannot go live.">
+          <ProductMasterPicker
+            masters={masters}
+            value={form.productMasterId}
+            selectedMaster={selectedMaster}
+            onSelect={setSelectedMasterRemote}
+            onChange={(value) => set('productMasterId', value)}
+            required
+          />
         </Field>
         {variantOptions && variantOptions.length > 0 && (
           <Field label="Variant" hint="List one specific variant, or the master itself. For several at once use “List variants”.">
@@ -269,6 +292,7 @@ function CreateListingModal({ masters, onClose, onSaved }) {
 function ListVariantsModal({ masters, onClose, onSaved }) {
   const { busy, run } = useAction();
   const [masterId, setMasterId] = useState('');
+  const [selectedMaster, setSelectedMaster] = useState(null);
   const [grid, setGrid] = useState(null);
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState({}); // variantKey -> { mrp, sellingPrice, stockQty }
@@ -287,7 +311,7 @@ function ListVariantsModal({ masters, onClose, onSaved }) {
     let live = true;
     setLoading(true);
     api.catalogTenant.masterVariants(masterId)
-      .then((r) => { if (live) setGrid(r.data); })
+      .then((r) => { if (live) { setGrid(r.data); if (r.data?.master) { setSelectedMaster(r.data.master); if (r.data.master.complianceStatus === 'pending') setStatus('draft'); } } })
       .catch((e) => { if (live) setError(errMsg(e)); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
@@ -367,15 +391,23 @@ function ListVariantsModal({ masters, onClose, onSaved }) {
       }
     >
       <div className="space-y-4">
-        <RecoveryNotice draft={draft.recovered} onRestore={() => { const recovered = draft.recover(); if (recovered) { restoringDraft.current = true; setMasterId(recovered.masterId || ''); setSel(recovered.sel || {}); setStatus(recovered.status || 'active'); setDefaults(recovered.defaults || { mrp: '', sellingPrice: '', stockQty: 0 }); toast.success('Unfinished variant listing restored'); } }} onDiscard={draft.discard} />
+        <RecoveryNotice draft={draft.recovered} onRestore={() => { const recovered = draft.recover(); if (recovered) { restoringDraft.current = true; setSelectedMaster(null); setMasterId(recovered.masterId || ''); setSel(recovered.sel || {}); setStatus(recovered.status || 'active'); setDefaults(recovered.defaults || { mrp: '', sellingPrice: '', stockQty: 0 }); toast.success('Unfinished variant listing restored'); } }} onDiscard={draft.discard} />
         <SubmissionError message={error} />
 
-        <Field label="Product master" required>
-          <Select value={masterId} onChange={(e) => setMasterId(e.target.value)}>
-            <option value="">Select master…</option>
-            {(masters || []).map((m) => <option key={rid(m)} value={rid(m)}>{m.title} · {m.skuGlobal}</option>)}
-          </Select>
+        <Field label="Product master" required hint="Search every active master—not only the first page loaded into this workspace.">
+          <ProductMasterPicker
+            masters={masters}
+            value={masterId}
+            selectedMaster={selectedMaster}
+            onSelect={setSelectedMaster}
+            onChange={setMasterId}
+            required
+          />
         </Field>
+
+        {selectedMaster?.complianceStatus === 'pending' && (
+          <Guidance title="Compliance verification is still pending" tone="amber">You can prepare these variant offers as drafts now. Activation remains blocked until an authorized catalog operator verifies every required compliance record with real evidence.</Guidance>
+        )}
 
         {masterId && (
           <div className="flex flex-wrap items-end gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
@@ -472,6 +504,7 @@ function ListingModal({ row, onClose, onSaved }) {
     leadTimeDays: row.sellingPolicy?.leadTimeDays ?? 0,
   });
   const [currentVersion, setCurrentVersion] = useState(row.version || 1);
+  const [currentStatus, setCurrentStatus] = useState(row.status || 'draft');
   const [stockQty, setStockQty] = useState('0');
   const [stockData, setStockData] = useState(null);
   const [loadingStock, setLoadingStock] = useState(true);
@@ -479,8 +512,9 @@ function ListingModal({ row, onClose, onSaved }) {
   const [pane, setPane] = useState('commercial');
   const listingId = row.id || row._id;
   const version = currentVersion;
-  const status = row.status || 'draft';
-  const fail = (err) => { const message = errMsg(err); setServerError(message); toast.error(message); };
+  const status = currentStatus;
+  const storefrontBlocked = status === 'active' && row.master?.complianceStatus === 'pending';
+  const fail = (err) => { const message = listingErrorMessage(err); setServerError(message); toast.error(message); };
 
   const onChanged = () => { loadStock(); onSaved?.(); };
 
@@ -576,7 +610,8 @@ function ListingModal({ row, onClose, onSaved }) {
     try {
       const response = await run(() => api.catalogTenant.updateStatus(listingId, { status: next, expectedVersion: version }));
       setCurrentVersion(response.data?.version || version + 1);
-      toast.success(`Listing ${next}`);
+      setCurrentStatus(response.data?.status || next);
+      toast.success(next === 'active' ? 'Listing is live on enabled sales channels' : `Listing ${next}`);
       onChanged();
     } catch (err) {
       fail(err);
@@ -587,6 +622,7 @@ function ListingModal({ row, onClose, onSaved }) {
     try {
       const response = await run(() => api.catalogTenant.deactivateListing(listingId, { expectedVersion: version }));
       setCurrentVersion(response.data?.version || version + 1);
+      setCurrentStatus(response.data?.status || 'inactive');
       toast.success('Listing deactivated');
       onChanged();
     } catch (err) {
@@ -607,14 +643,32 @@ function ListingModal({ row, onClose, onSaved }) {
           <p className="text-xs text-slate-400">Backend enforces status transitions and version conflicts.</p>
           <div className="flex gap-2">
             <Button variant="secondary" onClick={onClose}>Close</Button>
-            {status !== 'inactive'
-              ? <Button variant="danger" onClick={deactivate}>Deactivate</Button>
-              : <Button variant="success" onClick={() => setStatus('active')}>Activate</Button>}
+            {status === 'active'
+              ? <Button variant="danger" icon={Power} loading={busy} onClick={deactivate}>Take offline</Button>
+              : <Button variant="success" icon={Power} loading={busy} onClick={() => setStatus('active')}>Activate listing</Button>}
           </div>
         </div>
       }
     >
       <SubmissionError message={serverError} />
+
+      <div className={`mb-5 overflow-hidden rounded-2xl border ${storefrontBlocked ? 'border-amber-200 bg-amber-50/70' : status === 'active' ? 'border-emerald-200 bg-emerald-50/70' : 'border-slate-200 bg-slate-50'}`}>
+        <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${storefrontBlocked ? 'bg-amber-100 text-amber-700' : status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-white text-slate-500 shadow-sm ring-1 ring-slate-200'}`}>{storefrontBlocked ? <ShieldAlert className="h-5 w-5" /> : <Power className="h-5 w-5" />}</span>
+            <div>
+              <p className="text-sm font-bold text-slate-900">{storefrontBlocked ? 'Active status, but storefront publication is blocked' : status === 'active' ? 'Live listing' : status === 'draft' ? 'Draft—not visible to customers' : 'Listing is offline'}</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">{storefrontBlocked ? 'This legacy or previously activated row is intentionally excluded from catalog search until its master becomes compliant.' : status === 'active' ? 'Customers can discover this offer on each enabled channel. Re-indexing improves search freshness; it does not control publication.' : 'Activation is the publication control. The server checks master approval, compliance evidence, price, entitlement and version before going live.'}</p>
+            </div>
+          </div>
+          {status === 'active'
+            ? <Button variant="danger" size="sm" icon={Power} loading={busy} onClick={deactivate}>Take offline</Button>
+            : <Button variant="success" size="sm" icon={Power} loading={busy} onClick={() => setStatus('active')}>Run checks & activate</Button>}
+        </div>
+        {row.master?.complianceStatus === 'pending' && (
+          <div className="flex items-start gap-2 border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800"><ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" /><span><strong>Activation blocker:</strong> this master has required compliance awaiting authoritative evidence. Complete verification in Product Master → Compliance; re-indexing cannot bypass this safety gate.</span></div>
+        )}
+      </div>
 
       <div className="mb-5 flex flex-wrap gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1.5">
         {[
@@ -700,7 +754,7 @@ function ListingModal({ row, onClose, onSaved }) {
           <div className="grid gap-3 sm:grid-cols-2">
             {[
               ['Master status', row.master?.status === 'active', row.master?.status || 'unknown'],
-              ['Compliance', !row.master?.complianceStatus || ['compliant', 'not_required'].includes(row.master.complianceStatus), row.master?.complianceStatus || 'checked on activation'],
+              ['Compliance', ['compliant', 'not_required'].includes(row.master?.complianceStatus), row.master?.complianceStatus || 'unknown—checked on activation'],
               ['Valid selling price', Number(priceForm.sellingPrice) > 0, inr(Number(priceForm.sellingPrice) || 0)],
               ['Quantity identity', Number(offerForm.priceBasisQuantity) > 0 && Boolean(offerForm.priceBasisUnit), `${offerForm.priceBasisQuantity} ${offerForm.priceBasisUnit}`],
               ['Storefront channel', offerForm.storefront, offerForm.storefront ? 'enabled' : 'hidden'],
@@ -727,6 +781,7 @@ export default function ListingPanel() {
   const [create, setCreate] = useState(false);
   const [wizard, setWizard] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [statusBusyId, setStatusBusyId] = useState(null);
   const { busy: exporting, run: download } = useDownload();
 
   const { data, meta, loading, error, refetch } = useApi(
@@ -742,9 +797,26 @@ export default function ListingPanel() {
   const masters = useApi(() => api.catalogTenant.availableMasters({ limit: 100 }), []);
 
   const refresh = () => setRefreshKey((k) => k + 1);
+  const changeStatus = async (listing, next) => {
+    const listingId = rid(listing);
+    setStatusBusyId(listingId);
+    try {
+      await api.catalogTenant.updateStatus(listingId, { status: next, expectedVersion: listing.version || 1 });
+      toast.success(next === 'active' ? 'Listing activated and queued for search refresh' : 'Listing taken offline');
+      refresh();
+    } catch (err) {
+      toast.error(listingErrorMessage(err));
+      if (next === 'active') setSelected(listing);
+    } finally {
+      setStatusBusyId(null);
+    }
+  };
   const rows = data || [];
-  const counts = { draft: 0, active: 0, inactive: 0, out_of_stock: 0 };
-  rows.forEach((r) => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  const counts = { draft: 0, active: 0, inactive: 0, out_of_stock: 0, blocked: 0 };
+  rows.forEach((r) => {
+    counts[r.status] = (counts[r.status] || 0) + 1;
+    if (r.status === 'active' && r.master?.complianceStatus === 'pending') counts.blocked += 1;
+  });
 
   const saveTemplate = () => download(
     () => api.catalogTenant.bulkTemplate('price'),
@@ -753,8 +825,9 @@ export default function ListingPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="Active" value={counts.active ?? 0} sub="on this page" icon={Boxes} tone="emerald" />
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <Stat label="Active" value={counts.active ?? 0} sub="status on this page" icon={Boxes} tone="emerald" />
+        <Stat label="Blocked" value={counts.blocked ?? 0} sub="active but not publishable" icon={ShieldAlert} tone="amber" />
         <Stat label="Draft" value={counts.draft ?? 0} sub="not yet sellable" icon={Boxes} tone="slate" />
         <Stat label="Inactive" value={counts.inactive ?? 0} sub="paused / deactivated" icon={Boxes} tone="rose" />
         <Stat label="Out of stock" value={counts.out_of_stock ?? 0} sub="snapshot zeroed" icon={Boxes} tone="amber" />
@@ -811,13 +884,20 @@ export default function ListingPanel() {
               ) },
               { key: 'price', header: 'Selling', align: 'right', render: (r) => <span className="text-sm">{inr(r.price?.sellingPrice)}</span> },
               { key: 'stock', header: 'Stock', align: 'right', render: (r) => <span className="text-xs text-slate-600">{r.stockQty ?? 0}</span> },
-              { key: 'status', header: 'Status', render: (r) => <Badge tone={pickMeta(LISTING_STATUS_META, r.status).tone} dot>{pickMeta(LISTING_STATUS_META, r.status).label}</Badge> },
+              { key: 'status', header: 'Status', render: (r) => (
+                <div className="flex flex-wrap gap-1">
+                  <Badge tone={pickMeta(LISTING_STATUS_META, r.status).tone} dot>{pickMeta(LISTING_STATUS_META, r.status).label}</Badge>
+                  {r.status === 'active' && r.master?.complianceStatus === 'pending' && <Badge tone="amber">Storefront blocked</Badge>}
+                </div>
+              ) },
               { key: 'version', header: 'v', align: 'right', render: (r) => <span className="text-xs text-slate-400">{r.version ?? 1}</span> },
               { key: 'actions', header: '', align: 'right', render: (r) => (
                 <div className="flex justify-end gap-1.5">
                   <Button variant="ghost" size="sm" icon={Pencil} onClick={(e) => { e.stopPropagation(); setSelected(r); }}>Manage</Button>
-                  {r.status === 'active' && (
-                    <Button variant="ghost" size="sm" icon={Trash2} onClick={(e) => { e.stopPropagation(); (async () => { try { await api.catalogTenant.deactivateListing(r.id, { expectedVersion: r.version || 1 }); toast.success('Listing deactivated'); refresh(); } catch (err) { toast.error(errMsg(err)); } })(); }}>Deactivate</Button>
+                  {r.status === 'active' ? (
+                    <Button variant="ghost" size="sm" icon={Trash2} loading={statusBusyId === rid(r)} onClick={(e) => { e.stopPropagation(); changeStatus(r, 'inactive'); }}>Take offline</Button>
+                  ) : (
+                    <Button variant="success" size="sm" icon={Power} loading={statusBusyId === rid(r)} onClick={(e) => { e.stopPropagation(); changeStatus(r, 'active'); }}>Activate</Button>
                   )}
                 </div>
               ) },

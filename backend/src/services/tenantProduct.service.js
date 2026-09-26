@@ -256,7 +256,8 @@ class TenantProductService {
       master: {
         id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal,
         type: master.type, kind: master.kind, options: master.options || [],
-        status: master.status, defaultSellingUnit: master.defaultSellingUnit,
+        status: master.status, complianceStatus: master.complianceStatus,
+        defaultSellingUnit: master.defaultSellingUnit, unitPolicy: master.unitPolicy,
         images: sortGallery(groupImagesByVariant(images).master).map((g) => ({
           id: g._id, url: g.url, altText: g.altText, isPrimary: g.isPrimary,
         })),
@@ -434,7 +435,17 @@ class TenantProductService {
 
     if (query.search) {
       const rx = literalRegex(query.search); // escaped — raw input must never reach new RegExp
-      pipeline.push({ $match: { $or: [{ 'master.title': rx }, { 'master.searchText': rx }] } });
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'master.title': rx },
+            { 'master.searchText': rx },
+            { 'master.skuGlobal': rx },
+            { 'variant.sku': rx },
+            { sellerSku: rx },
+          ],
+        },
+      });
     }
     if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': query.categoryId } });
     if (query.brandId) pipeline.push({ $match: { 'master.brandId': query.brandId } });
@@ -463,7 +474,7 @@ class TenantProductService {
                 skuGlobal: '$master.skuGlobal', type: '$master.type', kind: '$master.kind', unitPolicy: '$master.unitPolicy',
                 categoryId: '$master.categoryId', brandId: '$master.brandId',
                 isPerishable: '$master.isPerishable', defaultSellingUnit: '$master.defaultSellingUnit',
-                status: '$master.status',
+                status: '$master.status', complianceStatus: '$master.complianceStatus',
               },
               variant: {
                 $cond: [

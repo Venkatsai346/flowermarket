@@ -265,3 +265,82 @@ export function BrandPicker({
     }}
   />;
 }
+
+/**
+ * Tenant-safe global master discovery. The initial page keeps the picker
+ * instant; debounced server search spans the complete registry instead of the
+ * first 100 rows. Selection returns the full master so listing forms can apply
+ * its unit and compliance policy without another admin-only request.
+ */
+export function ProductMasterPicker({
+  masters = [], value, onChange, onSelect, selectedMaster = null,
+  required = false, disabled = false, placeholder = 'Search title or global SKU',
+}) {
+  const [query, setQuery] = useState('');
+  const [active, setActive] = useState(0);
+  const [remote, setRemote] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [searchError, setSearchError] = useState(false);
+  const [selectedLocal, setSelectedLocal] = useState(null);
+
+  useEffect(() => {
+    const needle = query.trim();
+    if (!needle) { setRemote(null); setHasMore(false); setSearchError(false); setLoading(false); return undefined; }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      setLoading(true); setSearchError(false);
+      try {
+        const response = await api.catalogTenant.availableMasters({ search: needle, limit: 50, page: 1, sortBy: 'title', sortOrder: 'asc' });
+        if (alive) { setRemote(response.data || []); setHasMore(Boolean(response.meta?.hasMore)); }
+      } catch {
+        if (alive) { setRemote([]); setHasMore(false); setSearchError(true); }
+      } finally {
+        if (alive) setLoading(false);
+      }
+    }, 220);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [query]);
+
+  const source = remote || masters;
+  const normalized = query.trim().toLowerCase();
+  const visible = remote || source.filter((master) => `${master.title || ''} ${master.skuGlobal || ''} ${master.searchText || ''}`.toLowerCase().includes(normalized));
+  const options = visible.map((master) => ({ ...master, id: catalogId(master) }));
+  const selected = selectedLocal && catalogId(selectedLocal) === value ? selectedLocal
+    : (selectedMaster && catalogId(selectedMaster) === value ? selectedMaster : null)
+    || masters.find((master) => catalogId(master) === value)
+    || remote?.find((master) => catalogId(master) === value)
+    || null;
+
+  return <PickerShell
+    label="Product master"
+    placeholder={placeholder}
+    value={value}
+    selectedLabel={selected?.title}
+    selectedMeta={selected ? `${selected.skuGlobal || 'No SKU'} · ${selected.complianceStatus === 'pending' ? 'compliance pending' : selected.complianceStatus || 'compliance not required'}` : ''}
+    icon={Package}
+    query={query}
+    setQuery={setQuery}
+    options={options}
+    active={active}
+    setActive={setActive}
+    onChoose={(item) => { setSelectedLocal(item); onSelect?.(item); onChange(item.id); }}
+    onClear={!required ? () => { setSelectedLocal(null); onSelect?.(null); onChange(''); } : undefined}
+    loading={loading}
+    disabled={disabled}
+    required={required}
+    emptyText={searchError ? 'Product registry search is unavailable' : 'No active product master found'}
+    emptyHint={searchError ? 'Your current selection is safe. Check the connection and type again.' : 'Search by title, global SKU, model, category terms or product keywords.'}
+    noResults={Boolean(normalized) && visible.length === 0}
+    resultHint={searchError ? 'Search could not reach the tenant catalog endpoint.' : hasMore ? 'More matches exist — keep typing to narrow the registry.' : normalized ? 'Searching the complete active product registry.' : `${masters.length} recently loaded · type to search every active master`}
+    renderOption={(item, state) => {
+      const publishable = ['compliant', 'not_required'].includes(item.complianceStatus);
+      const blocked = !publishable;
+      return <button type="button" onClick={state.choose} onMouseEnter={() => setActive(options.indexOf(item))} className={cn('flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition', state.active ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-700 hover:bg-slate-100')}>
+        <span className={cn('grid h-8 w-8 shrink-0 place-items-center rounded-lg', blocked ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-600', state.active && 'bg-white/10 text-white')}><Package className="h-4 w-4" /></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-semibold">{item.title}</span><span className={cn('block truncate font-mono text-[10px]', state.active ? 'text-white/60' : 'text-slate-400')}>{item.skuGlobal || 'No global SKU'} · {item.complianceStatus === 'pending' ? 'draft only until compliance is verified' : publishable ? 'publishable master' : 'activation policy will be checked'}</span></span>
+        {state.selected && <Check className="h-4 w-4 shrink-0 text-emerald-400" />}
+      </button>;
+    }}
+  />;
+}

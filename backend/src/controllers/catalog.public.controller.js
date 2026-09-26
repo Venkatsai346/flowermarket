@@ -56,12 +56,14 @@ class CatalogPublicController {
         // The index must never shadow a live catalogue. The ranked path
         // cannot tell "no products exist" from "the index has not caught
         // up" — an EMPTY index (fresh store, pre-first-drain) or a PARTIAL
-        // one (an event handler failed mid-drain) both serve fewer listings
-        // than actually exist. Probe the legacy scan with the same query:
-        // if the live catalogue is larger than the index, serve it instead.
-        const legacyProbe = await catalogSearchService.search({ tenantId: req.tenantId, query });
-        if (legacyProbe.meta.total > (ranked.meta?.total ?? 0)) {
-          console.warn(`[search] index stale — ranked ${ranked.meta?.total} < live ${legacyProbe.meta.total} listings; serving legacy scan`);
+        // one (an event handler failed mid-drain) can disagree in either
+        // direction. Probe the authoritative live scan with the same query:
+        // any count mismatch serves live data, preventing both missing cards
+        // and stale/blocked index documents from reaching customers.
+        const legacyProbe = await catalogSearchService.search({ tenantId: resolvedTenantId, query });
+        const rankedTotal = ranked.meta?.total ?? 0;
+        if (legacyProbe.meta.total !== rankedTotal) {
+          console.warn(`[search] index/live mismatch — ranked ${rankedTotal}, live ${legacyProbe.meta.total} listings; serving authoritative live scan`);
           const g = await maybeGroup(legacyProbe.items, legacyProbe.meta);
           return res.status(200).json(success(g.items, {
             message: 'Catalog fetched',
