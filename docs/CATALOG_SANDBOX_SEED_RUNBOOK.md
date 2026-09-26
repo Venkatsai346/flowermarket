@@ -1,5 +1,7 @@
 # Non-compliance Sandbox Taxonomy & Product Registry
 
+After taxonomy and product convergence, use [`CATALOG_SANDBOX_LISTING_SEED_RUNBOOK.md`](./CATALOG_SANDBOX_LISTING_SEED_RUNBOOK.md) to create the four tenant-specific listing and inventory datasets.
+
 ## Purpose
 
 These are **additional**, parallel seeds for integration, storefront, listing, search, cart and order testing. They do not modify the canonical taxonomy or canonical product seed.
