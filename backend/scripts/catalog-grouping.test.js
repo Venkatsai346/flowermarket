@@ -3,6 +3,8 @@ import catalogSearchService from '../src/services/catalogSearch.service.js';
 import TenantProduct from '../src/models/tenantProduct.model.js';
 import ProductVariant from '../src/models/productVariant.model.js';
 import ProductImage from '../src/models/productImage.model.js';
+import ProductMaster from '../src/models/productMaster.model.js';
+import productMasterService from '../src/services/productMaster.service.js';
 
 const masterId = '66a000000000000000000001';
 const listingId = '66a000000000000000000002';
@@ -71,4 +73,37 @@ try {
   TenantProduct.find = originals.tenantFind;
   ProductVariant.find = originals.variantFind;
   ProductImage.find = originals.imageFind;
+}
+
+const originalMasterFind = ProductMaster.find;
+const originalMasterCount = ProductMaster.countDocuments;
+try {
+  let captured = null;
+  ProductMaster.find = (query) => {
+    captured = query;
+    return {
+      sort: () => ({
+        skip: () => ({
+          limit: () => ({ lean: async () => [] }),
+        }),
+      }),
+    };
+  };
+  ProductMaster.countDocuments = async () => 0;
+
+  const result = await productMasterService.listMasters({
+    query: { search: 'ap(ple)+[x]', page: 1, limit: 20 },
+  });
+  assert.equal(result.meta.total, 0);
+  assert.equal(captured.$or.length, 3);
+  for (const clause of captured.$or) {
+    const rx = Object.values(clause)[0];
+    assert.ok(rx instanceof RegExp);
+    assert.equal(rx.test('AP(PLE)+[X] reference'), true);
+    assert.equal(rx.test('appleeeeeex'), false);
+  }
+  console.log('product master search: imported literal matcher and regex-safe query PASS');
+} finally {
+  ProductMaster.find = originalMasterFind;
+  ProductMaster.countDocuments = originalMasterCount;
 }

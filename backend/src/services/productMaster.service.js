@@ -19,6 +19,7 @@ import { normalizeOptionDefinitions, normalizeOptionValues, combinationKey } fro
 import { normalizeOptionRules, assertOptionCombinationAllowed } from '../utils/catalog/optionDependencies.js';
 import { normalizeUnitPolicy, assertQuantity } from '../utils/catalog/unitConversion.js';
 import { badRequest, notFound, conflict, AppError } from '../utils/ApiError.js';
+import { literalRegex } from '../utils/regex.js';
 import {
   PRODUCT_MASTER_STATUS,
   TENANT_LISTING_STATUS,
