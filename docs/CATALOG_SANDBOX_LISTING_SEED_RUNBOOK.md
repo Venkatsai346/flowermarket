@@ -79,8 +79,23 @@ The resolved database name, tenant identities and create/recovery/conflict count
 
 ### Apply all tenants
 
+Bash/macOS/Linux:
+
 ```bash
 npm run catalog:sandbox:listings:seed -- \
+  --acknowledge-sandbox-listings
+```
+
+Windows PowerShell (single line — do not copy the Bash `\` character):
+
+```powershell
+npm run catalog:sandbox:listings:seed -- --acknowledge-sandbox-listings
+```
+
+For a PowerShell multiline command, use its backtick continuation character instead:
+
+```powershell
+npm run catalog:sandbox:listings:seed -- `
   --acknowledge-sandbox-listings
 ```
 
@@ -121,6 +136,23 @@ The override is still required to resolve to an active super-admin.
 - **Merchant edits remain authoritative:** reruns do not reset price, stock, status or merchandising. If an edit makes a required test listing no longer convergent, the script reports it for review rather than undoing it.
 
 If a run fails after some chunks, correct the reported dependency/index/conflict issue and run the same command again. Do not manually delete healthy rows to restart.
+
+### Missing master or variant prerequisite
+
+The listing script now reports **all unique catalog prerequisite issues in one pass** rather than stopping at the first absent variant. It does not silently skip products or duplicate product-seed responsibilities.
+
+If the report contains `MASTER_MISSING` or `VARIANT_MISSING`, run the product convergence workflow first:
+
+```powershell
+npm run catalog:sandbox:products:plan
+npm run catalog:sandbox:products:seed -- --acknowledge-noncompliant-sandbox --active
+npm run catalog:sandbox:listings:plan
+npm run catalog:sandbox:listings:seed -- --acknowledge-sandbox-listings
+```
+
+The product seed repairs missing variants idempotently. `--active` applies only when it must create a missing master; it deliberately does not change an existing master's lifecycle. If the report contains `MASTER_NOT_ACTIVE` for an existing `pending_review` master, approve that master through the catalog lifecycle and rerun the listing plan.
+
+For example, a missing `SBX-ATL-0A274B24-TAB-ACER-BB370-V03` is repaired by the sandbox product seed; it must not be skipped or replaced with the wrong tablet variant.
 
 ## Expected final result
 

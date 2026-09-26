@@ -92,21 +92,52 @@ async function resolveCatalog(blueprints) {
   const masterBySku = new Map(masters.map((master) => [master.skuGlobal, master]));
   const variantBySku = new Map(variants.map((variant) => [variant.sku, variant]));
   const categoryBySlug = new Map(categories.map((category) => [category.slug, category]));
+  const issues = [];
+  const seenIssues = new Set();
+  const addIssue = (code, reference, message) => {
+    const key = `${code}:${reference}`;
+    if (!seenIssues.has(key)) issues.push({ code, reference, message });
+    seenIssues.add(key);
+  };
 
   for (const requirement of allRequirements) {
     const master = masterBySku.get(requirement.masterSku);
     const variant = variantBySku.get(requirement.variantSku);
     const category = categoryBySlug.get(requirement.categorySlug);
-    if (!category) fail(`${requirement.reference}: sandbox category ${requirement.categorySlug} is missing`);
-    if (!master) fail(`${requirement.reference}: sandbox master ${requirement.masterSku} is missing; run catalog:sandbox:products:seed first`);
-    if (!master.tags?.includes('sandbox-data')) fail(`${requirement.reference}: master is not owned by the sandbox dataset`);
-    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
-      fail(`${requirement.reference}: master ${requirement.masterSku} must be active before an active listing can be seeded (found ${master.status})`);
+    if (!category) addIssue('CATEGORY_MISSING', requirement.categorySlug, `sandbox category ${requirement.categorySlug} is missing`);
+    if (!master) {
+      addIssue('MASTER_MISSING', requirement.masterSku, `sandbox master ${requirement.masterSku} is missing`);
+      continue;
     }
-    if (id(master.categoryId) !== id(category)) fail(`${requirement.reference}: master category does not match ${requirement.categorySlug}`);
-    if (!variant) fail(`${requirement.reference}: required variant ${requirement.variantSku} is missing`);
-    if (id(variant.productMasterId) !== id(master)) fail(`${requirement.reference}: variant belongs to a different master`);
-    if (variant.status !== ENTITY_STATUS.ACTIVE) fail(`${requirement.reference}: variant must be active (found ${variant.status})`);
+    if (!master.tags?.includes('sandbox-data')) addIssue('MASTER_OWNERSHIP', requirement.masterSku, 'master is not owned by the sandbox dataset');
+    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+      addIssue('MASTER_NOT_ACTIVE', requirement.masterSku, `master must be active before listing (found ${master.status})`);
+    }
+    if (category && id(master.categoryId) !== id(category)) addIssue('MASTER_CATEGORY', requirement.masterSku, `master category does not match ${requirement.categorySlug}`);
+    if (!variant) {
+      addIssue('VARIANT_MISSING', requirement.variantSku, `required variant ${requirement.variantSku} is missing`);
+      continue;
+    }
+    if (id(variant.productMasterId) !== id(master)) addIssue('VARIANT_OWNER', requirement.variantSku, 'variant belongs to a different master');
+    if (variant.status !== ENTITY_STATUS.ACTIVE) addIssue('VARIANT_NOT_ACTIVE', requirement.variantSku, `variant must be active (found ${variant.status})`);
+  }
+  if (issues.length) {
+    const counts = issues.reduce((result, issue) => {
+      result[issue.code] = (result[issue.code] || 0) + 1;
+      return result;
+    }, {});
+    console.error('\nCatalog prerequisite report');
+    for (const [code, count] of Object.entries(counts)) console.error(`  ${code}: ${count}`);
+    for (const issue of issues.slice(0, 30)) console.error(`  ${issue.code} ${issue.reference}: ${issue.message}`);
+    if (issues.length > 30) console.error(`  … ${issues.length - 30} more catalog prerequisite issues`);
+    const repairable = issues.some((issue) => ['MASTER_MISSING', 'VARIANT_MISSING'].includes(issue.code));
+    const lifecycle = issues.some((issue) => issue.code === 'MASTER_NOT_ACTIVE');
+    const guidance = [
+      repairable ? 'repair missing sandbox structures with `npm run catalog:sandbox:products:plan` followed by `npm run catalog:sandbox:products:seed -- --acknowledge-noncompliant-sandbox --active`' : null,
+      lifecycle ? 'approve any existing pending-review masters through the catalog lifecycle (the product seed never overwrites existing lifecycle state)' : null,
+      'rerun the listing plan before apply',
+    ].filter(Boolean).join('; then ');
+    fail(`Catalog prerequisites are incomplete (${issues.length} unique issue${issues.length === 1 ? '' : 's'}); ${guidance}. No tenant listings were changed.`);
   }
   return { masterBySku, variantBySku };
 }
@@ -280,6 +311,9 @@ async function rebuildSearch(blueprints) {
 }
 
 async function main() {
+  if (flags.has('\\')) {
+    console.warn('Warning: `\\` is a Bash line-continuation character, not a PowerShell one. It was ignored; in PowerShell, run the command on one line or use a backtick (`).');
+  }
   const blueprints = selectedBlueprints();
   printCoverage(blueprints);
   if (options.validateOnly) {
