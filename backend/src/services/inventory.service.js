@@ -251,6 +251,8 @@ class InventoryService {
         failed.push({ listingId: it?.listingId || null, qty: it?.qty, reason: 'invalid_quantity' });
         continue;
       }
+      // Each inventory mutation is deliberately sequential so compensation preserves item order.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
         {
           tenantId,
@@ -267,9 +269,15 @@ class InventoryService {
       );
       if (row) {
         committed.push({ listingId: it.listingId, qty: it.qty, row });
+        // Each inventory mutation is deliberately sequential so compensation preserves item order.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, 1);
         }
       } else {
@@ -284,6 +292,8 @@ class InventoryService {
     let restored = 0;
     for (const it of items || []) {
       if (!it?.listingId || !Number.isInteger(it.qty) || it.qty <= 0) continue;
+      // Each inventory mutation is deliberately sequential so compensation preserves item order.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
         { tenantId, tenantProductId: it.listingId, warehouseId: null },
         { $inc: { qtyOnHand: it.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
@@ -291,9 +301,15 @@ class InventoryService {
       );
       if (row) {
         restored += 1;
+        // Each inventory mutation is deliberately sequential so compensation preserves item order.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, -1);
         }
       }

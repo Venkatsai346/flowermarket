@@ -11,6 +11,7 @@ import {
   listingBulkSchema,
   listingQuerySchema,
   listingUpdatePriceSchema,
+  listingUpdateOfferSchema,
   listingUpdateStatusSchema,
   changeRequestCreateSchema,
   changeRequestQuerySchema,
@@ -47,6 +48,7 @@ router.get('/masters/:id/variants', validate(idParamSchema, 'params'), CatalogTe
 router.get('/listings', validate(listingQuerySchema, 'query'), CatalogTenantController.listListings);
 router.get('/listings/:id', validate(idParamSchema, 'params'), CatalogTenantController.getListing);
 router.patch('/listings/:id/price', validate(idParamSchema, 'params'), validate(listingUpdatePriceSchema), CatalogTenantController.updatePrice);
+router.patch('/listings/:id/offer', validate(idParamSchema, 'params'), validate(listingUpdateOfferSchema), CatalogTenantController.updateOffer);
 router.patch('/listings/:id/status', validate(idParamSchema, 'params'), validate(listingUpdateStatusSchema), CatalogTenantController.updateStatus);
 router.post('/listings/:id/deactivate', validate(idParamSchema, 'params'), validate(versionOnlySchema), CatalogTenantController.deactivateListing);
 

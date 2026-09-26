@@ -43,6 +43,7 @@ class CatalogSearchService {
       // Defense in depth: a priceless listing must never reach the customer,
       // even if one slipped past the activation gate (legacy data, race).
       'price.sellingPrice': { $ne: null },
+      'channels.storefront': { $ne: false },
     };
 
     const pipeline = [
@@ -56,7 +57,7 @@ class CatalogSearchService {
         },
       },
       { $unwind: { path: '$master', preserveNullAndEmptyArrays: false } },
-      { $match: { 'master.status': PRODUCT_MASTER_STATUS.ACTIVE, 'master.isDeleted': { $ne: true } } },
+      { $match: { 'master.status': PRODUCT_MASTER_STATUS.ACTIVE, 'master.complianceStatus': { $ne: 'pending' }, 'master.isDeleted': { $ne: true } } },
       // Resolve variants before count/facets/pagination so archived, deleted or
       // dangling variant listings never inflate totals or surface as a false
       // master-level row. A null variantId is the legitimate master listing.
@@ -125,6 +126,7 @@ class CatalogSearchService {
             $cond: [{ $ifNull: ['$variant._id', false] }, { $toString: '$variant._id' }, null],
           },
           price: 1,
+          priceBasis: 1,
           stockQty: 1,
           availability: 1,
           variant: {
@@ -134,6 +136,8 @@ class CatalogSearchService {
                 id: { $toString: '$variant._id' },
                 variantType: '$variant.variantType',
                 value: '$variant.value',
+                optionValues: '$variant.optionValues',
+                combinationKey: '$variant.combinationKey',
                 displayLabel: '$variant.displayLabel',
                 sku: '$variant.sku',
                 sortOrder: '$variant.sortOrder',
@@ -144,16 +148,26 @@ class CatalogSearchService {
           },
           product: {
             id: { $toString: '$master._id' },
-            title: '$master.title',
+            title: { $ifNull: ['$merchandising.titleOverride', '$master.title'] },
+            canonicalTitle: '$master.title',
             slug: '$master.slug',
             skuGlobal: '$master.skuGlobal',
             type: '$master.type',
-            shortDescription: '$master.shortDescription',
+            kind: '$master.kind',
+            complianceStatus: '$master.complianceStatus',
+            shortDescription: { $ifNull: ['$merchandising.descriptionOverride', '$master.shortDescription'] },
             categoryId: '$master.categoryId',
             brandId: '$master.brandId',
             isPerishable: '$master.isPerishable',
             requiresColdChain: '$master.requiresColdChain',
             defaultSellingUnit: '$master.defaultSellingUnit',
+            unitPolicy: '$master.unitPolicy',
+            options: '$master.options',
+            optionRules: '$master.optionRules',
+            manufacturer: '$master.manufacturer',
+            modelNumber: '$master.modelNumber',
+            condition: '$master.condition',
+            fulfillmentProfile: '$master.fulfillmentProfile',
             soldCount: '$master.soldCount',
             searchText: '$master.searchText',
           },
@@ -286,8 +300,13 @@ class CatalogSearchService {
 
     const [family, variants, images] = await Promise.all([
       TenantProduct.find({
-        tenantId, productMasterId: { $in: masterIds }, status: TENANT_LISTING_STATUS.ACTIVE,
-      }).select('_id productMasterId variantId price stockQty availability').lean(),
+        tenantId,
+        productMasterId: { $in: masterIds },
+        status: TENANT_LISTING_STATUS.ACTIVE,
+        isDeleted: { $ne: true },
+        'price.sellingPrice': { $ne: null },
+        'channels.storefront': { $ne: false },
+      }).select('_id productMasterId variantId price priceBasis stockQty availability').lean(),
       ProductVariant.find({ productMasterId: { $in: masterIds }, status: 'active' }).lean(),
       ProductImage.find({ productMasterId: { $in: masterIds }, status: 'active' }).sort({ isPrimary: -1, sortOrder: 1 }).lean(),
     ]);
@@ -329,7 +348,10 @@ class CatalogSearchService {
             sku: v?.sku || null,
             sortOrder: v?.sortOrder ?? 0,
             isDefault: Boolean(v?.isDefault),
+            optionValues: v?.optionValues || [],
+            sellQuantity: v?.sellQuantity || null,
             price: l.price,
+            priceBasis: l.priceBasis,
             stockQty: l.stockQty ?? 0,
             availability: l.availability,
             imageUrl: gallery[0]?.url || null,
@@ -350,7 +372,9 @@ class CatalogSearchService {
         ? variantsOut.find((v) => (v.isDefault === def.variant?.isDefault && v.sortOrder === def.variant?.sortOrder && v.value === def.variant?.value))
         : null;
       const fallback = defRow || variantsOut.find((v) => v.isDefault) || variantsOut.find((v) => v.stockQty > 0) || variantsOut[0];
-      const { images: masterGallery } = groupImagesByVariant(flat);
+      // `groupImagesByVariant` returns `{ master, byVariant }`. Empty-media
+      // products are valid, so the fallback must always remain an array.
+      const { master: masterGallery = [] } = groupImagesByVariant(flat);
 
       cards.push({
         masterId: mid,
@@ -435,7 +459,7 @@ class CatalogSearchService {
    */
   async storefrontBrands({ tenantId }) {
     const rows = await TenantProduct.aggregate([
-      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null } } },
+      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null }, 'channels.storefront': { $ne: false } } },
       {
         $lookup: {
           from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master',
@@ -445,6 +469,7 @@ class CatalogSearchService {
       {
         $match: {
           'master.status': PRODUCT_MASTER_STATUS.ACTIVE,
+          'master.complianceStatus': { $ne: 'pending' },
           'master.isDeleted': { $ne: true },
           'master.brandId': { $ne: null },
         },
@@ -515,7 +540,7 @@ class CatalogSearchService {
    */
   async storefrontCategories({ tenantId }) {
     const counted = await TenantProduct.aggregate([
-      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null } } },
+      { $match: { tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE, isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null }, 'channels.storefront': { $ne: false } } },
       {
         $lookup: {
           from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master',
@@ -525,6 +550,7 @@ class CatalogSearchService {
       {
         $match: {
           'master.status': PRODUCT_MASTER_STATUS.ACTIVE,
+          'master.complianceStatus': { $ne: 'pending' },
           'master.isDeleted': { $ne: true },
           'master.categoryId': { $ne: null },
         },

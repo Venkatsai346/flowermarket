@@ -1,6 +1,5 @@
 import Joi from 'joi';
 import {
-  PRODUCT_TYPE,
   PRODUCT_MASTER_STATUS,
   TENANT_LISTING_STATUS,
   CHANGE_REQUEST_TYPE,
@@ -34,11 +33,18 @@ const attributeSchemaField = Joi.object({
   label: Joi.string().max(80),
   type: Joi.string().valid(...Object.values(ATTRIBUTE_FIELD_TYPE)).default('string'),
   required: Joi.boolean().default(false),
-  options: Joi.array().items(Joi.string().max(60)).max(50),
+  appliesTo: Joi.string().valid('master', 'variant', 'both').default('master'),
+  options: Joi.array().items(Joi.string().max(100)).max(100),
   unit: Joi.string().max(20),
   min: Joi.number(),
   max: Joi.number(),
-  regex: Joi.string(),
+  regex: Joi.string().max(500),
+  multiple: Joi.boolean().default(false),
+  filterable: Joi.boolean().default(false),
+  facetable: Joi.boolean().default(false),
+  searchable: Joi.boolean().default(false),
+  group: Joi.string().max(80).allow(null, ''),
+  sortOrder: Joi.number().integer().min(0),
 });
 
 export const categoryCreateSchema = Joi.object({
@@ -49,7 +55,13 @@ export const categoryCreateSchema = Joi.object({
   imageUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
   iconUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
   bannerUrl: Joi.string().uri({ allowRelative: true }).allow(null, ''),
-  attributeSchema: Joi.array().items(attributeSchemaField).max(40),
+  attributeSchema: Joi.array().items(attributeSchemaField).max(100),
+  complianceRequirements: Joi.array().items(Joi.object({
+    code: Joi.string().max(100).required(),
+    type: Joi.string().valid('certificate', 'license', 'regulatory_id', 'standard', 'restriction', 'safety', 'environmental').required(),
+    label: Joi.string().max(160).required(), required: Joi.boolean().default(true), requiresExpiry: Joi.boolean().default(false),
+    jurisdictions: Joi.array().items(Joi.string().max(80)).max(100),
+  })).max(100),
   sortOrder: Joi.number().integer().min(0).default(0),
   isFeatured: Joi.boolean().default(false),
   status: Joi.string().valid('active', 'inactive', 'archived'),
@@ -104,48 +116,152 @@ export const brandQuerySchema = Joi.object({
 });
 
 // ---------------- ProductMaster ----------------
+const attributeValue = Joi.alternatives().try(
+  Joi.string().max(4000),
+  Joi.number(),
+  Joi.boolean(),
+  Joi.date().iso(),
+  Joi.array().items(Joi.alternatives().try(Joi.string().max(500), Joi.number(), Joi.boolean())).max(100),
+  Joi.object().unknown(true),
+);
 const masterAttributesInput = Joi.array().items(
   Joi.object({
     key: Joi.string().pattern(/^[a-z0-9_]+$/).required(),
-    value: Joi.string().max(200).required(),
-    unit: Joi.string().max(20),
+    value: attributeValue.required(),
+    unit: Joi.string().max(20).allow(null, ''),
   })
-).max(40);
+).max(100);
 
-const variantImagesInput = Joi.array().items(
-  Joi.object({
-    url: Joi.string().uri({ allowRelative: true }).required(),
-    altText: Joi.string().max(200),
-    isPrimary: Joi.boolean(),
-    sortOrder: Joi.number().integer().min(0),
-  })
-).max(20);
+const mediaFields = {
+  url: Joi.string().uri({ allowRelative: true }).required(),
+  altText: Joi.string().max(300),
+  mediaType: Joi.string().valid('image', 'video', 'model_3d', 'document').default('image'),
+  role: Joi.string().valid('gallery', 'thumbnail', 'swatch', 'lifestyle', 'size_chart', 'manual').default('gallery'),
+  mimeType: Joi.string().max(100).allow(null, ''),
+  width: Joi.number().integer().min(1).allow(null),
+  height: Joi.number().integer().min(1).allow(null),
+  fileSize: Joi.number().integer().min(0).allow(null),
+  focalPoint: Joi.object({ x: Joi.number().min(0).max(1), y: Joi.number().min(0).max(1) }),
+  isPrimary: Joi.boolean(),
+  sortOrder: Joi.number().integer().min(0),
+};
+
+const variantImagesInput = Joi.array().items(Joi.object(mediaFields)).max(50);
+
+const optionValueInput = Joi.object({
+  code: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  name: Joi.string().max(80),
+  value: Joi.string().trim().max(100).required(),
+});
+
+const productOptionInput = Joi.object({
+  code: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  name: Joi.string().trim().max(80).required(),
+  values: Joi.array().items(Joi.string().trim().max(100)).min(1).max(100).required(),
+  displayType: Joi.string().valid('text', 'swatch', 'image').default('text'),
+  sortOrder: Joi.number().integer().min(0).default(0),
+});
+
+const measurementsInput = {
+  weight: Joi.object({
+    value: Joi.number().min(0).allow(null),
+    unit: Joi.string().valid('mg', 'g', 'kg', 'oz', 'lb').default('g'),
+  }),
+  dimensions: Joi.object({
+    length: Joi.number().min(0).allow(null),
+    width: Joi.number().min(0).allow(null),
+    height: Joi.number().min(0).allow(null),
+    unit: Joi.string().valid('mm', 'cm', 'm', 'in', 'ft').default('cm'),
+  }),
+};
 
 const masterVariantsInput = Joi.array().items(
   Joi.object({
-    variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)).required(),
-    value: Joi.string().max(80).required(),
-    displayLabel: Joi.string().max(120),
+    variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)).default(VARIANT_TYPE.OTHER),
+    value: Joi.string().trim().max(100),
+    optionValues: Joi.array().items(optionValueInput).min(1).max(6),
+    displayLabel: Joi.string().max(240),
     sku: Joi.string().max(80),
+    barcode: Joi.string().max(60).allow(null, ''),
+    identifiers: Joi.object({
+      gtin: Joi.string().max(32).allow(null, ''),
+      mpn: Joi.string().max(100).allow(null, ''),
+    }),
+    ...measurementsInput,
+    sellQuantity: Joi.object({ value: Joi.number().positive().required(), unitCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required() }),
     sortOrder: Joi.number().integer().min(0),
     isDefault: Joi.boolean(),
-    // Nested per-variant gallery (each variant's own photos at creation time).
     images: variantImagesInput,
-  })
-).max(20);
+  }).or('value', 'optionValues')
+).max(100);
 
-const masterImagesInput = Joi.array().items(
-  Joi.object({
-    url: Joi.string().uri({ allowRelative: true }).required(),
-    altText: Joi.string().max(200),
-    isPrimary: Joi.boolean(),
-    sortOrder: Joi.number().integer().min(0),
-  })
-).max(20);
+const masterImagesInput = Joi.array().items(Joi.object(mediaFields)).max(100);
+
+const unitPolicyInput = Joi.object({
+  dimension: Joi.string().valid('count', 'mass', 'volume', 'length', 'area', 'time', 'digital', 'custom').required(),
+  baseUnit: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  allowFractional: Joi.boolean().default(false),
+  precision: Joi.number().integer().min(0).max(6).default(3),
+  units: Joi.array().items(Joi.object({
+    code: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+    label: Joi.string().max(60).required(),
+    toBaseFactor: Joi.number().positive().required(),
+    precision: Joi.number().integer().min(0).max(6),
+  })).min(1).max(50).required(),
+});
+
+const optionRuleInput = Joi.object({
+  code: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/),
+  when: Joi.object({ code: Joi.string().required(), values: Joi.array().items(Joi.string().max(100)).min(1).max(100).required() }).required(),
+  then: Joi.object({
+    code: Joi.string().required(),
+    allowedValues: Joi.array().items(Joi.string().max(100)).max(100),
+    excludedValues: Joi.array().items(Joi.string().max(100)).max(100),
+    required: Joi.boolean(),
+  }).required(),
+  priority: Joi.number().integer(),
+});
+
+const universalMasterFields = {
+  kind: Joi.string().valid('physical', 'digital', 'service', 'bundle'),
+  manufacturer: Joi.string().max(160).allow(null, ''),
+  modelNumber: Joi.string().max(100).allow(null, ''),
+  countryOfOrigin: Joi.string().max(80).allow(null, ''),
+  condition: Joi.string().valid('new', 'refurbished', 'used'),
+  identifiers: Joi.object({
+    gtin: Joi.string().max(32).allow(null, ''),
+    mpn: Joi.string().max(100).allow(null, ''),
+    isbn: Joi.string().max(20).allow(null, ''),
+    hsn: Joi.string().max(16).allow(null, ''),
+  }),
+  warranty: Joi.object({
+    duration: Joi.number().min(0).allow(null),
+    unit: Joi.string().valid('day', 'month', 'year').default('month'),
+    description: Joi.string().max(500).allow(null, ''),
+  }),
+  seo: Joi.object({
+    title: Joi.string().max(70).allow(null, ''),
+    description: Joi.string().max(180).allow(null, ''),
+    keywords: Joi.array().items(Joi.string().max(60)).max(20),
+  }),
+  options: Joi.array().items(productOptionInput).max(6),
+  optionRules: Joi.array().items(optionRuleInput).max(100),
+  unitPolicy: unitPolicyInput.allow(null),
+  fulfillmentProfile: Joi.object({
+    requiresShipping: Joi.boolean(),
+    shippingClass: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/),
+    ...measurementsInput,
+    fragile: Joi.boolean(),
+    hazardous: Joi.boolean(),
+    ageRestricted: Joi.boolean(),
+    requiresSerialTracking: Joi.boolean(),
+  }),
+};
 
 export const masterCreateSchema = Joi.object({
   skuGlobal: Joi.string().max(80).required(),
-  type: Joi.string().valid(...Object.values(PRODUCT_TYPE)).required(),
+  type: Joi.string().pattern(/^[a-z][a-z0-9_]{0,59}$/).required(),
+  ...universalMasterFields,
   title: Joi.string().max(160).required(),
   slug: Joi.string().max(200).pattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   shortDescription: Joi.string().max(300).allow(null, ''),
@@ -153,7 +269,7 @@ export const masterCreateSchema = Joi.object({
   categoryId: objectId.required(),
   brandId: optionalObjectId,
   barcode: Joi.string().max(60).allow(null, ''),
-  tags: Joi.array().items(Joi.string().max(40)).max(20),
+  tags: Joi.array().items(Joi.string().max(60)).max(50),
   isPerishable: Joi.boolean(),
   requiresColdChain: Joi.boolean(),
   defaultSellingUnit: Joi.string().valid(...Object.values(SELLING_UNIT)).default(SELLING_UNIT.PIECE),
@@ -167,7 +283,8 @@ export const masterCreateSchema = Joi.object({
 
 export const masterUpdateSchema = Joi.object({
   skuGlobal: Joi.forbidden(),
-  type: Joi.forbidden(),
+  type: Joi.string().pattern(/^[a-z][a-z0-9_]{0,59}$/),
+  ...universalMasterFields,
   title: Joi.string().max(160),
   slug: Joi.string().max(200).pattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   shortDescription: Joi.string().max(300).allow(null, ''),
@@ -175,7 +292,7 @@ export const masterUpdateSchema = Joi.object({
   categoryId: objectId,
   brandId: optionalObjectId,
   barcode: Joi.string().max(60).allow(null, ''),
-  tags: Joi.array().items(Joi.string().max(40)).max(20),
+  tags: Joi.array().items(Joi.string().max(60)).max(50),
   isPerishable: Joi.boolean(),
   requiresColdChain: Joi.boolean(),
   defaultSellingUnit: Joi.string().valid(...Object.values(SELLING_UNIT)),
@@ -186,7 +303,8 @@ export const masterUpdateSchema = Joi.object({
 
 export const masterProposeSchema = Joi.object({
   skuGlobal: Joi.string().max(80).required(),
-  type: Joi.string().valid(...Object.values(PRODUCT_TYPE)).required(),
+  type: Joi.string().pattern(/^[a-z][a-z0-9_]{0,59}$/).required(),
+  ...universalMasterFields,
   title: Joi.string().max(160).required(),
   slug: Joi.string().max(200).pattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
   shortDescription: Joi.string().max(300).allow(null, ''),
@@ -194,7 +312,7 @@ export const masterProposeSchema = Joi.object({
   categoryId: objectId.required(),
   brandId: optionalObjectId,
   barcode: Joi.string().max(60).allow(null, ''),
-  tags: Joi.array().items(Joi.string().max(40)).max(20),
+  tags: Joi.array().items(Joi.string().max(60)).max(50),
   isPerishable: Joi.boolean(),
   requiresColdChain: Joi.boolean(),
   defaultSellingUnit: Joi.string().valid(...Object.values(SELLING_UNIT)).default(SELLING_UNIT.PIECE),
@@ -210,27 +328,37 @@ export const masterQuerySchema = Joi.object({
   status: Joi.string().valid(...Object.values(PRODUCT_MASTER_STATUS)),
   categoryId: optionalObjectId,
   brandId: optionalObjectId,
-  type: Joi.string().valid(...Object.values(PRODUCT_TYPE)),
+  type: Joi.string().pattern(/^[a-z][a-z0-9_]{0,59}$/),
   search: Joi.string().max(120).allow('', null),
   ...pagination,
 });
 
 export const variantCreateSchema = Joi.object({
-  variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)).required(),
-  value: Joi.string().max(80).required(),
-  displayLabel: Joi.string().max(120).allow(null, ''),
+  variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)).default(VARIANT_TYPE.OTHER),
+  value: Joi.string().max(100),
+  optionValues: Joi.array().items(optionValueInput).min(1).max(6),
+  displayLabel: Joi.string().max(240).allow(null, ''),
   sku: Joi.string().max(80).allow(null, ''),
+  barcode: Joi.string().max(60).allow(null, ''),
+  identifiers: Joi.object({ gtin: Joi.string().max(32).allow(null, ''), mpn: Joi.string().max(100).allow(null, '') }),
+  ...measurementsInput,
+  sellQuantity: Joi.object({ value: Joi.number().positive().required(), unitCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required() }),
   sortOrder: Joi.number().integer().min(0),
   isDefault: Joi.boolean(),
   images: variantImagesInput,
   expectedVersion: Joi.number().integer().min(1).required(),
-});
+}).or('value', 'optionValues');
 
 export const variantUpdateSchema = Joi.object({
   variantType: Joi.string().valid(...Object.values(VARIANT_TYPE)),
-  value: Joi.string().max(80),
-  displayLabel: Joi.string().max(120).allow(null, ''),
+  value: Joi.string().max(100),
+  optionValues: Joi.array().items(optionValueInput).min(1).max(6),
+  displayLabel: Joi.string().max(240).allow(null, ''),
   sku: Joi.string().max(80).allow(null, ''),
+  barcode: Joi.string().max(60).allow(null, ''),
+  identifiers: Joi.object({ gtin: Joi.string().max(32).allow(null, ''), mpn: Joi.string().max(100).allow(null, '') }),
+  ...measurementsInput,
+  sellQuantity: Joi.object({ value: Joi.number().positive().required(), unitCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required() }),
   sortOrder: Joi.number().integer().min(0),
   isDefault: Joi.boolean(),
   status: Joi.string().valid('active', 'inactive', 'archived'),
@@ -238,21 +366,14 @@ export const variantUpdateSchema = Joi.object({
 }).min(1);
 
 export const imageCreateSchema = Joi.object({
-  url: Joi.string().uri({ allowRelative: true }).required(),
-  altText: Joi.string().max(200).allow(null, ''),
-  isPrimary: Joi.boolean(),
-  sortOrder: Joi.number().integer().min(0),
-  // Optional scope: null/absent = master gallery, set = one variant's gallery.
+  ...mediaFields,
   variantId: optionalObjectId,
   expectedVersion: Joi.number().integer().min(1).required(),
 });
 
 /** POST /masters/:id/variants/:variantId/images — scope comes from the path. */
 export const variantImageCreateSchema = Joi.object({
-  url: Joi.string().uri({ allowRelative: true }).required(),
-  altText: Joi.string().max(200).allow(null, ''),
-  isPrimary: Joi.boolean(),
-  sortOrder: Joi.number().integer().min(0),
+  ...mediaFields,
   expectedVersion: Joi.number().integer().min(1).required(),
 });
 
@@ -276,16 +397,113 @@ export const attributeSetSchema = Joi.object({
   expectedVersion: Joi.number().integer().min(1).required(),
 });
 
+// ---------------- Advanced universal structures ----------------
+const structureAttribute = Joi.object({
+  key: Joi.string().pattern(/^[a-z0-9_]+$/).required(), value: attributeValue.required(),
+  unit: Joi.string().max(20).allow(null, ''),
+});
+export const variantAttributeSetSchema = Joi.object({
+  attributes: Joi.array().items(structureAttribute).max(100).required(),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
+const packageInput = Joi.object({
+  variantId: optionalObjectId,
+  code: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  label: Joi.string().max(100).required(),
+  level: Joi.string().valid('each', 'inner', 'case', 'pallet', 'custom').default('each'),
+  containedPackageCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).allow(null, ''),
+  quantity: Joi.number().positive().required(),
+  unitCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  identifiers: Joi.object({
+    sku: Joi.string().max(80).allow(null, ''), barcode: Joi.string().max(60).allow(null, ''), gtin: Joi.string().max(32).allow(null, ''),
+  }),
+  ...measurementsInput,
+  status: Joi.string().valid('active', 'inactive', 'archived'),
+  sortOrder: Joi.number().integer().min(0),
+});
+export const packageSetSchema = Joi.object({
+  packages: Joi.array().items(packageInput).max(100).required(),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
+const bundleComponentInput = Joi.object({
+  componentMasterId: objectId.required(), componentVariantId: optionalObjectId,
+  quantity: Joi.number().positive().required(), unitCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  selectionGroup: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).default('included'),
+  required: Joi.boolean().default(true), defaultSelected: Joi.boolean().default(true),
+  minSelections: Joi.number().integer().min(0).default(1), maxSelections: Joi.number().integer().min(1).default(1),
+  priceAdjustment: Joi.number().default(0), sortOrder: Joi.number().integer().min(0),
+  status: Joi.string().valid('active', 'inactive', 'archived'),
+});
+export const bundleComponentSetSchema = Joi.object({
+  components: Joi.array().items(bundleComponentInput).max(200).required(),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
+const complianceInput = Joi.object({
+  variantId: optionalObjectId,
+  type: Joi.string().valid('certificate', 'license', 'regulatory_id', 'standard', 'restriction', 'safety', 'environmental').required(),
+  code: Joi.string().max(100).required(), title: Joi.string().max(200).required(),
+  authority: Joi.string().max(160).allow(null, ''),
+  jurisdiction: Joi.object({
+    country: Joi.string().length(2).uppercase().default('IN'), state: Joi.string().max(80).allow(null, ''),
+    regions: Joi.array().items(Joi.string().max(80)).max(100),
+  }),
+  status: Joi.string().valid('draft', 'pending', 'verified', 'expired', 'rejected').default('draft'),
+  validFrom: Joi.date().iso().allow(null), validUntil: Joi.date().iso().allow(null),
+  issuerReference: Joi.string().max(200).allow(null, ''),
+  documents: Joi.array().items(Joi.object({
+    name: Joi.string().max(160).required(), url: Joi.string().uri({ allowRelative: true }).required(),
+    mimeType: Joi.string().max(100).allow(null, ''), checksum: Joi.string().max(128).allow(null, ''),
+  })).max(20),
+  restrictions: Joi.array().items(Joi.string().max(200)).max(50),
+  metadata: Joi.object().unknown(true),
+});
+export const complianceSetSchema = Joi.object({
+  records: Joi.array().items(complianceInput).max(200).required(),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
 // ---------------- TenantProduct (listing) ----------------
 const priceInput = Joi.object({
-  mrp: Joi.number().min(0).required(),
+  mrp: Joi.number().min(0).allow(null),
   sellingPrice: Joi.number().min(0).required(),
+  costPrice: Joi.number().min(0).allow(null),
+  saleStartsAt: Joi.date().iso().allow(null),
+  saleEndsAt: Joi.date().iso().min(Joi.ref('saleStartsAt')).allow(null),
+  taxInclusive: Joi.boolean().default(true),
   currency: Joi.string().valid('INR').default('INR'),
 });
+
+const listingUniversalFields = {
+  sellerSku: Joi.string().max(100).allow(null, ''),
+  priceBasis: Joi.object({
+    quantity: Joi.number().positive().required(), unitCode: Joi.string().pattern(/^[a-z][a-z0-9_]{0,39}$/).required(),
+  }),
+  sellingPolicy: Joi.object({
+    allowBackorder: Joi.boolean(),
+    preorder: Joi.boolean(),
+    availableFrom: Joi.date().iso().allow(null),
+    availableUntil: Joi.date().iso().allow(null),
+    leadTimeDays: Joi.number().integer().min(0).max(365),
+  }),
+  merchandising: Joi.object({
+    titleOverride: Joi.string().max(160).allow(null, ''),
+    descriptionOverride: Joi.string().max(1000).allow(null, ''),
+    badges: Joi.array().items(Joi.string().max(40)).max(10),
+    featured: Joi.boolean(),
+    searchBoost: Joi.number().min(-100).max(100),
+  }),
+  channels: Joi.object({
+    storefront: Joi.boolean(), marketplace: Joi.boolean(), pos: Joi.boolean(), wholesale: Joi.boolean(),
+  }),
+};
 
 export const listingCreateSchema = Joi.object({
   productMasterId: objectId.required(),
   variantId: optionalObjectId,
+  ...listingUniversalFields,
   price: priceInput,
   stockQty: Joi.number().integer().min(0).default(0),
   status: Joi.string().valid(...Object.values(TENANT_LISTING_STATUS)).default(TENANT_LISTING_STATUS.DRAFT),
@@ -294,6 +512,16 @@ export const listingCreateSchema = Joi.object({
     maxOrderQty: Joi.number().integer().min(1),
   }),
 });
+
+export const listingUpdateOfferSchema = Joi.object({
+  sellerSku: listingUniversalFields.sellerSku,
+  priceBasis: listingUniversalFields.priceBasis,
+  sellingPolicy: listingUniversalFields.sellingPolicy,
+  merchandising: listingUniversalFields.merchandising,
+  channels: listingUniversalFields.channels,
+  orderLimits: Joi.object({ minOrderQty: Joi.number().integer().min(1).allow(null), maxOrderQty: Joi.number().integer().min(1).allow(null) }),
+  expectedVersion: Joi.number().integer().min(1).required(),
+}).min(2);
 
 export const listingUpdatePriceSchema = Joi.object({
   price: priceInput.required(),
@@ -325,6 +553,7 @@ export const listingQuerySchema = Joi.object({
  */
 const bulkSelectionRow = Joi.object({
   variantId: optionalObjectId,
+  ...listingUniversalFields,
   price: priceInput,
   stockQty: Joi.number().integer().min(0).default(0),
   status: Joi.string().valid(...Object.values(TENANT_LISTING_STATUS)).default(TENANT_LISTING_STATUS.DRAFT),
@@ -339,6 +568,7 @@ export const listingBulkSchema = Joi.object({
   selections: Joi.array().items(bulkSelectionRow).max(100),
   selectAll: Joi.boolean().default(false),
   defaults: Joi.object({
+    ...listingUniversalFields,
     price: priceInput,
     stockQty: Joi.number().integer().min(0).default(0),
     status: Joi.string().valid(...Object.values(TENANT_LISTING_STATUS)).default(TENANT_LISTING_STATUS.DRAFT),
@@ -395,7 +625,7 @@ export const catalogQuerySchema = Joi.object({
   q: Joi.string().max(120).allow('', null),
   categoryId: optionalObjectId,
   brandId: optionalObjectId,
-  type: Joi.string().valid(...Object.values(PRODUCT_TYPE)),
+  type: Joi.string().pattern(/^[a-z][a-z0-9_]{0,59}$/),
   minPrice: Joi.number().min(0),
   maxPrice: Joi.number().min(0),
   inStock: Joi.boolean(),

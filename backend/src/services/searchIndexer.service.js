@@ -2,6 +2,9 @@ import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
 import ProductVariant from '../models/productVariant.model.js';
 import ProductImage from '../models/productImage.model.js';
+import ProductPackage from '../models/productPackage.model.js';
+import ProductCompliance from '../models/productCompliance.model.js';
+import ProductVariantAttributeValue from '../models/productVariantAttributeValue.model.js';
 import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
 import SearchDocument from '../models/searchDocument.model.js';
@@ -26,6 +29,21 @@ import { TENANT_LISTING_STATUS, PRODUCT_MASTER_STATUS } from '../constants/enums
  */
 
 /** Tokens for prefix autocomplete: whole words plus the full title. */
+async function mapWithConcurrency(values, limit, worker) {
+  const results = new Array(values.length);
+  let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, async () => {
+    while (cursor < values.length) {
+      const index = cursor;
+      cursor += 1;
+      // Worker concurrency is deliberately bounded; each lane advances one item in order.
+      // eslint-disable-next-line no-await-in-loop
+      results[index] = await worker(values[index], index);
+    }
+  }));
+  return results;
+}
+
 function buildSuggest({ title, brandName, tags = [], categoryPath = [] }) {
   const set = new Set();
   const push = (s) => {
@@ -61,6 +79,8 @@ class SearchIndexerService {
       } else if (entityType === 'product_master') {
         // a master change fans out to every store that lists it
         await this.reindexMaster(entityId);
+      } else if (entityType === 'category') {
+        await this.reindexCategory(entityId);
       }
     } catch (err) {
       console.error('[search] index update failed (will be repaired by the sweep):', err.message);
@@ -68,13 +88,13 @@ class SearchIndexerService {
   };
 
   /** Build the denormalized row for one listing. */
-  async buildDocument({ listing, master, categoryById, brandById, variantById = null, imagesByMaster = null }) {
+  async buildDocument({ listing, master, categoryById, brandById, variantById = null, imagesByMaster = null, structuresByMaster = null, attributesByVariant = null }) {
     const category = master.categoryId ? categoryById.get(String(master.categoryId)) : null;
     const brand = master.brandId ? brandById.get(String(master.brandId)) : null;
 
     const categoryPath = category ? [category.name].filter(Boolean) : [];
     const tags = master.tags || [];
-    const title = master.title;
+    const title = listing.merchandising?.titleOverride || master.title;
     const brandName = brand?.name || null;
 
     // Variant context: preloaded maps in batch paths, single fetch otherwise.
@@ -90,11 +110,35 @@ class SearchIndexerService {
         .sort({ isPrimary: -1, sortOrder: 1 }).lean().catch(() => []);
     }
     const imageUrl = primaryImageUrlFor(flat, listing.variantId || null);
+    let structures = structuresByMaster?.get(String(master._id)) || null;
+    if (!structures) {
+      const [packages, compliance] = await Promise.all([
+        ProductPackage.find({ productMasterId: master._id, status: 'active' }).select('code label identifiers').lean().catch(() => []),
+        ProductCompliance.find({ productMasterId: master._id, status: 'verified' }).select('code title authority').lean().catch(() => []),
+      ]);
+      structures = { packages, compliance };
+    }
+    let variantAttributes = attributesByVariant?.get(String(listing.variantId || '')) || [];
+    if (!attributesByVariant && listing.variantId) {
+      variantAttributes = await ProductVariantAttributeValue.find({ productVariantId: listing.variantId })
+        .select('attributeKey value textValue unit').lean().catch(() => []);
+    }
+    const packageTokens = (structures.packages || []).flatMap((item) => [item.code, item.label, item.identifiers?.sku, item.identifiers?.barcode, item.identifiers?.gtin]);
+    const complianceTokens = (structures.compliance || []).flatMap((item) => [item.code, item.title, item.authority]);
+    const attributeTokens = variantAttributes.flatMap((item) => [
+      item.attributeKey,
+      item.textValue || (item.value && typeof item.value === 'object' ? JSON.stringify(item.value) : item.value),
+      item.unit,
+    ]);
 
     const searchText = [
-      title, master.shortDescription, master.description,
+      title, master.title, listing.merchandising?.descriptionOverride,
+      master.shortDescription, master.description, master.manufacturer, master.modelNumber,
+      master.identifiers?.gtin, master.identifiers?.mpn, master.identifiers?.isbn,
       brandName, ...categoryPath, ...tags,
-      variantLabel, variant?.value, variant?.sku,
+      variantLabel, variant?.value, variant?.sku, variant?.barcode,
+      ...(variant?.optionValues || []).flatMap((o) => [o.name, o.value]),
+      ...packageTokens, ...complianceTokens, ...attributeTokens,
     ].filter(Boolean).join(' ').toLowerCase().slice(0, 2000);
 
     const stockQty = listing.stockQty ?? 0;
@@ -108,6 +152,7 @@ class SearchIndexerService {
       variantId: listing.variantId || null,
       variantLabel,
       variantType: variant?.variantType || null,
+      optionValues: variant?.optionValues || [],
 
       title,
       slug: master.slug || null,
@@ -115,6 +160,11 @@ class SearchIndexerService {
       brandName,
       brandId: master.brandId || null,
       productType: master.type || null,
+      productKind: master.kind || 'physical',
+      unitPolicy: master.unitPolicy || null,
+      packageCodes: (structures.packages || []).map((item) => item.code).slice(0, 100),
+      complianceCodes: (structures.compliance || []).map((item) => item.code).slice(0, 100),
+      variantAttributes: variantAttributes.slice(0, 100).map((item) => ({ key: item.attributeKey, value: item.value, unit: item.unit || null })),
       categoryId: master.categoryId || null,
       categoryPath,
       tags,
@@ -138,9 +188,11 @@ class SearchIndexerService {
       status: (
         listing.status === TENANT_LISTING_STATUS.ACTIVE
         && master.status === PRODUCT_MASTER_STATUS.ACTIVE
+        && master.complianceStatus !== 'pending'
         && Number.isFinite(Number(listing.price?.sellingPrice))
         && listing.price?.sellingPrice !== null
         && listing.price?.sellingPrice !== undefined
+        && listing.channels?.storefront !== false
         && (!listing.variantId || (variant && variant.status === 'active'))
       ) ? 'active' : 'hidden',
       sourceVersion: (listing.version || 1) + (master.version || 1),
@@ -156,11 +208,12 @@ class SearchIndexerService {
     const master = await ProductMaster.findById(listing.productMasterId).lean();
     if (!master) return { indexed: 0 };
 
-    const [categoryById, brandById] = await Promise.all([
+    const [categoryById, brandById, { structuresByMaster, attributesByVariant }] = await Promise.all([
       this.categoryMap([master.categoryId]),
       this.brandMap([master.brandId]),
+      this.structureMaps([listing]),
     ]);
-    const doc = await this.buildDocument({ listing, master, categoryById, brandById });
+    const doc = await this.buildDocument({ listing, master, categoryById, brandById, structuresByMaster, attributesByVariant });
     return searchProvider.index([doc]);
   }
 
@@ -187,6 +240,49 @@ class SearchIndexerService {
     return { variantById, imagesByMaster };
   }
 
+  /** Preload bounded structural metadata for search without per-listing queries. */
+  async structureMaps(listings) {
+    const masterIds = [...new Set(listings.map((listing) => String(listing.productMasterId)).filter(Boolean))];
+    const variantIds = [...new Set(listings.map((listing) => String(listing.variantId || '')).filter(Boolean))];
+    const [packages, compliance, attributes] = await Promise.all([
+      ProductPackage.find({ productMasterId: { $in: masterIds }, status: 'active' }).select('productMasterId code label identifiers').lean(),
+      ProductCompliance.find({ productMasterId: { $in: masterIds }, status: 'verified' }).select('productMasterId code title authority').lean(),
+      ProductVariantAttributeValue.find({ productVariantId: { $in: variantIds } }).select('productVariantId attributeKey value textValue unit').lean(),
+    ]);
+    const structuresByMaster = new Map(masterIds.map((masterId) => [masterId, { packages: [], compliance: [] }]));
+    for (const item of packages) structuresByMaster.get(String(item.productMasterId))?.packages.push(item);
+    for (const item of compliance) structuresByMaster.get(String(item.productMasterId))?.compliance.push(item);
+    const attributesByVariant = new Map();
+    for (const item of attributes) {
+      const key = String(item.productVariantId);
+      if (!attributesByVariant.has(key)) attributesByVariant.set(key, []);
+      attributesByVariant.get(key).push(item);
+    }
+    return { structuresByMaster, attributesByVariant };
+  }
+
+  /** A taxonomy compliance/schema change can alter publishability and search text for every child product. */
+  async reindexCategory(categoryId) {
+    const total = { indexed: 0, scanned: 0 };
+    let after = null;
+    while (true) {
+      const query = { categoryId, ...(after ? { _id: { $gt: after } } : {}) };
+      // Category traversal is deliberately cursor-paginated to keep memory bounded.
+      // eslint-disable-next-line no-await-in-loop
+      const masters = await ProductMaster.find(query).sort({ _id: 1 }).select('_id').limit(200).lean();
+      if (!masters.length) break;
+      // Each page is deliberately completed before its cursor advances.
+      // eslint-disable-next-line no-await-in-loop
+      const results = await mapWithConcurrency(masters, 8, (master) => this.reindexMaster(master._id));
+      for (const result of results) {
+        total.indexed += result.indexed || 0;
+        total.scanned += result.scanned || 0;
+      }
+      after = masters[masters.length - 1]._id;
+    }
+    return total;
+  }
+
   /**
    * A global product changed — refresh it in EVERY store that lists it.
    * Cursor-paginated (the old single .limit(500) query left the tail stale
@@ -202,19 +298,28 @@ class SearchIndexerService {
     for (let batch = 0; batch < MAX_BATCHES; batch += 1) {
       const q = { productMasterId: masterId };
       if (cursor) q._id = { $gt: cursor };
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(BATCH).lean();
       if (!listings.length) break;
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
+      // eslint-disable-next-line no-await-in-loop
       const master = await ProductMaster.findById(masterId).lean();
       if (!master) break;
-      const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
+      // eslint-disable-next-line no-await-in-loop
+      const [categoryById, brandById, { variantById, imagesByMaster }, { structuresByMaster, attributesByVariant }] = await Promise.all([
         this.categoryMap([master.categoryId]),
         this.brandMap([master.brandId]),
         this.variantImageMaps(listings),
+        this.structureMaps(listings),
       ]);
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
+      // eslint-disable-next-line no-await-in-loop
       const docs = await Promise.all(
-        listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }))
+        listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster, structuresByMaster, attributesByVariant }))
       );
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);
       scanned += listings.length;
@@ -254,28 +359,34 @@ class SearchIndexerService {
       if (tenantId) q.tenantId = tenantId;
       if (cursor) q._id = { $gt: cursor };
 
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(batchSize).lean();
       if (!listings.length) break;
 
       const masterIds = [...new Set(listings.map((l) => String(l.productMasterId)))];
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const masters = await ProductMaster.find({ _id: { $in: masterIds } }).lean();
       const masterById = new Map(masters.map((m) => [String(m._id), m]));
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
-      const [categoryById, brandById, { variantById, imagesByMaster }] = await Promise.all([
+      const [categoryById, brandById, { variantById, imagesByMaster }, { structuresByMaster, attributesByVariant }] = await Promise.all([
         this.categoryMap(masters.map((m) => m.categoryId)),
         this.brandMap(masters.map((m) => m.brandId)),
         this.variantImageMaps(listings),
+        this.structureMaps(listings),
       ]);
 
       const docs = [];
       for (const listing of listings) {
         const master = masterById.get(String(listing.productMasterId));
         if (!master) continue;
+        // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
         // eslint-disable-next-line no-await-in-loop
-        docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster }));
+        docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster, structuresByMaster, attributesByVariant }));
       }
+      // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const res = await searchProvider.index(docs);
 
@@ -300,6 +411,7 @@ class SearchIndexerService {
     let repaired = 0;
     if (repair) {
       for (const s of stale) {
+        // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
         // eslint-disable-next-line no-await-in-loop
         const r = await this.indexListing({ listingId: s.listingId, tenantId: s.tenantId }).catch(() => null);
         if (r?.indexed) repaired += 1;

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, Droplets, Leaf, Scissors, Snowflake, Sun, Truck } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, Droplets, FileText, Leaf, PackageCheck, Play, Scissors, ShieldCheck, Snowflake, Sun, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -89,8 +89,12 @@ export default function Product() {
   useEffect(() => { setSelListingId(null); }, [slug]);
 
   const selected = family.find((v) => String(v.listingId) === String(selListingId)) || null;
+  const optionDefinitions = (product.options || []).filter((definition) =>
+    family.some((v) => (v.optionValues || []).some((o) => o.code === definition.code))
+  );
+  const selectedOptions = Object.fromEntries((selected?.optionValues || []).map((o) => [o.code, o.value]));
   const effListing = selected
-    ? { listingId: selected.listingId, price: selected.price, stockQty: selected.stockQty, variantId: selected.variantId }
+    ? { listingId: selected.listingId, price: selected.price, priceBasis: selected.priceBasis, stockQty: selected.stockQty, variantId: selected.variantId }
     : listing;
 
   const pick = (v) => {
@@ -100,6 +104,16 @@ export default function Product() {
     if (v.variantId) next.set('variantId', v.variantId);
     else next.delete('variantId');
     setParams(next, { replace: true });
+  };
+
+  const pickOption = (code, value) => {
+    const desired = { ...selectedOptions, [code]: value };
+    const exact = family.find((v) => {
+      const values = Object.fromEntries((v.optionValues || []).map((o) => [o.code, o.value]));
+      return optionDefinitions.every((definition) => values[definition.code] === desired[definition.code]);
+    });
+    const fallback = family.find((v) => (v.optionValues || []).some((o) => o.code === code && o.value === value));
+    if (exact || fallback) pick(exact || fallback);
   };
 
   const listingView = useMemo(() => ({
@@ -118,7 +132,8 @@ export default function Product() {
     : product.imageUrl
       ? [{ url: product.imageUrl, altText: product.title, isPrimary: true }]
       : [];
-  const attrs = attrMap(product.attributes);
+  const attrs = { ...attrMap(product.attributes), ...attrMap(selected?.attributes) };
+  const specificationRows = Object.entries(attrs).filter(([key]) => !['care_notes'].includes(key));
   const vase = attrs.vase_life_days;
   const colour = attrs.color || attrs.colour;
   const stems = attrs.stem_count || attrs.stems;
@@ -135,6 +150,20 @@ export default function Product() {
   ].filter(Boolean).join(' ')));
 
   useEffect(() => { setActive(0); }, [slug]);
+
+  useEffect(() => {
+    if (!product?.title) return undefined;
+    const previousTitle = document.title;
+    const title = product.seo?.title || product.title;
+    const description = product.seo?.description || product.shortDescription || product.description || '';
+    document.title = `${title}${store?.name ? ` · ${store.name}` : ''}`;
+    let meta = document.querySelector('meta[name="description"]');
+    const created = !meta;
+    if (!meta) { meta = document.createElement('meta'); meta.name = 'description'; document.head.appendChild(meta); }
+    const previousDescription = meta.content;
+    meta.content = description.slice(0, 180);
+    return () => { document.title = previousTitle; if (created) meta.remove(); else meta.content = previousDescription; };
+  }, [product?.title, product?.seo?.title, product?.seo?.description, product?.shortDescription, product?.description, store?.name]);
 
   useEffect(() => {
     if (!product?.title) return;
@@ -182,7 +211,13 @@ export default function Product() {
         <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
           <div>
             <div className="aspect-square overflow-auto rounded-3xl bg-slate-50" style={{ touchAction: 'pan-x pinch-zoom' }}>
-              {images[active]?.url ? (
+              {images[active]?.url && images[active]?.mediaType === 'video' ? (
+                <video src={images[active].url} controls playsInline className="h-full w-full bg-slate-950 object-contain" aria-label={images[active].altText || product.title} />
+              ) : images[active]?.url && ['document', 'model_3d'].includes(images[active]?.mediaType) ? (
+                <a href={images[active].url} target="_blank" rel="noreferrer" className="flex h-full flex-col items-center justify-center gap-3 text-slate-600">
+                  <FileText className="h-14 w-14" /><span className="text-sm font-semibold">Open {images[active].mediaType === 'model_3d' ? '3D model' : 'document'}</span>
+                </a>
+              ) : images[active]?.url ? (
                 <FloralImage
                   src={images[active].url}
                   alt={images[active].altText || product.title}
@@ -204,7 +239,11 @@ export default function Product() {
                     className="h-16 w-16 shrink-0 overflow-hidden rounded-xl ring-offset-2"
                     style={i === active ? { boxShadow: '0 0 0 2px var(--brand)' } : undefined}
                   >
-                    <FloralImage src={img.url} alt="" className="h-full w-full object-cover" />
+                    {img.mediaType === 'video' ? (
+                      <span className="grid h-full w-full place-items-center bg-slate-900 text-white"><Play className="h-5 w-5" /></span>
+                    ) : ['document', 'model_3d'].includes(img.mediaType) ? (
+                      <span className="grid h-full w-full place-items-center bg-slate-100 text-slate-500"><FileText className="h-5 w-5" /></span>
+                    ) : <FloralImage src={img.url} alt="" className="h-full w-full object-cover" />}
                   </button>
                 ))}
               </div>
@@ -212,9 +251,11 @@ export default function Product() {
           </div>
 
           <div className="flex flex-col">
-            {product.category?.name && (
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">{product.category.name}</p>
-            )}
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              {product.category?.name && <Link to={`/browse?category=${product.category.id}`} className="transition hover:text-slate-700">{product.category.name}</Link>}
+              {product.category?.name && product.brand?.name && <span>·</span>}
+              {product.brand?.name && <Link to={`/search?brand=${product.brand.id}&brandName=${encodeURIComponent(product.brand.name)}`} className="inline-flex items-center gap-1 transition hover:text-slate-700">{product.brand.name}<BadgeCheck className="h-3.5 w-3.5 text-sky-500" /></Link>}
+            </div>
             <h1 className="font-display mt-1 text-3xl tracking-tight text-slate-900 sm:text-4xl">{product.title}</h1>
             {product.shortDescription && (
               <p className="mt-2 text-sm leading-relaxed text-slate-600">{product.shortDescription}</p>
@@ -230,7 +271,48 @@ export default function Product() {
               </div>
             )}
 
-            {multi && (
+            {multi && optionDefinitions.length > 0 && (
+              <div className="mt-5 space-y-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                {optionDefinitions.map((definition) => (
+                  <div key={definition.code}>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      {definition.name}<span className="ml-1.5 normal-case text-slate-800">— {selectedOptions[definition.code]}</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={`Choose ${definition.name}`}>
+                      {definition.values.map((value) => {
+                        const candidates = family.filter((v) => {
+                          const values = Object.fromEntries((v.optionValues || []).map((o) => [o.code, o.value]));
+                          return values[definition.code] === value && optionDefinitions.every((other) =>
+                            other.code === definition.code || !selectedOptions[other.code] || values[other.code] === selectedOptions[other.code]
+                          );
+                        });
+                        const unavailable = !candidates.some((v) => (v.stockQty ?? 0) > 0);
+                        const activeOption = selectedOptions[definition.code] === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            role="radio"
+                            aria-checked={activeOption}
+                            disabled={!candidates.length}
+                            onClick={() => pickOption(definition.code, value)}
+                            className={cn(
+                              'rounded-xl border px-3.5 py-2 text-sm font-semibold transition',
+                              activeOption ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400',
+                              unavailable && !activeOption && 'opacity-50 line-through',
+                            )}
+                          >
+                            {value}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {multi && optionDefinitions.length === 0 && (
               <div className="mt-4">
                 <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
                   {(selected?.variantType || 'Option').replace(/_/g, ' ')}
@@ -271,8 +353,8 @@ export default function Product() {
               <Money value={price} className="text-3xl font-bold text-slate-900" />
               {mrp && mrp > price && <Money value={mrp} strike className="pb-1 text-sm" />}
             </div>
-            {product.defaultSellingUnit && (
-              <p className="mt-1 text-xs text-slate-400">per {product.defaultSellingUnit}</p>
+            {(effListing.priceBasis?.unitCode || product.defaultSellingUnit) && (
+              <p className="mt-1 text-xs text-slate-400">per {effListing.priceBasis?.quantity || 1} {effListing.priceBasis?.unitCode || product.defaultSellingUnit}</p>
             )}
 
             <div className="mt-4">
@@ -318,7 +400,7 @@ export default function Product() {
               )}
             </div>
 
-            <div className="mt-6">
+            <div className="sticky bottom-3 z-20 mt-6 rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-lift backdrop-blur lg:static lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
               {out ? (
                 <Button className="w-full" variant="outline" disabled>Out of stock</Button>
               ) : qty > 0 ? (
@@ -350,6 +432,59 @@ export default function Product() {
 
             {product.description && (
               <p className="mt-6 text-sm leading-relaxed text-slate-600">{product.description}</p>
+            )}
+
+            {specificationRows.length > 0 && (
+              <section className="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <h2 className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800"><PackageCheck className="h-4 w-4" style={{ color: 'var(--brand)' }} />Specifications{selected?.label && <span className="font-normal text-slate-400">· {selected.label}</span>}</h2>
+                <dl className="grid sm:grid-cols-2">
+                  {specificationRows.map(([key, item]) => (
+                    <div key={key} className="flex items-center justify-between gap-4 border-b border-slate-100 px-4 py-3 text-sm odd:sm:border-r">
+                      <dt className="capitalize text-slate-500">{key.replace(/_/g, ' ')}</dt>
+                      <dd className="text-right font-semibold text-slate-800">{typeof item.value === 'object' ? JSON.stringify(item.value) : String(item.value)}{item.unit ? ` ${item.unit}` : ''}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </section>
+            )}
+
+            {(product.manufacturer || product.modelNumber || product.countryOfOrigin || product.identifiers?.gtin || product.fulfillmentProfile?.weight?.value || product.unitPolicy || product.warranty?.duration != null) && (
+              <section className="mt-8 overflow-hidden rounded-2xl border border-slate-200">
+                <h2 className="border-b border-slate-100 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-800">Product information</h2>
+                <dl className="grid grid-cols-2 gap-x-5 gap-y-3 p-4 text-sm">
+                  {product.manufacturer && <><dt className="text-slate-500">Manufacturer</dt><dd className="font-medium text-slate-800">{product.manufacturer}</dd></>}
+                  {product.modelNumber && <><dt className="text-slate-500">Model</dt><dd className="font-medium text-slate-800">{product.modelNumber}</dd></>}
+                  {product.condition && <><dt className="text-slate-500">Condition</dt><dd className="font-medium capitalize text-slate-800">{product.condition}</dd></>}
+                  {product.countryOfOrigin && <><dt className="text-slate-500">Country of origin</dt><dd className="font-medium text-slate-800">{product.countryOfOrigin}</dd></>}
+                  {product.identifiers?.gtin && <><dt className="text-slate-500">GTIN</dt><dd className="font-mono text-xs text-slate-800">{product.identifiers.gtin}</dd></>}
+                  {product.fulfillmentProfile?.weight?.value != null && <><dt className="text-slate-500">Shipping weight</dt><dd className="font-medium text-slate-800">{product.fulfillmentProfile.weight.value} {product.fulfillmentProfile.weight.unit}</dd></>}
+                  {product.unitPolicy && <><dt className="text-slate-500">Available units</dt><dd className="font-medium text-slate-800">{(product.unitPolicy.units || []).map((unit) => unit.label).join(', ')}</dd></>}
+                  {product.warranty?.duration != null && <><dt className="text-slate-500">Warranty</dt><dd className="font-medium text-slate-800">{`${product.warranty.duration} ${product.warranty.unit || 'month'}${product.warranty.duration === 1 ? '' : 's'}`}{product.warranty.description && <small className="mt-1 block font-normal leading-relaxed text-slate-500">{product.warranty.description}</small>}</dd></>}
+                </dl>
+              </section>
+            )}
+
+            {(product.packages || []).length > 0 && (
+              <section className="mt-5 rounded-2xl border border-slate-200 p-4">
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-slate-800"><PackageCheck className="h-4 w-4" style={{ color: 'var(--brand)' }} />Available pack hierarchy</h2>
+                <p className="mt-1 text-xs text-slate-500">Packaging levels and quantities defined by the manufacturer.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">{product.packages.map((pack) => <div key={pack.code} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2.5 text-xs text-slate-700"><span><strong className="block text-slate-900">{pack.label}</strong><span className="font-mono text-[10px] uppercase text-slate-400">{pack.level || 'pack'} · {pack.code}</span></span><span className="text-right font-semibold">{pack.quantity} {pack.unitCode}{pack.containedPackageCode ? <small className="block font-normal text-slate-400">contains {pack.containedPackageCode}</small> : null}</span></div>)}</div>
+              </section>
+            )}
+
+            {product.kind === 'bundle' && (product.bundleComponents || []).length > 0 && (
+              <section className="mt-5 rounded-2xl border border-slate-200 p-4">
+                <h2 className="text-sm font-semibold text-slate-800">What’s included</h2>
+                <ul className="mt-3 space-y-2">{product.bundleComponents.map((component) => <li key={component._id || `${component.componentMasterId}-${component.selectionGroup}`} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm"><span>{component.product?.title || 'Bundle item'}{component.variant && <span className="ml-1 text-slate-400">· {component.variant.displayLabel || component.variant.value}</span>}</span><span className="font-semibold">{component.quantity} {component.unitCode}</span></li>)}</ul>
+              </section>
+            )}
+
+            {(product.compliance || []).length > 0 && (
+              <section className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-emerald-900"><ShieldCheck className="h-4 w-4" />Verified standards & compliance</h2>
+                <p className="mt-1 text-xs text-emerald-800/70">Only currently verified, unexpired records are shown.</p>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">{product.compliance.map((record) => <div key={`${record.type}-${record.code}`} className="rounded-xl border border-emerald-100 bg-white p-3 shadow-sm"><p className="flex items-center gap-1.5 text-xs font-bold text-emerald-900"><BadgeCheck className="h-3.5 w-3.5" />{record.title}</p><p className="mt-1 font-mono text-[10px] text-emerald-700">{record.code}</p>{(record.authority || record.jurisdiction) && <p className="mt-1 text-[10px] text-slate-500">{[record.authority, record.jurisdiction].filter(Boolean).join(' · ')}</p>}{record.validUntil && <p className="mt-1 text-[10px] font-medium text-slate-400">Valid until {new Date(record.validUntil).toLocaleDateString('en-IN')}</p>}</div>)}</div>
+              </section>
             )}
           </div>
         </div>

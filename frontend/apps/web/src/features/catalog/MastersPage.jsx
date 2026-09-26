@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Package, Plus, RefreshCw, Search, SearchX } from 'lucide-react';
 import { fmtDate, pickMeta, PRODUCT_MASTER_STATUS_META, PRODUCT_TYPE_META } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
-import { rid } from '../../lib/utils.js';
+import { errMsg, rid } from '../../lib/utils.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
 import Card from '../../components/ui/Card.jsx';
 import Badge from '../../components/ui/Badge.jsx';
@@ -14,6 +14,7 @@ import { Input, Select } from '../../components/ui/Field.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
 import MasterFormModal from './MasterFormModal.jsx';
 import MasterDetailModal from './MasterDetailModal.jsx';
+import { BrandPicker, CategoryPicker } from './CatalogPickers.jsx';
 
 const STATUSES = [
   ['', 'All statuses'],
@@ -24,9 +25,18 @@ const STATUSES = [
 ];
 const TYPES = Object.keys(PRODUCT_TYPE_META);
 
+function flattenCategoryTree(nodes = [], parentId = null) {
+  return nodes.flatMap((node) => {
+    const id = rid(node);
+    const item = { ...node, parentId: node.parentId || parentId };
+    return [item, ...flattenCategoryTree(node.children || [], id)];
+  });
+}
+
 export default function MastersPage() {
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [status, setStatus] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [brandId, setBrandId] = useState('');
@@ -35,26 +45,32 @@ export default function MastersPage() {
   const [form, setForm] = useState(null); // {mode:'create'} | {mode:'edit', master}
   const [limit] = useState(20);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const masters = useApi(
     () =>
       api.catalogAdmin.masters({
         page, limit,
-        search: search || undefined,
+        search: debouncedSearch || undefined,
         status: status || undefined,
         categoryId: categoryId || undefined,
         brandId: brandId || undefined,
         type: type || undefined,
       }),
-    [page, search, status, categoryId, brandId, type]
+    [page, debouncedSearch, status, categoryId, brandId, type]
   );
-  const cats = useApi(() => api.catalogAdmin.categories({ limit: 100 }), []);
+  const cats = useApi(() => api.catalogAdmin.categoryTree(), []);
   const brands = useApi(() => api.catalogAdmin.brands({ limit: 100 }), []);
+  const categories = useMemo(() => flattenCategoryTree(cats.data || []), [cats.data]);
 
   const catName = useMemo(() => {
     const map = new Map();
-    (cats.data || []).forEach((c) => map.set(rid(c), c.name));
+    categories.forEach((c) => map.set(rid(c), c.name));
     return map;
-  }, [cats.data]);
+  }, [categories]);
   const brandName = useMemo(() => {
     const map = new Map();
     (brands.data || []).forEach((b) => map.set(rid(b), b.name));
@@ -81,24 +97,43 @@ export default function MastersPage() {
         <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3">
           <div className="relative min-w-[200px] flex-1">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-            <Input className="!pl-9" placeholder="Search SKU, title…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
+            <Input className="!pl-9" placeholder="Search SKU, title, model or attribute…" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} />
           </div>
           <Select className="!w-40" value={status} onChange={(e) => { setStatus(e.target.value); setPage(1); }}>
             {STATUSES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </Select>
-          <Select className="!w-44" value={categoryId} onChange={(e) => { setCategoryId(e.target.value); setPage(1); }}>
-            <option value="">All categories</option>
-            {(cats.data || []).map((c) => <option key={rid(c)} value={rid(c)}>{c.name}</option>)}
-          </Select>
-          <Select className="!w-44" value={brandId} onChange={(e) => { setBrandId(e.target.value); setPage(1); }}>
-            <option value="">All brands</option>
-            {(brands.data || []).map((b) => <option key={rid(b)} value={rid(b)}>{b.name}</option>)}
-          </Select>
+          <div className="w-full sm:w-52">
+            <CategoryPicker
+              value={categoryId}
+              onChange={(next) => { setCategoryId(next); setPage(1); }}
+              categories={categories}
+              placeholder="All categories"
+            />
+          </div>
+          <div className="w-full sm:w-52">
+            <BrandPicker
+              value={brandId}
+              onChange={(next) => { setBrandId(next); setPage(1); }}
+              brands={brands.data || []}
+              placeholder="All brands"
+              emptyLabel="All brands"
+            />
+          </div>
           <Select className="!w-40" value={type} onChange={(e) => { setType(e.target.value); setPage(1); }}>
             <option value="">All types</option>
             {TYPES.map((t) => <option key={t} value={t}>{PRODUCT_TYPE_META[t].label}</option>)}
           </Select>
         </div>
+
+        {masters.error && (
+          <div className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-rose-100 text-rose-700"><SearchX className="h-4 w-4" /></span>
+              <div><p className="text-sm font-semibold text-rose-800">Product registry search failed</p><p className="mt-0.5 break-words text-xs text-rose-600">{errMsg(masters.error)}</p></div>
+            </div>
+            <Button size="sm" variant="secondary" icon={RefreshCw} onClick={masters.refetch}>Retry search</Button>
+          </div>
+        )}
 
         <Table
           loading={masters.loading && !masters.data}
@@ -137,6 +172,7 @@ export default function MastersPage() {
           masterId={selected}
           onClose={() => setSelected(null)}
           onChanged={() => masters.refetch()}
+          onEdit={(master) => { setSelected(null); setForm({ mode: 'edit', master }); }}
         />
       )}
 
@@ -145,7 +181,7 @@ export default function MastersPage() {
           open
           onClose={() => setForm(null)}
           initial={form.mode === 'edit' ? form.master : null}
-          categories={cats.data || []}
+          categories={categories}
           brands={brands.data || []}
           onSaved={(doc, refetchOnly) => {
             if (refetchOnly) { masters.refetch(); return; }

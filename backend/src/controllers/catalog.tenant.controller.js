@@ -25,7 +25,9 @@ class CatalogTenantController {
   /**
    * Read-only discovery of ACTIVE global masters for listing creation.
    * Tenant admins cannot call /catalog/admin/masters (correctly SUPER_ADMIN
-   * only), so the console needs this tenant-authorized, publish-gated view.
+   * only), so the console needs this tenant-authorized registry search. A
+   * compliance-pending master may be staged as a draft; activation remains
+   * guarded by catalogStructureService.assertPublishable().
    */
   listAvailableMasters = asyncHandler(async (req, res) => {
     const result = await productMasterService.listMasters({
@@ -74,6 +76,15 @@ class CatalogTenantController {
   getListing = asyncHandler(async (req, res) => {
     const detail = await tenantProductService.getListingDetail({ tenantId: req.tenantId, listingId: req.params.id });
     res.status(200).json(success(detail, { message: 'Listing fetched' }));
+  });
+
+  updateOffer = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...patch } = req.body;
+    const listing = await tenantProductService.updateOffer({
+      tenantId: req.tenantId, listingId: req.params.id, patch, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(listing, { message: 'Listing offer updated' }));
   });
 
   updatePrice = asyncHandler(async (req, res) => {
