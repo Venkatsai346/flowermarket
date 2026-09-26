@@ -420,6 +420,8 @@ async function main() {
     return;
   }
   await connectDb();
+  if (!mongoose.connection.name) fail('MongoDB connected without a resolved database name');
+  console.log(`\nDatabase target: ${mongoose.connection.name}`);
   const dependencies = await loadDependencies(metrics.rows);
   const plan = await buildPlan(metrics.rows, dependencies);
   printPlan(plan);
@@ -436,7 +438,12 @@ async function main() {
   if (result.failures.length) {
     for (const failure of result.failures) console.error(`  ${failure.reference}: ${failure.error}`);
     process.exitCode = 1;
+    return;
   }
+  const verification = await buildPlan(metrics.rows, dependencies);
+  const unsettled = verification.filter((item) => item.action !== 'unchanged');
+  if (unsettled.length) fail(`Post-apply verification found ${unsettled.length} unsettled sandbox product masters`);
+  console.log(`✓ Database verification passed: all ${metrics.rows.length} masters and ${CATALOG_SANDBOX_COUNTS.variants} required variants are settled.`);
 }
 
 main()

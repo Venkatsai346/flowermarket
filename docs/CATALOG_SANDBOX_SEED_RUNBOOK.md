@@ -42,8 +42,9 @@ The product volume comes from three deterministic product families for each of t
 - Operator-authored attributes, extensions, lifecycle status and bundle compositions are preserved.
 - Category repair preserves all operator media and curation fields.
 - Product and variant media are always empty on creation.
-- All writes use the existing domain services, optimistic versions, audit records and catalog events.
-- Super-admin defaults to `6a97b0e9a61173c01d040435` and can be overridden only with `--actor=<ObjectId>`.
+- All writes use the real MongoDB target plus existing domain services, optimistic versions, audit records and catalog events.
+- Every successful apply performs a fresh database-backed convergence plan and fails if any category, master, required variant or required EAV structure remains unsettled.
+- Super-admin defaults to `6a97b0e9a61173c01d040435` and must resolve to an active `super_admin`; it can be overridden only with `--actor=<ObjectId>`.
 
 ## 1. Offline validation
 
@@ -67,11 +68,22 @@ Expected coverage:
 84 bundle component relationships · 0 compliance records · 0 media records
 ```
 
-## 2. Database-backed plans
+## 2. Real MongoDB target and database-backed plans
 
-Configure the intended MongoDB target, then run plans before any apply:
+Both non-validation commands use the same real MongoDB connection bootstrap as the application and canonical seeds: `MONGODB_URI` from `backend/.env` or the process environment. They do not use an in-memory database, JSON fixture store, or mock persistence layer. The resolved database name is printed before planning or writing; credentials are never printed.
+
+The default audited actor is the required active super-admin:
+
+```text
+6a97b0e9a61173c01d040435
+```
+
+Configure the intended MongoDB target securely, then run plans before any apply:
 
 ```bash
+# backend/.env (example shape only; use your actual secured connection)
+MONGODB_URI=mongodb://your-host/your-database
+
 npm run catalog:sandbox:taxonomy:plan
 npm run catalog:sandbox:products:plan
 ```
