@@ -16,23 +16,26 @@ export default function CategoryCard({ node, showChildren = true }) {
   const extra = Math.max(0, (node.children || []).length - kids.length);
 
   return (
-    <div className="card group flex flex-col overflow-hidden transition duration-300 hover:-translate-y-1 hover:shadow-lift focus-within:ring-2 focus-within:ring-offset-2">
-      <Link to={to} className="relative block aspect-[16/10] overflow-hidden bg-slate-100" aria-label={`Browse ${node.name}`}>
+    <div className="card group flex flex-col overflow-hidden rounded-3xl border-slate-200/80 transition duration-300 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lift focus-within:ring-2 focus-within:ring-offset-2">
+      <Link to={to} className="relative block aspect-[16/10] overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200" aria-label={`Browse ${node.name}`}>
         <FloralImage
           src={node.bannerUrl || node.imageUrl}
           alt=""
           className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"
         />
-        <span className="absolute inset-0 bg-gradient-to-t from-black/45 via-transparent to-transparent" />
+        <span className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-slate-950/5 to-transparent transition group-hover:from-slate-950/75" />
         {node.isFeatured && (
           <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-slate-900/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur">
             <Star className="h-3 w-3 fill-amber-400 text-amber-400" /> Featured
           </span>
         )}
         <span className="absolute bottom-3 left-4 right-4 flex items-end justify-between gap-2">
-          <span className="font-display text-lg leading-tight text-white drop-shadow">{node.name}</span>
-          <span className="shrink-0 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold tabular-nums text-slate-800 backdrop-blur">
-            {total}
+          <span>
+            <span className="font-display block text-xl leading-tight text-white drop-shadow">{node.name}</span>
+            <span className="mt-1 block text-[11px] font-semibold text-white/80">Explore the collection</span>
+          </span>
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white/95 text-slate-800 shadow-sm backdrop-blur transition group-hover:translate-x-0.5">
+            <ArrowRight className="h-4 w-4" />
           </span>
         </span>
       </Link>

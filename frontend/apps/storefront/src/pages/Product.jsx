@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { BadgeCheck, ChevronLeft, Droplets, FileText, Leaf, PackageCheck, Play, Scissors, ShieldCheck, Snowflake, Sun, Truck } from 'lucide-react';
+import { BadgeCheck, CheckCircle2, ChevronLeft, Droplets, FileText, Heart, Leaf, LockKeyhole, PackageCheck, Play, RotateCcw, Scissors, Share2, ShieldCheck, Snowflake, Sun, Truck } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { useCartActions } from '../lib/useCart.js';
 import { t } from '../i18n.js';
 import { recordViewed } from '../lib/viewed.js';
+import { useWishlist } from '../lib/useWishlist.js';
+import { resolveVariantForOption, selectedOptionValues, variantOptionState } from '../lib/productVariants.js';
 import ProductCard from '../components/ProductCard.jsx';
 import FloralImage from '../components/FloralImage.jsx';
 import ArrivalPromise from '../components/ArrivalPromise.jsx';
@@ -57,7 +59,9 @@ export default function Product() {
   const language = useShop((s) => s.language);
   const nextSlot = useShop((s) => s.nextSlot);
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
+  const { isWishlisted, toggle: toggleWishlist } = useWishlist();
   const [active, setActive] = useState(0);
+  const [shareDone, setShareDone] = useState(false);
   const [selListingId, setSelListingId] = useState(null);
   const requestedVariantId = params.get('variantId') || '';
 
@@ -92,7 +96,7 @@ export default function Product() {
   const optionDefinitions = (product.options || []).filter((definition) =>
     family.some((v) => (v.optionValues || []).some((o) => o.code === definition.code))
   );
-  const selectedOptions = Object.fromEntries((selected?.optionValues || []).map((o) => [o.code, o.value]));
+  const selectedOptions = selectedOptionValues(selected);
   const effListing = selected
     ? { listingId: selected.listingId, price: selected.price, priceBasis: selected.priceBasis, stockQty: selected.stockQty, variantId: selected.variantId }
     : listing;
@@ -107,13 +111,8 @@ export default function Product() {
   };
 
   const pickOption = (code, value) => {
-    const desired = { ...selectedOptions, [code]: value };
-    const exact = family.find((v) => {
-      const values = Object.fromEntries((v.optionValues || []).map((o) => [o.code, o.value]));
-      return optionDefinitions.every((definition) => values[definition.code] === desired[definition.code]);
-    });
-    const fallback = family.find((v) => (v.optionValues || []).some((o) => o.code === code && o.value === value));
-    if (exact || fallback) pick(exact || fallback);
+    const nextVariant = resolveVariantForOption(family, selected, code, value);
+    if (nextVariant) pick(nextVariant);
   };
 
   const listingView = useMemo(() => ({
@@ -142,12 +141,28 @@ export default function Product() {
   const mrp = effListing.price?.mrp ?? null;
   const stock = effListing.stockQty ?? 0;
   const out = stock <= 0;
+  const discount = mrp && mrp > price ? Math.round(((mrp - price) / mrp) * 100) : 0;
+  const savings = discount ? mrp - price : 0;
+  const wishlistSlug = product.slug || slug;
+  const wishlisted = isWishlisted(wishlistSlug);
   const qty = qtyByListing.get(String(listingView.listingId))?.qty || 0;
   const tags = (product.tags || []).map((x) => String(x).toLowerCase());
   const occasions = tags.filter((x) => OCCASIONS.includes(x));
   const addons = related.filter((l) => ADDON_RE.test([
     l.product?.title, ...(l.product?.tags || []),
   ].filter(Boolean).join(' ')));
+
+  const shareProduct = async () => {
+    const shareData = { title: product.title, text: product.shortDescription || product.title, url: window.location.href };
+    try {
+      if (navigator.share) await navigator.share(shareData);
+      else await navigator.clipboard.writeText(window.location.href);
+      setShareDone(true);
+      window.setTimeout(() => setShareDone(false), 1800);
+    } catch (error) {
+      if (error?.name !== 'AbortError') setShareDone(false);
+    }
+  };
 
   useEffect(() => { setActive(0); }, [slug]);
 
@@ -203,14 +218,19 @@ export default function Product() {
   return (
     <>
       <JsonLd product={product} listing={effListing} store={store} />
-      <div className="wrap py-6">
-        <Link to="/" className="mb-5 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800">
-          <ChevronLeft className="h-4 w-4" /> {t(language, 'backToShop')}
-        </Link>
+      <div className="wrap py-4 sm:py-6">
+        <nav className="mb-5 flex items-center gap-1.5 overflow-hidden text-sm text-slate-500" aria-label="Breadcrumb">
+          <Link to="/" className="inline-flex shrink-0 items-center gap-1 transition hover:text-slate-900">
+            <ChevronLeft className="h-4 w-4" /> {t(language, 'backToShop')}
+          </Link>
+          {product.category?.name && <><span className="text-slate-300">/</span><Link to={`/browse?category=${product.category.id}`} className="truncate transition hover:text-slate-900">{product.category.name}</Link></>}
+          <span className="hidden text-slate-300 sm:inline">/</span>
+          <span className="hidden truncate text-slate-400 sm:inline">{product.title}</span>
+        </nav>
 
-        <div className="grid gap-8 lg:grid-cols-[1.1fr_0.9fr]">
-          <div>
-            <div className="aspect-square overflow-auto rounded-3xl bg-slate-50" style={{ touchAction: 'pan-x pinch-zoom' }}>
+        <div className="grid items-start gap-8 lg:grid-cols-[minmax(0,1.08fr)_minmax(22rem,0.92fr)] xl:gap-12">
+          <div className="lg:sticky lg:top-32">
+            <div className="aspect-square overflow-hidden rounded-[2rem] border border-slate-200/70 bg-gradient-to-br from-slate-50 to-slate-100 shadow-soft" style={{ touchAction: 'pan-x pinch-zoom' }}>
               {images[active]?.url && images[active]?.mediaType === 'video' ? (
                 <video src={images[active].url} controls playsInline className="h-full w-full bg-slate-950 object-contain" aria-label={images[active].altText || product.title} />
               ) : images[active]?.url && ['document', 'model_3d'].includes(images[active]?.mediaType) ? (
@@ -222,7 +242,7 @@ export default function Product() {
                   src={images[active].url}
                   alt={images[active].altText || product.title}
                   priority
-                  className="h-full w-full object-cover"
+                  className="h-full w-full object-contain"
                 />
               ) : (
                 <span className="flex h-full w-full items-center justify-center text-7xl" style={{ background: 'var(--brand-soft)' }} aria-hidden>🌸</span>
@@ -250,13 +270,29 @@ export default function Product() {
             )}
           </div>
 
-          <div className="flex flex-col">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          <div className="flex min-w-0 flex-col">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-400">
               {product.category?.name && <Link to={`/browse?category=${product.category.id}`} className="transition hover:text-slate-700">{product.category.name}</Link>}
               {product.category?.name && product.brand?.name && <span>·</span>}
-              {product.brand?.name && <Link to={`/search?brand=${product.brand.id}&brandName=${encodeURIComponent(product.brand.name)}`} className="inline-flex items-center gap-1 transition hover:text-slate-700">{product.brand.name}<BadgeCheck className="h-3.5 w-3.5 text-sky-500" /></Link>}
+              {product.brand?.name && <Link to={`/brands/${product.brand.id}`} className="inline-flex items-center gap-1 transition hover:text-slate-700">{product.brand.name}<BadgeCheck className="h-3.5 w-3.5 text-sky-500" /></Link>}
             </div>
-            <h1 className="font-display mt-1 text-3xl tracking-tight text-slate-900 sm:text-4xl">{product.title}</h1>
+            <div className="mt-2 flex items-start justify-between gap-4">
+              <h1 className="font-display min-w-0 text-3xl leading-[1.08] tracking-tight text-slate-950 sm:text-[2.6rem]">{product.title}</h1>
+              <div className="flex shrink-0 gap-2">
+                <button
+                  type="button"
+                  onClick={() => toggleWishlist({ slug: wishlistSlug, title: product.title, imageUrl: selected?.imageUrl || product.imageUrl || images[0]?.url, price })}
+                  className={cn('grid h-11 w-11 place-items-center rounded-full border shadow-sm transition hover:-translate-y-0.5', wishlisted ? 'border-rose-200 bg-rose-50 text-rose-600' : 'border-slate-200 bg-white text-slate-500 hover:text-rose-600')}
+                  aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
+                  aria-pressed={wishlisted}
+                >
+                  <Heart className={cn('h-5 w-5', wishlisted && 'fill-current')} />
+                </button>
+                <button type="button" onClick={shareProduct} className="grid h-11 w-11 place-items-center rounded-full border border-slate-200 bg-white text-slate-500 shadow-sm transition hover:-translate-y-0.5 hover:text-slate-900" aria-label="Share product">
+                  {shareDone ? <CheckCircle2 className="h-5 w-5 text-emerald-600" /> : <Share2 className="h-5 w-5" />}
+                </button>
+              </div>
+            </div>
             {product.shortDescription && (
               <p className="mt-2 text-sm leading-relaxed text-slate-600">{product.shortDescription}</p>
             )}
@@ -272,7 +308,14 @@ export default function Product() {
             )}
 
             {multi && optionDefinitions.length > 0 && (
-              <div className="mt-5 space-y-4 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+              <div className="mt-6 space-y-5 rounded-3xl border border-slate-200 bg-slate-50/80 p-4 shadow-sm sm:p-5">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                  <div>
+                    <p className="text-sm font-bold text-slate-900">Choose your configuration</p>
+                    <p className="mt-0.5 text-xs text-slate-500">Selecting an option moves to the closest available combination.</p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[10px] font-bold text-slate-500 shadow-sm ring-1 ring-slate-200">{family.length} variants</span>
+                </div>
                 {optionDefinitions.map((definition) => (
                   <div key={definition.code}>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -280,13 +323,7 @@ export default function Product() {
                     </p>
                     <div className="flex flex-wrap gap-2" role="radiogroup" aria-label={`Choose ${definition.name}`}>
                       {definition.values.map((value) => {
-                        const candidates = family.filter((v) => {
-                          const values = Object.fromEntries((v.optionValues || []).map((o) => [o.code, o.value]));
-                          return values[definition.code] === value && optionDefinitions.every((other) =>
-                            other.code === definition.code || !selectedOptions[other.code] || values[other.code] === selectedOptions[other.code]
-                          );
-                        });
-                        const unavailable = !candidates.some((v) => (v.stockQty ?? 0) > 0);
+                        const state = variantOptionState(family, definition.code, value);
                         const activeOption = selectedOptions[definition.code] === value;
                         return (
                           <button
@@ -294,21 +331,46 @@ export default function Product() {
                             type="button"
                             role="radio"
                             aria-checked={activeOption}
-                            disabled={!candidates.length}
+                            aria-label={`${definition.name} ${value}${state.inStock ? '' : state.exists ? ', sold out' : ', unavailable'}`}
+                            disabled={!state.exists}
                             onClick={() => pickOption(definition.code, value)}
                             className={cn(
-                              'rounded-xl border px-3.5 py-2 text-sm font-semibold transition',
-                              activeOption ? 'border-slate-900 bg-slate-900 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-400',
-                              unavailable && !activeOption && 'opacity-50 line-through',
+                              'relative min-h-11 rounded-xl border px-3.5 py-2 text-sm font-semibold transition duration-200',
+                              activeOption ? 'border-slate-950 bg-slate-950 text-white shadow-md' : 'border-slate-200 bg-white text-slate-700 hover:-translate-y-0.5 hover:border-slate-400 hover:shadow-sm',
+                              !state.inStock && state.exists && !activeOption && 'border-dashed text-slate-400',
+                              !state.exists && 'cursor-not-allowed opacity-35 line-through',
                             )}
                           >
                             {value}
+                            {!state.inStock && state.exists && <span className="ml-1 text-[9px] font-bold uppercase tracking-wide">Sold out</span>}
                           </button>
                         );
                       })}
                     </div>
                   </div>
                 ))}
+                <div className="border-t border-slate-200 pt-4">
+                  <p className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-400">Available combinations</p>
+                  <div className="no-scrollbar flex gap-2 overflow-x-auto pb-1" role="radiogroup" aria-label="Choose complete product configuration">
+                    {family.map((variant) => {
+                      const isSelected = String(variant.listingId) === String(selListingId);
+                      const soldOut = Number(variant.stockQty || 0) <= 0;
+                      return (
+                        <button
+                          key={variant.listingId}
+                          type="button"
+                          role="radio"
+                          aria-checked={isSelected}
+                          onClick={() => pick(variant)}
+                          className={cn('min-w-40 shrink-0 rounded-xl border px-3 py-2.5 text-left transition', isSelected ? 'border-slate-950 bg-white shadow-md ring-1 ring-slate-950' : 'border-slate-200 bg-white/70 hover:border-slate-400', soldOut && !isSelected && 'opacity-60')}
+                        >
+                          <span className="line-clamp-2 block text-xs font-bold text-slate-800">{variant.label || variant.value || 'Standard'}</span>
+                          <span className={cn('mt-1 block text-[11px] font-semibold', soldOut ? 'text-rose-500' : 'text-emerald-700')}>{soldOut ? 'Sold out' : <><Money value={variant.price?.sellingPrice ?? 0} /> · {variant.stockQty} left</>}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -349,13 +411,18 @@ export default function Product() {
               </div>
             )}
 
-            <div className="mt-4 flex items-end gap-2">
-              <Money value={price} className="text-3xl font-bold text-slate-900" />
-              {mrp && mrp > price && <Money value={mrp} strike className="pb-1 text-sm" />}
+            <div className="mt-6 rounded-3xl border border-slate-200/80 bg-white p-4 shadow-soft">
+              <div className="flex flex-wrap items-end gap-x-2.5 gap-y-1">
+                <Money value={price} className="text-3xl font-extrabold tracking-tight text-slate-950" />
+                {mrp && mrp > price && <Money value={mrp} strike className="pb-1 text-sm" />}
+                {discount > 0 && <span className="mb-0.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">{discount}% off</span>}
+              </div>
+              {savings > 0 && <p className="mt-1 text-xs font-semibold text-emerald-700">You save <Money value={savings} /> on this option</p>}
+              {(effListing.priceBasis?.unitCode || product.defaultSellingUnit) && (
+                <p className="mt-1 text-xs text-slate-400">Inclusive of applicable taxes · price per {effListing.priceBasis?.quantity || 1} {effListing.priceBasis?.unitCode || product.defaultSellingUnit}</p>
+              )}
+              {selected?.label && <p className="mt-2 border-t border-slate-100 pt-2 text-xs text-slate-500"><span className="font-semibold text-slate-700">Selected:</span> {selected.label}</p>}
             </div>
-            {(effListing.priceBasis?.unitCode || product.defaultSellingUnit) && (
-              <p className="mt-1 text-xs text-slate-400">per {effListing.priceBasis?.quantity || 1} {effListing.priceBasis?.unitCode || product.defaultSellingUnit}</p>
-            )}
 
             <div className="mt-4">
               <ArrivalPromise />
@@ -400,7 +467,14 @@ export default function Product() {
               )}
             </div>
 
-            <div className="sticky bottom-3 z-20 mt-6 rounded-2xl border border-slate-200/80 bg-white/95 p-3 shadow-lift backdrop-blur lg:static lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
+            <div className="sticky bottom-3 z-20 mt-6 rounded-3xl border border-slate-200/80 bg-white/95 p-3 shadow-lift backdrop-blur lg:static lg:bg-white lg:p-4 lg:shadow-soft">
+              <div className="mb-3 flex items-center justify-between gap-3 px-1">
+                <span className={cn('inline-flex items-center gap-1.5 text-sm font-bold', out ? 'text-rose-600' : 'text-emerald-700')}>
+                  <span className={cn('h-2 w-2 rounded-full', out ? 'bg-rose-500' : 'bg-emerald-500')} />
+                  {out ? 'Currently unavailable' : 'In stock and ready to order'}
+                </span>
+                {!out && <span className="text-xs font-medium text-slate-400">{stock} available</span>}
+              </div>
               {out ? (
                 <Button className="w-full" variant="outline" disabled>Out of stock</Button>
               ) : qty > 0 ? (
@@ -416,6 +490,12 @@ export default function Product() {
               {!out && stock <= 5 && (
                 <p className="mt-2 text-sm font-medium text-amber-600">Only {stock} left in stock</p>
               )}
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 overflow-hidden rounded-2xl border border-slate-200 bg-slate-50/70 text-center">
+              <span className="flex min-h-20 flex-col items-center justify-center gap-1 border-r border-slate-200 px-2 py-3 text-[11px] font-semibold text-slate-600"><LockKeyhole className="h-4 w-4" style={{ color: 'var(--brand)' }} />Secure checkout</span>
+              <span className="flex min-h-20 flex-col items-center justify-center gap-1 border-r border-slate-200 px-2 py-3 text-[11px] font-semibold text-slate-600"><RotateCcw className="h-4 w-4" style={{ color: 'var(--brand)' }} />Order support</span>
+              <span className="flex min-h-20 flex-col items-center justify-center gap-1 px-2 py-3 text-[11px] font-semibold text-slate-600"><ShieldCheck className="h-4 w-4" style={{ color: 'var(--brand)' }} />Protected order</span>
             </div>
 
             {care && (

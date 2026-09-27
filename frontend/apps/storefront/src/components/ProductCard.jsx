@@ -231,21 +231,19 @@ function CardShell({
   const wishlistImage =
     product.imageUrl || imageUrl || '';
 
-  const {
-    wishlisted,
-    toggle,
-  } = useWishlist(slug);
+  const { isWishlisted, toggle } = useWishlist();
+  const wishlisted = isWishlisted(slug);
 
   return (
     <article
       className={cn(
-        'card group relative flex flex-col overflow-hidden transition hover:shadow-lift',
-        out && 'opacity-70',
+        'card group relative flex flex-col overflow-hidden rounded-3xl border-slate-200/80 transition duration-300 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lift',
+        out && 'bg-slate-50/50',
       )}
     >
       <Link
         to={href}
-        className="relative block aspect-square w-full overflow-hidden bg-slate-50 text-left"
+        className="relative block aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-left sm:aspect-square"
         aria-label={`View ${title}`}
       >
         {imageUrl ? (
@@ -275,12 +273,16 @@ function CardShell({
           )}
         </span>
 
-        <button
-          type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
+        {out && (
+          <span className="absolute inset-x-0 bottom-0 bg-slate-900/75 py-1.5 text-center text-xs font-semibold text-white">
+            Out of stock
+          </span>
+        )}
+      </Link>
 
+      <button
+          type="button"
+          onClick={() => {
             toggle({
               slug,
               title: wishlistTitle,
@@ -289,10 +291,10 @@ function CardShell({
             });
           }}
           className={cn(
-            'absolute right-2 top-2 rounded-full p-1.5 shadow-sm transition',
+            'absolute right-2.5 top-2.5 z-10 grid h-9 w-9 place-items-center rounded-full border shadow-sm backdrop-blur transition duration-200 hover:scale-105 active:scale-95',
             wishlisted
-              ? 'bg-rose-100 text-rose-600'
-              : 'bg-white/90 text-slate-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100',
+              ? 'border-rose-200 bg-rose-50 text-rose-600'
+              : 'border-white/70 bg-white/90 text-slate-500 hover:text-rose-600',
           )}
           aria-label={
             wishlisted
@@ -303,27 +305,20 @@ function CardShell({
         >
           <Heart
             className={cn(
-              'h-4 w-4',
-              wishlisted && 'fill-current',
+              'h-[18px] w-[18px] transition-transform',
+              wishlisted && 'scale-110 fill-current',
             )}
           />
         </button>
 
-        {out && (
-          <span className="absolute inset-x-0 bottom-0 bg-slate-900/75 py-1.5 text-center text-xs font-semibold text-white">
-            Out of stock
-          </span>
-        )}
-      </Link>
-
-      <div className="flex flex-1 flex-col gap-1 p-3">
+      <div className="flex flex-1 flex-col gap-1 px-3.5 pb-3.5 pt-3">
         {(product.brand?.name || product.brandName) && (
           <p className="flex items-center gap-1 truncate text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
             {product.brand?.name || product.brandName}{product.brand?.isVerified && <BadgeCheck className="h-3 w-3 text-sky-500" />}
           </p>
         )}
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-800 transition group-hover:text-slate-950">
-          {title}
+          <Link to={href} className="focus-visible:rounded-sm">{title}</Link>
         </h3>
 
         {basisUnit && (

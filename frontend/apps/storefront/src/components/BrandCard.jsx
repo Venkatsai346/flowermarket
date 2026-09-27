@@ -16,7 +16,7 @@ export default function BrandCard({ brand }) {
   return (
     <Link
       to={to}
-      className="card group flex flex-col overflow-hidden transition duration-300 hover:-translate-y-1 hover:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+      className="card group flex flex-col overflow-hidden rounded-3xl border-slate-200/80 transition duration-300 hover:-translate-y-1 hover:border-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
       onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 12px 32px -12px var(--brand-ring)'; }}
       onMouseLeave={(e) => { e.currentTarget.style.boxShadow = ''; }}
       aria-label={`Shop ${brand.name} — ${count} product${count === 1 ? '' : 's'}`}
@@ -34,7 +34,20 @@ export default function BrandCard({ brand }) {
             style={{ background: 'linear-gradient(135deg, var(--brand-soft), var(--brand-ring))' }}
           />
         )}
-        <span className="absolute left-3 top-3 flex gap-1.5">
+        <span className="absolute inset-0 bg-gradient-to-t from-slate-950/20 via-transparent to-white/10" />
+        <span className="absolute left-4 top-4 z-10 grid h-16 w-16 place-items-center overflow-hidden rounded-2xl border border-white/80 bg-white p-1.5 shadow-lg shadow-slate-900/15">
+          {brand.logoUrl ? (
+            <img src={brand.logoUrl} alt={`${brand.name} logo`} loading="lazy" className="h-full w-full object-contain" />
+          ) : (
+            <span
+              className="grid h-full w-full place-items-center rounded-xl text-xl font-bold"
+              style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}
+            >
+              {(brand.name || '?').trim().charAt(0).toUpperCase()}
+            </span>
+          )}
+        </span>
+        <span className="absolute right-3 top-3 z-10 flex gap-1.5">
           {brand.isFeatured && (
             <span className="inline-flex items-center gap-1 rounded-full bg-slate-900/80 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white backdrop-blur">
               <Star className="h-3 w-3 fill-amber-400 text-amber-400" /> Featured
@@ -43,19 +56,7 @@ export default function BrandCard({ brand }) {
         </span>
       </span>
 
-      <span className="flex flex-1 flex-col px-4 pb-4">
-        <span className="-mt-7 mb-2 block h-14 w-14 overflow-hidden rounded-2xl bg-white object-cover ring-4 ring-white">
-          {brand.logoUrl ? (
-            <img src={brand.logoUrl} alt="" loading="lazy" className="h-full w-full object-contain" />
-          ) : (
-            <span
-              className="grid h-full w-full place-items-center text-xl font-bold"
-              style={{ background: 'var(--brand-soft)', color: 'var(--brand)' }}
-            >
-              {(brand.name || '?').trim().charAt(0).toUpperCase()}
-            </span>
-          )}
-        </span>
+      <span className="flex flex-1 flex-col px-4 pb-4 pt-4">
 
         <span className="flex items-center gap-1.5 text-[15px] font-bold text-slate-900">
           <span className="truncate">{brand.name}</span>

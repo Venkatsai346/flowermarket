@@ -7,6 +7,7 @@ import { t } from '../i18n.js';
 import AccountMenu from './AccountMenu.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import { cn } from '../lib/utils.js';
+import { useWishlist } from '../lib/useWishlist.js';
 
 export default function Header() {
   const store = useShop((s) => s.store);
@@ -18,6 +19,7 @@ export default function Header() {
   const language = useShop((s) => s.language);
   const setLanguage = useShop((s) => s.setLanguage);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
+  const { items: wishlistItems } = useWishlist();
   const [local, setLocal] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [showSuggest, setShowSuggest] = useState(false);
@@ -163,10 +165,11 @@ export default function Header() {
           </Link>
           <Link
             to="/wishlist"
-            className="hidden h-10 w-10 items-center justify-center rounded-full text-slate-600 transition hover:bg-slate-100 sm:flex"
-            aria-label="My wishlist"
+            className={cn('relative hidden h-10 w-10 items-center justify-center rounded-full transition hover:bg-rose-50 sm:flex', wishlistItems.length ? 'text-rose-600' : 'text-slate-600')}
+            aria-label={`My wishlist, ${wishlistItems.length} item${wishlistItems.length === 1 ? '' : 's'}`}
           >
-            <Heart className="h-5 w-5" />
+            <Heart className={cn('h-5 w-5', wishlistItems.length && 'fill-current')} />
+            {wishlistItems.length > 0 && <span className="absolute -right-0.5 -top-0.5 grid h-4 min-w-4 place-items-center rounded-full bg-rose-600 px-1 text-[9px] font-bold leading-none text-white">{Math.min(wishlistItems.length, 99)}</span>}
           </Link>
           <NotificationBell />
           <AccountMenu />
