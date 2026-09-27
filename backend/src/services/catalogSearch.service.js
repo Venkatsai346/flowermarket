@@ -93,6 +93,7 @@ class CatalogSearchService {
     }
     if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': toObjectId(query.categoryId) } });
     if (query.brandId) pipeline.push({ $match: { 'master.brandId': toObjectId(query.brandId) } });
+    if (query.excludeMasterId) pipeline.push({ $match: { 'master._id': { $ne: toObjectId(query.excludeMasterId) } } });
     if (query.type) pipeline.push({ $match: { 'master.type': query.type } });
     if (query.minPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $gte: Number(query.minPrice) } } });
     if (query.maxPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $lte: Number(query.maxPrice) } } });

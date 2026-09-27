@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { BadgeCheck, Check, Heart, Package, Plus, ShieldCheck, Sparkles } from 'lucide-react';
 import { inr } from '@flower-market/shared';
 import { Money, Stepper } from './ui.jsx';
-import FloralImage from './FloralImage.jsx';
+import ProductImage from './ProductImage.jsx';
 import { cn } from '../lib/utils.js';
 import { useWishlist } from '../lib/useWishlist.js';
 
@@ -44,16 +44,20 @@ export default function ProductCard({
 
   const line = {
     listingId: listing.listingId,
+    variantId: listing.variantId || listing.variant?.id || null,
+    variantLabel: listing.variant?.displayLabel || listing.variant?.value || null,
+    sellerSku: listing.sellerSku || null,
     price: listing.price,
     priceBasis: listing.priceBasis,
     stockQty: listing.stockQty ?? 0,
     product: p,
   };
+  const productPath = `/p/${p.slug || p.id || listing.listingId}`;
 
   return (
     <CardShell
       title={p.title}
-      href={`/p/${p.slug || p.id || listing.listingId}`}
+      href={line.variantId ? { pathname: productPath, search: `?variantId=${line.variantId}` } : productPath}
       imageUrl={p.imageUrl}
       unit={p.defaultSellingUnit}
       line={line}
@@ -92,6 +96,9 @@ function GroupedCard({
 
   const line = {
     listingId: sel.listingId,
+    variantId: sel.variantId || null,
+    variantLabel: sel.label || sel.value || null,
+    sellerSku: sel.sellerSku || null,
     price: {
       sellingPrice: sel.price?.sellingPrice ?? 0,
       mrp: sel.price?.mrp ?? null,
@@ -231,8 +238,15 @@ function CardShell({
   const wishlistImage =
     product.imageUrl || imageUrl || '';
 
+  const wishlistItem = {
+    slug,
+    listingId: line.listingId,
+    variantId: line.variantId,
+    variantLabel: line.variantLabel,
+    sellerSku: line.sellerSku,
+  };
   const { isWishlisted, toggle } = useWishlist();
-  const wishlisted = isWishlisted(slug);
+  const wishlisted = isWishlisted(wishlistItem);
 
   return (
     <article
@@ -246,21 +260,11 @@ function CardShell({
         className="relative block aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-left sm:aspect-square"
         aria-label={`View ${title}`}
       >
-        {imageUrl ? (
-          <FloralImage
-            src={imageUrl}
-            alt={title}
-            className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-          />
-        ) : (
-          <span
-            className="flex h-full w-full items-center justify-center text-4xl"
-            style={{ background: 'var(--brand-soft)' }}
-            aria-hidden
-          >
-            🌸
-          </span>
-        )}
+        <ProductImage
+          src={imageUrl}
+          alt={title}
+          className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
+        />
 
         <span className="absolute left-2 top-2 flex flex-col items-start gap-1.5">
           {off > 0 && (
@@ -284,7 +288,7 @@ function CardShell({
           type="button"
           onClick={() => {
             toggle({
-              slug,
+              ...wishlistItem,
               title: wishlistTitle,
               imageUrl: wishlistImage,
               price,
@@ -320,6 +324,9 @@ function CardShell({
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-800 transition group-hover:text-slate-950">
           <Link to={href} className="focus-visible:rounded-sm">{title}</Link>
         </h3>
+        {line.variantLabel && (
+          <p className="line-clamp-1 text-[11px] font-semibold text-slate-500" title={line.variantLabel}>{line.variantLabel}</p>
+        )}
 
         {basisUnit && (
           <p className="text-[11px] font-medium text-slate-400">

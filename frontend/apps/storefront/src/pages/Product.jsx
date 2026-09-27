@@ -10,7 +10,8 @@ import { recordViewed } from '../lib/viewed.js';
 import { useWishlist } from '../lib/useWishlist.js';
 import { resolveVariantForOption, selectedOptionValues, variantOptionState } from '../lib/productVariants.js';
 import ProductCard from '../components/ProductCard.jsx';
-import FloralImage from '../components/FloralImage.jsx';
+import ProductImage from '../components/ProductImage.jsx';
+import ProductFallback from '../components/ProductFallback.jsx';
 import ArrivalPromise from '../components/ArrivalPromise.jsx';
 import { Button, Empty, Money, ProductSkeleton, Stepper } from '../components/ui.jsx';
 import { cn, errMsg } from '../lib/utils.js';
@@ -18,6 +19,7 @@ import { cn, errMsg } from '../lib/utils.js';
 const CARE_DEFAULT = 'Trim stems on an angle, change the water daily, keep out of direct sun and away from fruit. A cool room stretches vase life.';
 const OCCASIONS = ['birthday', 'anniversary', 'sorry', 'pooja', 'wedding', 'love', 'congratulations'];
 const ADDON_RE = /vase|greeting.?card|\bcard\b|chocolate|addon|teddy/i;
+const cardIdentity = (row) => String(row?.masterId || row?.product?.id || row?.listingId || '');
 
 function attrMap(list) {
   const m = {};
@@ -144,7 +146,14 @@ export default function Product() {
   const discount = mrp && mrp > price ? Math.round(((mrp - price) / mrp) * 100) : 0;
   const savings = discount ? mrp - price : 0;
   const wishlistSlug = product.slug || slug;
-  const wishlisted = isWishlisted(wishlistSlug);
+  const wishlistItem = {
+    slug: wishlistSlug,
+    listingId: listingView.listingId,
+    variantId: effListing.variantId || selected?.variantId || null,
+    variantLabel: selected?.label || selected?.value || null,
+    sellerSku: selected?.sellerSku || null,
+  };
+  const wishlisted = isWishlisted(wishlistItem);
   const qty = qtyByListing.get(String(listingView.listingId))?.qty || 0;
   const tags = (product.tags || []).map((x) => String(x).toLowerCase());
   const occasions = tags.filter((x) => OCCASIONS.includes(x));
@@ -238,14 +247,14 @@ export default function Product() {
                   <FileText className="h-14 w-14" /><span className="text-sm font-semibold">Open {images[active].mediaType === 'model_3d' ? '3D model' : 'document'}</span>
                 </a>
               ) : images[active]?.url ? (
-                <FloralImage
+                <ProductImage
                   src={images[active].url}
                   alt={images[active].altText || product.title}
                   priority
                   className="h-full w-full object-contain"
                 />
               ) : (
-                <span className="flex h-full w-full items-center justify-center text-7xl" style={{ background: 'var(--brand-soft)' }} aria-hidden>🌸</span>
+                <ProductFallback label={`Image coming soon for ${product.title || 'this product'}`} />
               )}
             </div>
             {images.length > 1 && (
@@ -263,7 +272,7 @@ export default function Product() {
                       <span className="grid h-full w-full place-items-center bg-slate-900 text-white"><Play className="h-5 w-5" /></span>
                     ) : ['document', 'model_3d'].includes(img.mediaType) ? (
                       <span className="grid h-full w-full place-items-center bg-slate-100 text-slate-500"><FileText className="h-5 w-5" /></span>
-                    ) : <FloralImage src={img.url} alt="" className="h-full w-full object-cover" />}
+                    ) : <ProductImage src={img.url} alt="" className="h-full w-full object-cover" />}
                   </button>
                 ))}
               </div>
@@ -281,7 +290,7 @@ export default function Product() {
               <div className="flex shrink-0 gap-2">
                 <button
                   type="button"
-                  onClick={() => toggleWishlist({ slug: wishlistSlug, title: product.title, imageUrl: selected?.imageUrl || product.imageUrl || images[0]?.url, price })}
+                  onClick={() => toggleWishlist({ ...wishlistItem, title: product.title, imageUrl: selected?.imageUrl || product.imageUrl || images[0]?.url, price })}
                   className={cn('grid h-11 w-11 place-items-center rounded-full border shadow-sm transition hover:-translate-y-0.5', wishlisted ? 'border-rose-200 bg-rose-50 text-rose-600' : 'border-slate-200 bg-white text-slate-500 hover:text-rose-600')}
                   aria-label={wishlisted ? 'Remove from wishlist' : 'Add to wishlist'}
                   aria-pressed={wishlisted}
@@ -575,7 +584,7 @@ export default function Product() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
               {addons.slice(0, 4).map((l) => (
                 <ProductCard
-                  key={l.listingId}
+                  key={cardIdentity(l)}
                   listing={l}
                   qtyByListing={qtyByListing}
                   busyId={busyId}
@@ -587,13 +596,13 @@ export default function Product() {
           </section>
         )}
 
-        {related.filter((l) => !addons.some((a) => String(a.listingId) === String(l.listingId))).length > 0 && (
+        {related.filter((l) => !addons.some((addon) => cardIdentity(addon) === cardIdentity(l))).length > 0 && (
           <section className="mt-14">
             <h2 className="mb-4 font-display text-xl text-slate-900">{t(language, 'youMayAlsoLike')}</h2>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-              {related.filter((l) => !addons.some((a) => String(a.listingId) === String(l.listingId))).map((l) => (
+              {related.filter((l) => !addons.some((addon) => cardIdentity(addon) === cardIdentity(l))).map((l) => (
                 <ProductCard
-                  key={l.listingId}
+                  key={cardIdentity(l)}
                   listing={l}
                   qtyByListing={qtyByListing}
                   busyId={busyId}

@@ -4,7 +4,7 @@ import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useCartActions } from '../lib/useCart.js';
 import ProductCard from '../components/ProductCard.jsx';
-import FloralImage from '../components/FloralImage.jsx';
+import ProductImage from '../components/ProductImage.jsx';
 import { Button, Empty, ProductSkeleton } from '../components/ui.jsx';
 import { errMsg } from '../lib/utils.js';
 
@@ -12,7 +12,7 @@ export default function Brand() {
   const { id } = useParams();
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
   const brands = useApi(() => api.shop.storeBrands(), []);
-  const products = useApi(() => api.shop.products({ brandId: id, limit: 48 }), [id]);
+  const products = useApi(() => api.shop.products({ brandId: id, groupBy: 'master', limit: 100 }), [id]);
   const brand = (brands.data || []).find((item) => String(item.id) === String(id));
   const items = products.data || [];
 
@@ -25,7 +25,7 @@ export default function Brand() {
       <Link to="/brands" className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 transition hover:text-slate-900"><ArrowLeft className="h-4 w-4" />All brands</Link>
       <header className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 text-white shadow-sm">
         <div className="relative h-40 overflow-hidden sm:h-56">
-          {brand?.bannerUrl ? <FloralImage src={brand.bannerUrl} alt="" className="h-full w-full object-cover opacity-75" /> : <div className="h-full w-full" style={{ background: 'linear-gradient(135deg, var(--brand), #0f172a)' }} />}
+          {brand?.bannerUrl ? <ProductImage src={brand.bannerUrl} alt="" className="h-full w-full object-cover opacity-75" /> : <div className="h-full w-full" style={{ background: 'linear-gradient(135deg, var(--brand), #0f172a)' }} />}
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
         </div>
         <div className="relative -mt-12 flex flex-col gap-4 px-5 pb-6 sm:flex-row sm:items-end sm:px-8 sm:pb-8">

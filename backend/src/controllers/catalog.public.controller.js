@@ -217,12 +217,13 @@ class CatalogPublicController {
       tenantId,
       query: {
         categoryId: master.categoryId ? String(master.categoryId) : undefined,
-        limit: 9,
+        excludeMasterId: String(masterId),
+        limit: 24,
       },
     });
-    const familyIds = new Set(family.map((l) => String(l._id)));
-    const related = (relatedRaw.items || [])
-      .filter((r) => !familyIds.has(String(r.listingId)))
+    const relatedRows = (relatedRaw.items || [])
+      .filter((row) => String(row.product?.id || '') !== String(masterId));
+    const related = (await catalogSearchService.groupListingRows({ tenantId, rows: relatedRows }))
       .slice(0, 8);
 
     const images = (selected.images || []).map((img) => ({

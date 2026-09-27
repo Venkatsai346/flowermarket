@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ArrowRight, Star } from 'lucide-react';
-import FloralImage from './FloralImage.jsx';
+import ProductImage from './ProductImage.jsx';
 import { Money } from './ui.jsx';
 
 /**
@@ -18,7 +18,7 @@ export default function CategoryCard({ node, showChildren = true }) {
   return (
     <div className="card group flex flex-col overflow-hidden rounded-3xl border-slate-200/80 transition duration-300 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lift focus-within:ring-2 focus-within:ring-offset-2">
       <Link to={to} className="relative block aspect-[16/10] overflow-hidden bg-gradient-to-br from-slate-100 to-slate-200" aria-label={`Browse ${node.name}`}>
-        <FloralImage
+        <ProductImage
           src={node.bannerUrl || node.imageUrl}
           alt=""
           className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { ArrowRight, BadgeCheck, Star } from 'lucide-react';
-import FloralImage from './FloralImage.jsx';
+import ProductImage from './ProductImage.jsx';
 import { Money } from './ui.jsx';
 
 /**
@@ -23,7 +23,7 @@ export default function BrandCard({ brand }) {
     >
       <span className="relative block h-24 overflow-hidden bg-slate-100 sm:h-28">
         {brand.bannerUrl ? (
-          <FloralImage
+          <ProductImage
             src={brand.bannerUrl}
             alt=""
             className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"

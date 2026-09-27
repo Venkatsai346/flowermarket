@@ -7,7 +7,7 @@ import { useShop } from '../store.js';
 import { useCartActions } from '../lib/useCart.js';
 import { t } from '../i18n.js';
 import ProductCard from '../components/ProductCard.jsx';
-import FloralImage from '../components/FloralImage.jsx';
+import ProductImage from '../components/ProductImage.jsx';
 import { Empty, Money, ProductSkeleton, Button } from '../components/ui.jsx';
 import { cn, errMsg } from '../lib/utils.js';
 
@@ -126,7 +126,7 @@ export default function Browse() {
         <div className="card mb-2 overflow-hidden">
           {(current.bannerUrl || current.imageUrl) && (
             <div className="relative h-36 overflow-hidden sm:h-44">
-              <FloralImage
+              <ProductImage
                 src={current.bannerUrl || current.imageUrl}
                 alt=""
                 className="h-full w-full object-cover"
@@ -166,15 +166,9 @@ export default function Browse() {
                 categoryId === String(c.id) && 'border-rose-400 bg-rose-50',
               )}
             >
-              {c.imageUrl ? (
-                <span className="block h-16 w-16 overflow-hidden rounded-xl bg-slate-100">
-                  <FloralImage src={c.imageUrl} alt="" className="h-full w-full object-cover" />
-                </span>
-              ) : (
-                <span className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-100 text-2xl">
-                  🌸
-                </span>
-              )}
+              <span className="block h-16 w-16 overflow-hidden rounded-xl bg-slate-100">
+                <ProductImage src={c.imageUrl} alt={c.name} className="h-full w-full object-cover" />
+              </span>
               <span className="text-center text-xs font-medium text-slate-700 group-hover:text-rose-700">
                 {c.name}
               </span>

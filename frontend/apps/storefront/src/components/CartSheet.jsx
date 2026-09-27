@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import { useShop } from '../store.js';
 import { useShopAuth } from '../api.js';
 import { Button, Money, Sheet, Stepper, Empty } from './ui.jsx';
+import ProductImage from './ProductImage.jsx';
 import { errMsg } from '../lib/utils.js';
 import { isAuthError, withAuthRetry } from '../lib/withAuth.js';
 
@@ -139,11 +140,7 @@ export default function CartSheet() {
           {items.map((it) => (
             <li key={it.id} className="flex gap-3 py-3">
               <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl bg-slate-50">
-                {it.imageUrlSnapshot ? (
-                  <img src={it.imageUrlSnapshot} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <span className="flex h-full w-full items-center justify-center text-2xl" aria-hidden>🌸</span>
-                )}
+                <ProductImage src={it.imageUrlSnapshot} alt={it.titleSnapshot || 'Product'} fallbackCompact className="h-full w-full object-cover" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="line-clamp-2 text-sm font-medium text-slate-800">{it.titleSnapshot}</p>

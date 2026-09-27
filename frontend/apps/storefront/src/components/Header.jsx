@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
-import { Flower2, Heart, MapPin, Package, Search, ShoppingBag, X } from 'lucide-react';
+import { Heart, MapPin, Package, Search, ShoppingBag, Store, X } from 'lucide-react';
 import { useShop } from '../store.js';
 import { api, useShopAuth } from '../api.js';
 import { t } from '../i18n.js';
@@ -79,7 +79,7 @@ export default function Header() {
             <img src={store.logoUrl} alt="" className="h-9 w-9 rounded-xl object-cover" />
           ) : (
             <span className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: 'var(--brand)' }}>
-              <Flower2 className="h-5 w-5" style={{ color: 'var(--brand-ink)' }} />
+              <Store className="h-5 w-5" style={{ color: 'var(--brand-ink)' }} />
             </span>
           )}
           <span className="hidden text-base font-bold tracking-tight text-slate-900 sm:block">
