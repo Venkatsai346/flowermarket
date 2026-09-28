@@ -104,6 +104,11 @@ class CatalogAdminController {
     res.status(200).json(success(master, { message: 'Master fetched' }));
   });
 
+  getMasterVariants = asyncHandler(async (req, res) => {
+    const result = await productMasterService.listActiveVariants(req.params.id);
+    res.status(200).json(success(result, { message: 'Active master variants fetched' }));
+  });
+
   updateMaster = asyncHandler(async (req, res) => {
     const { expectedVersion, ...patch } = req.body;
     const master = await productMasterService.updateGlobalFields({

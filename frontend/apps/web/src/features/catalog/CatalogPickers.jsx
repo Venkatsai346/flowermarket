@@ -45,7 +45,7 @@ function useFloatingPanel(open, anchorRef) {
   return style;
 }
 
-function PickerShell({
+export function PickerShell({
   label, placeholder, value, selectedLabel, selectedMeta, icon: Icon = Package,
   query, setQuery, options, active, setActive, onChoose, onClear, loading,
   emptyText, emptyHint = 'Try a shorter name or another keyword.', renderOption,

@@ -865,6 +865,19 @@ class ProductMasterService {
     return doc;
   }
 
+  /** Lightweight admin lookup for variant-aware relation pickers. */
+  async listActiveVariants(masterId) {
+    const master = await ProductMaster.findById(masterId)
+      .select('title skuGlobal status defaultSellingUnit unitPolicy')
+      .lean();
+    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    const variants = await ProductVariant.find({ productMasterId: masterId, status: ENTITY_STATUS.ACTIVE })
+      .select('variantType value optionValues combinationKey displayLabel sku sellQuantity sortOrder isDefault status')
+      .sort({ sortOrder: 1, _id: 1 })
+      .lean();
+    return { master, variants };
+  }
+
   async listMasters({ query = {} } = {}) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));

@@ -68,6 +68,7 @@ router.delete('/brands/:id', validate(idParamSchema, 'params'), CatalogAdminCont
 router.post('/masters', validate(masterCreateSchema), CatalogAdminController.createMaster);
 router.get('/masters', validate(masterQuerySchema, 'query'), CatalogAdminController.listMasters);
 router.get('/masters/:id', validate(idParamSchema, 'params'), CatalogAdminController.getMaster);
+router.get('/masters/:id/variants', validate(idParamSchema, 'params'), CatalogAdminController.getMasterVariants);
 router.patch('/masters/:id', validate(idParamSchema, 'params'), validate(masterUpdateSchema), CatalogAdminController.updateMaster);
 router.post('/masters/:id/review', validate(idParamSchema, 'params'), validate(masterReviewSchema), CatalogAdminController.reviewMaster);
 router.post('/masters/:id/deprecate', validate(idParamSchema, 'params'), validate(masterDeprecateSchema), CatalogAdminController.deprecateMaster);

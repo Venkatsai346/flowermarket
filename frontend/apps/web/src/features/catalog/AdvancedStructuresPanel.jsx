@@ -8,6 +8,8 @@ import Badge from '../../components/ui/Badge.jsx';
 import Button from '../../components/ui/Button.jsx';
 import { Checkbox, Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
 import { Guidance, SubmissionError } from './CatalogFormUX.jsx';
+import { BundleComponentProductPicker, BundleComponentVariantPicker } from './BundleComponentPickers.jsx';
+import { serializeBundleComponents } from './bundleComponentUtils.js';
 
 const removeAt = (rows, index) => rows.filter((_, rowIndex) => rowIndex !== index);
 const updateAt = (rows, index, patch) => rows.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row);
@@ -32,7 +34,7 @@ export default function AdvancedStructuresPanel({ master, onChanged }) {
   const [attributeDraft, setAttributeDraft] = useState({});
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const availableMasters = useApi(() => api.catalogAdmin.masters({ status: 'active', limit: 100 }), []);
+  const availableMasters = useApi(() => api.catalogAdmin.masters({ status: 'active', limit: 100, sortBy: 'title', sortOrder: 'asc' }), []);
 
   const load = async () => {
     const [structureResponse, integrityResponse] = await Promise.all([
@@ -152,8 +154,29 @@ export default function AdvancedStructuresPanel({ master, onChanged }) {
       {master.kind === 'bundle' && <Section icon={Boxes} title="Bundle components" description="Cycle-safe component graph with fixed or customer-selectable groups" action={<Button size="sm" variant="ghost" icon={Plus} onClick={() => setComponents([...components, { componentMasterId: '', componentVariantId: '', quantity: 1, unitCode: 'piece', selectionGroup: 'included', required: true, defaultSelected: true, minSelections: 1, maxSelections: 1, priceAdjustment: 0, status: 'active' }])}>Add component</Button>}>
         <div className="space-y-3">{components.map((row, index) => <div key={row._id || index} className="rounded-2xl border border-slate-200 bg-slate-50/70 p-3">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Field className="lg:col-span-2" label="Component product" required hint="Self-reference and recursive bundle cycles are rejected."><Select value={row.componentMasterId || ''} onChange={(event) => setComponents(updateAt(components, index, { componentMasterId: event.target.value, componentVariantId: '' }))}><option value="">Select active master…</option>{(availableMasters.data || []).filter((item) => rid(item) !== rid(master)).map((item) => <option key={rid(item)} value={rid(item)}>{item.title} · {item.skuGlobal}</option>)}</Select></Field>
-            <Field label="Component variant ID" hint="Optional exact SKU; must belong to the selected product."><Input className="font-mono" value={row.componentVariantId || ''} onChange={(event) => setComponents(updateAt(components, index, { componentVariantId: event.target.value }))} /></Field>
+            <Field className="lg:col-span-2" label="Component product" required hint="Searches the complete active catalog. Self-reference and recursive bundle cycles are rejected.">
+              <BundleComponentProductPicker
+                masters={availableMasters.data || []}
+                bundleId={rid(master)}
+                value={row.componentMasterId || ''}
+                selectedMaster={row.product}
+                onChange={(product) => setComponents(updateAt(components, index, {
+                  componentMasterId: rid(product),
+                  componentVariantId: '',
+                  product,
+                  variant: null,
+                  unitCode: product.unitPolicy?.baseUnit || product.defaultSellingUnit || 'piece',
+                }))}
+              />
+            </Field>
+            <Field className="lg:col-span-2" label="Component variant" hint="Optional. Active SKUs are fetched from the selected component product.">
+              <BundleComponentVariantPicker
+                masterId={row.componentMasterId || ''}
+                value={row.componentVariantId || ''}
+                selectedVariant={row.variant}
+                onChange={(variantId, variant) => setComponents(updateAt(components, index, { componentVariantId: variantId, variant }))}
+              />
+            </Field>
             <Field label="Selection group" hint="Stable normalized group code."><Input value={row.selectionGroup || ''} onChange={(event) => setComponents(updateAt(components, index, { selectionGroup: event.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') }))} /></Field>
             <Field label="Quantity"><Input type="number" min="0.000001" step="any" value={row.quantity ?? 1} onChange={(event) => setComponents(updateAt(components, index, { quantity: event.target.value }))} /></Field>
             <Field label="Unit code"><Input value={row.unitCode || ''} onChange={(event) => setComponents(updateAt(components, index, { unitCode: event.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') }))} /></Field>
@@ -165,7 +188,8 @@ export default function AdvancedStructuresPanel({ master, onChanged }) {
             <div className="flex items-end justify-end"><Button type="button" size="sm" variant="ghost" icon={Trash2} onClick={() => setComponents(removeAt(components, index))}>Remove</Button></div>
           </div>
         </div>)}</div>
-        <div className="mt-3 flex justify-end"><Button loading={busy === 'bundle'} onClick={() => save('bundle', () => api.catalogAdmin.setBundleComponents(rid(master), { components: components.map((row, index) => ({ ...row, componentVariantId: row.componentVariantId || null, quantity: Number(row.quantity), minSelections: Number(row.minSelections ?? 1), maxSelections: Number(row.maxSelections ?? 1), priceAdjustment: Number(row.priceAdjustment || 0), sortOrder: index })), expectedVersion: master.version }))}>Save composition</Button></div>
+        {!components.length && <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-8 text-center"><Boxes className="mx-auto h-8 w-8 text-slate-300" /><p className="mt-2 text-sm font-semibold text-slate-700">Build this bundle from existing catalog products</p><p className="mx-auto mt-1 max-w-lg text-xs leading-relaxed text-slate-500">Add a component, search the complete product registry, then optionally pin the exact active variant that belongs in the bundle.</p></div>}
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-slate-400">{components.length} component{components.length === 1 ? '' : 's'} · exact variant links are validated again on save</p><Button loading={busy === 'bundle'} onClick={() => save('bundle', () => api.catalogAdmin.setBundleComponents(rid(master), { components: serializeBundleComponents(components), expectedVersion: master.version }))}>Save composition</Button></div>
       </Section>}
 
       <Section icon={FileCheck2} title="Compliance entities" description="Jurisdiction-aware licenses, standards, restrictions and verifiable evidence" action={<Button size="sm" variant="ghost" icon={Plus} onClick={() => setCompliance([...compliance, { variantId: '', type: 'certificate', code: '', title: '', authority: '', status: 'draft', validFrom: '', validUntil: '', issuerReference: '', jurisdiction: { country: 'IN', state: '', regions: [] }, documents: [], restrictionsText: '', metadataText: '' }])}>Add record</Button>}>

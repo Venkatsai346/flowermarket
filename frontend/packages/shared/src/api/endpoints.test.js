@@ -172,6 +172,9 @@ test('catalog tenant and catalog admin helpers map correctly', async () => {
   api.catalogTenant.bulkTemplate('inventory');
   check(api, client.calls, ['DOWNLOAD', '/catalog/tenant/bulk/template/inventory']);
 
+  api.catalogAdmin.masterVariants('master_1');
+  check(api, client.calls, ['GET', '/catalog/admin/masters/master_1/variants']);
+
   api.catalogAdmin.changeRequests({ status: 'pending' });
   check(api, client.calls, ['GET', '/catalog/admin/change-requests']);
 

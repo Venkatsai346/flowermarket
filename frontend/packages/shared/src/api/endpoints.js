@@ -185,6 +185,7 @@ export function createEndpoints(client) {
       // product masters
       masters: (q = {}) => c.get('/catalog/admin/masters', { query: q }),
       master: (id) => c.get(`/catalog/admin/masters/${id}`),
+      masterVariants: (id) => c.get(`/catalog/admin/masters/${id}/variants`),
       createMaster: (body) => c.post('/catalog/admin/masters', body),
       updateMaster: (id, body) => c.patch(`/catalog/admin/masters/${id}`, body),
       reviewMaster: (id, body) => c.post(`/catalog/admin/masters/${id}/review`, body),

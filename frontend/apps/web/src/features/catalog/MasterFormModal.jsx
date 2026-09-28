@@ -689,7 +689,9 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
                 <ReviewItem label="Unit policy" value={`${form.baseUnit} · ${form.units.length} convertible units`} />
               </div>
             </div>
-            <Guidance title="What happens after save" tone="emerald">The backend validates category schemas, option dependencies, canonical combinations, conversion factors and optimistic version. Then use Advanced structures for variant specifications, packs, bundle components and compliance evidence before activating store listings.</Guidance>
+            <Guidance title="What happens after save" tone="emerald">{form.kind === 'bundle'
+              ? 'The saved bundle opens in its detail workspace. Under Advanced structures, add components through complete-catalog search; choosing a product automatically loads only its existing active variants so you can pin an exact SKU without copying IDs.'
+              : 'The backend validates category schemas, option dependencies, canonical combinations, conversion factors and optimistic version. Then use Advanced structures for variant specifications, packs and compliance evidence before activating store listings.'}</Guidance>
           </div>
         )}
       </form>
