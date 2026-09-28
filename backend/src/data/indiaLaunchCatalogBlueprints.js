@@ -5,6 +5,10 @@
  * logo CDN; editorial photography is pinned to immutable Unsplash photo IDs.
  */
 const photo = (id, width = 1200, height = 800) => `https://images.unsplash.com/${id}?auto=format&fit=crop&w=${width}&h=${height}&q=82`;
+const relevantPhoto = (category, lock, width = 1200, height = 1200) => {
+  const tags = `${slugify(category.name).replaceAll('-', ',')},${category.vertical},product`;
+  return `https://loremflickr.com/${width}/${height}/${tags}?lock=${lock}`;
+};
 const MEDIA = {
   grocery: 'photo-1542838132-92c53300491e', vegetables: 'photo-1566385101042-1a0aa0c1268c',
   fashion: 'photo-1445205170230-053b83016050', beauty: 'photo-1596462502278-27bfdc403348',
@@ -75,6 +79,29 @@ const VARIANTS = {
   grocery: [['500 g',500,'gram'],['1 kg',1000,'gram']], vegetables: [['500 g',500,'gram'],['1 kg',1000,'gram']], fashion: [['Black · M',1,'piece'],['Black · L',1,'piece'],['Blue · M',1,'piece']], beauty: [['50 ml',50,'millilitre'],['100 ml',100,'millilitre']], electronics: [['Standard · Black',1,'piece'],['Standard · Silver',1,'piece']], dairy: [['500 ml',500,'millilitre'],['1 L',1000,'millilitre']], eggs: [['Pack of 6',6,'piece'],['Pack of 12',12,'piece']], household: [['500 ml',500,'millilitre'],['1 L',1000,'millilitre']], flowers: [['Standard',1,'piece'],['Premium',1,'piece']],
 };
 const attrsFor = (category) => SCHEMAS[category.vertical].filter((item) => item.appliesTo === 'master').map((item) => ({ key: item.key, value: item.type === 'number' ? Math.max(item.min || 1, 1) : item.options?.[0] || ({ ingredients: 'See product label', storage_instructions: 'Store as directed on pack', variety: category.name, origin_state: 'India', material: 'See product label', care_instructions: 'Follow product care label', model_name: category.name, warranty_months: 12, power_requirement: 'As specified by manufacturer', connectivity: 'As applicable', primary_use: category.name, material_or_formula: 'See product label', usage_instructions: 'Use as directed', safety_notes: 'Read product label before use', flower_type: category.name, color_family: 'Assorted', care_notes: 'Follow included care instructions' }[item.key] || category.name), unit: item.unit || null }));
+const optionValuesFor = (vertical, label) => {
+  const [first, second] = label.split(' · ');
+  if (vertical === 'fashion') return [{ code: 'color', name: 'Color', value: first }, { code: 'size', name: 'Size', value: second }];
+  if (vertical === 'electronics') return [{ code: 'configuration', name: 'Configuration', value: first }, { code: 'color', name: 'Color', value: second }];
+  const code = vertical === 'eggs' ? 'count' : vertical === 'flowers' ? 'arrangement_size' : 'pack_size';
+  return [{ code, name: code.split('_').map((word) => `${word[0].toUpperCase()}${word.slice(1)}`).join(' '), value: label }];
+};
+const optionsFor = (variants) => {
+  const definitions = new Map();
+  variants.flatMap((variant) => variant.optionValues).forEach((option) => {
+    if (!definitions.has(option.code)) definitions.set(option.code, { code: option.code, name: option.name, values: [], displayType: option.code === 'color' ? 'swatch' : 'text', sortOrder: definitions.size });
+    const definition = definitions.get(option.code); if (!definition.values.includes(option.value)) definition.values.push(option.value);
+  });
+  return [...definitions.values()];
+};
+const warrantyFor = (vertical) => vertical === 'electronics'
+  ? { duration: 12, unit: 'month', description: 'Manufacturer warranty; final coverage follows the model documentation and invoice.' }
+  : { duration: null, unit: 'month', description: 'Not applicable unless explicitly provided by the manufacturer.' };
+const fulfillmentFor = (vertical, quantity, unitCode) => ({
+  requiresShipping: true, shippingClass: ['vegetables', 'dairy', 'eggs', 'flowers'].includes(vertical) ? 'fresh' : 'standard',
+  weight: { value: unitCode === 'gram' ? quantity : null, unit: 'g' }, dimensions: { length: null, width: null, height: null, unit: 'cm' },
+  fragile: ['electronics', 'eggs', 'flowers'].includes(vertical), hazardous: false, ageRestricted: false, requiresSerialTracking: vertical === 'electronics',
+});
 
 /** Exactly 1,000 deterministic masters; every leaf and every brand receives coverage. */
 export function buildIndiaLaunchProducts() {
@@ -88,25 +115,37 @@ export function buildIndiaLaunchProducts() {
   let cursor = 0;
   while (pairs.length < 1000) { const category = leaves[cursor % leaves.length]; const eligible = INDIA_LAUNCH_BRANDS.filter((brand) => brand.verticals.includes(category.vertical)); pairs.push([category, eligible[(Math.floor(cursor / leaves.length) + 6) % eligible.length]]); cursor += 1; }
   return pairs.slice(0, 1000).map(([category, brand], index) => {
-    const variants = VARIANTS[category.vertical].map(([label, quantity, unit], variantIndex) => ({
-      sku: `IN26-${String(index + 1).padStart(4, '0')}-V${variantIndex + 1}`, displayLabel: label, value: label,
-      variantType: category.vertical === 'fashion' ? 'size' : 'pack_size', sellQuantity: { value: quantity, unitCode: unit },
-      isDefault: variantIndex === 0, sortOrder: variantIndex,
-      images: [{ url: photo(MEDIA[category.vertical], 1200, 1200), altText: `${brand.name} ${category.name} ${label}`, mediaType: 'image', role: 'gallery', isPrimary: true, sortOrder: 0 }],
-      attributes: category.attributeSchema.filter((item) => item.appliesTo === 'variant').map((item) => ({ key: item.key, value: item.type === 'number' ? quantity : label, unit: item.unit || null })),
-    }));
+    const skuGlobal = `IN26-${String(index + 1).padStart(4, '0')}`;
+    const variants = VARIANTS[category.vertical].map(([label, quantity, unit], variantIndex) => {
+      const optionValues = optionValuesFor(category.vertical, label); const optionByCode = new Map(optionValues.map((option) => [option.code, option.value]));
+      return {
+        sku: `${skuGlobal}-V${variantIndex + 1}`, displayLabel: label, value: label, optionValues,
+        variantType: category.vertical === 'fashion' ? 'size' : category.vertical === 'electronics' ? 'model' : 'pack_size',
+        identifiers: { gtin: null, mpn: `${skuGlobal}-V${variantIndex + 1}` }, sellQuantity: { value: quantity, unitCode: unit },
+        weight: { value: unit === 'gram' ? quantity : null, unit: 'g' }, dimensions: { length: null, width: null, height: null, unit: 'cm' },
+        isDefault: variantIndex === 0, sortOrder: variantIndex,
+        images: [{ url: relevantPhoto(category, ((index + 1) * 10) + variantIndex + 1), altText: `${brand.name} ${category.name} — ${label}`, mediaType: 'image', role: 'gallery', isPrimary: true, sortOrder: 0 }],
+        attributes: category.attributeSchema.filter((item) => item.appliesTo === 'variant').map((item) => ({ key: item.key, value: item.type === 'number' ? quantity : optionByCode.get(item.key) || label, unit: item.unit || null })),
+      };
+    });
+    const title = `${brand.name} ${category.name}`; const perishable = ['grocery', 'vegetables', 'dairy', 'eggs', 'flowers'].includes(category.vertical);
     return {
-      skuGlobal: `IN26-${String(index + 1).padStart(4, '0')}`, title: `${brand.name} ${category.name}`, slug: `india-${slugify(brand.name)}-${slugify(category.name)}-${index + 1}`,
+      skuGlobal, title, slug: `india-${slugify(brand.name)}-${slugify(category.name)}-${index + 1}`,
       type: category.vertical === 'flowers' ? 'fresh_flower' : category.vertical === 'electronics' ? 'electronics' : category.vertical === 'fashion' ? 'apparel' : category.vertical === 'beauty' ? 'beauty' : category.vertical === 'household' ? 'home' : 'grocery',
-      kind: 'physical', categorySlug: category.slug, brandSlug: brand.slug, shortDescription: `${brand.name} ${category.name} for the India launch catalog.`, description: `A catalog-ready ${category.name.toLowerCase()} product with governed specifications and purchasable variants.`,
-      defaultSellingUnit: variants[0].sellQuantity.unitCode, attributes: attrsFor(category), variants,
-      images: [{ url: photo(MEDIA[category.vertical], 1400, 1400), altText: `${brand.name} ${category.name}`, mediaType: 'image', role: 'gallery', isPrimary: true, sortOrder: 0 }],
-      tags: ['india-launch-2026', category.vertical, category.slug, 'media:representative-editorial'],
+      kind: 'physical', categorySlug: category.slug, brandSlug: brand.slug, shortDescription: `${title} with governed specifications and selectable variants.`, description: `${title} prepared as a complete India launch master with category-governed specifications, fulfillment characteristics, searchable metadata, and purchasable variant configurations.`,
+      manufacturer: brand.name, modelNumber: skuGlobal, identifiers: { gtin: null, mpn: skuGlobal, isbn: null, hsn: null }, condition: 'new', warranty: warrantyFor(category.vertical),
+      seo: { title: title.slice(0, 70), description: `Shop ${title} variants with detailed specifications and product information.`.slice(0, 180), keywords: [brand.name, category.name, category.vertical, 'India'] },
+      options: optionsFor(variants), optionRules: [], defaultSellingUnit: variants[0].sellQuantity.unitCode, fulfillmentProfile: fulfillmentFor(category.vertical, variants[0].sellQuantity.value, variants[0].sellQuantity.unitCode),
+      isPerishable: perishable, requiresColdChain: category.vertical === 'dairy', minOrderQty: 1, maxOrderQty: ['vegetables', 'dairy', 'eggs', 'flowers'].includes(category.vertical) ? 20 : 100,
+      attributes: attrsFor(category), variants,
+      images: [{ url: relevantPhoto(category, index + 1, 1400, 1400), altText: title, mediaType: 'image', role: 'gallery', isPrimary: true, sortOrder: 0 }],
+      tags: ['india-launch-2026', category.vertical, category.slug, `brand:${brand.slug}`, 'media:loremflickr-cc'],
     };
   });
 }
 
 export const INDIA_LAUNCH_MEDIA_SOURCES = {
   logos: { provider: 'Hunter Logo API', pattern: 'https://logos.hunter.io/{official-domain}', source: 'official brand domains' },
-  editorial: { provider: 'Unsplash CDN', usage: 'representative category/product editorial photography', photoIds: MEDIA },
+  categoryEditorial: { provider: 'Unsplash CDN', usage: 'curated launch taxonomy editorial photography', photoIds: MEDIA },
+  productEditorial: { provider: 'LoremFlickr v3', pattern: 'https://loremflickr.com/{width}/{height}/{category-tags}?lock={stable-id}', usage: 'deterministic category-relevant Creative Commons product and variant photography', attribution: 'Creator and license credit are embedded by the provider; replace with official packshots during brand verification.' },
 };

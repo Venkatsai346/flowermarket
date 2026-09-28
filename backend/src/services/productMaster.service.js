@@ -137,7 +137,7 @@ class ProductMasterService {
   }
 
   /** Create a master (admin: ACTIVE; tenant proposal: PENDING_REVIEW). */
-  async createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, req = null }) {
+  async createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, allowPossibleDuplicate = false, req = null }) {
     payload = this.normalizeStructure(payload);
     const category = await categoryService.getById(payload.categoryId);
     if ((category.complianceRequirements || []).some((requirement) => requirement.required !== false)) {
@@ -149,7 +149,7 @@ class ProductMasterService {
     const similar = await this.assertNoDuplicate({
       skuGlobal: payload.skuGlobal, title: payload.title, barcode: payload.barcode,
     });
-    if (similar) {
+    if (similar && !allowPossibleDuplicate) {
       throw new AppError(`Possible duplicate of "${similar.title}"`, {
         status: 409, code: 'POSSIBLE_DUPLICATE', details: { existingId: similar.id, existingTitle: similar.title },
       });
@@ -173,7 +173,8 @@ class ProductMasterService {
     await auditService.record({
       action: 'create', entityType: 'product_master', entityId: master.id,
       actorId, actorType: actorId ? 'admin' : 'system',
-      after: { sku: master.skuGlobal, title: master.title, status: master.status }, req,
+      after: { sku: master.skuGlobal, title: master.title, status: master.status },
+      meta: similar && allowPossibleDuplicate ? { duplicateHeuristicOverridden: true, similarMasterId: similar.id, similarTitle: similar.title } : {}, req,
     });
     if (master.status === PRODUCT_MASTER_STATUS.ACTIVE) {
       await catalogEventService.publish({
@@ -299,7 +300,7 @@ class ProductMasterService {
   }
 
   /** Admin direct update of global fields (optimistic-locked). */
-  async updateGlobalFields({ id, patch, expectedVersion, actorId = null, req = null }) {
+  async updateGlobalFields({ id, patch, expectedVersion, actorId = null, allowPossibleDuplicate = false, req = null }) {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
 
@@ -340,7 +341,7 @@ class ProductMasterService {
       barcode: patch.barcode ?? master.barcode,
       excludeId: master.id,
     });
-    if (similar) {
+    if (similar && !allowPossibleDuplicate) {
       throw new AppError(`Possible duplicate of "${similar.title}"`, {
         status: 409, code: 'POSSIBLE_DUPLICATE', details: { existingId: similar.id, existingTitle: similar.title },
       });
@@ -353,7 +354,8 @@ class ProductMasterService {
 
     await auditService.record({
       action: 'update', entityType: 'product_master', entityId: master.id,
-      actorId, actorType: 'admin', before, after: pick(master.toObject(), Object.keys(patch)), req,
+      actorId, actorType: 'admin', before, after: pick(master.toObject(), Object.keys(patch)),
+      meta: similar && allowPossibleDuplicate ? { duplicateHeuristicOverridden: true, similarMasterId: similar.id, similarTitle: similar.title } : {}, req,
     });
     await catalogEventService.publish({
       eventType: 'product_master_updated', entityType: 'product_master', entityId: master.id,
