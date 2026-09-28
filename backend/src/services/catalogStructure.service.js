@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import ProductMaster from '../models/productMaster.model.js';
 import ProductVariant from '../models/productVariant.model.js';
+import ProductImage from '../models/productImage.model.js';
 import ProductVariantAttributeValue from '../models/productVariantAttributeValue.model.js';
 import ProductPackage from '../models/productPackage.model.js';
 import ProductBundleComponent from '../models/productBundleComponent.model.js';
@@ -11,6 +12,7 @@ import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import { normalizeUnitPolicy, assertQuantity } from '../utils/catalog/unitConversion.js';
+import { resolveImagesForVariant } from '../utils/catalog/variantImages.js';
 import { badRequest, conflict, notFound } from '../utils/ApiError.js';
 
 const id = (value) => String(value?._id || value?.id || value || '');
@@ -242,21 +244,58 @@ class CatalogStructureService {
       ProductBundleComponent.find({ bundleMasterId: masterId }).sort({ selectionGroup: 1, sortOrder: 1 }).lean(),
       ProductCompliance.find({ productMasterId: masterId }).sort({ type: 1, code: 1 }).lean(),
     ]);
-    const [componentMasters, componentVariants] = await Promise.all([
-      ProductMaster.find({ _id: { $in: bundleComponents.map((component) => component.componentMasterId) } }).select('title slug skuGlobal kind').lean(),
-      ProductVariant.find({ _id: { $in: bundleComponents.map((component) => component.componentVariantId).filter(Boolean) } }).select('displayLabel value combinationKey').lean(),
+    const componentMasterIds = [...new Set(bundleComponents.map((component) => id(component.componentMasterId)).filter(Boolean))];
+    const componentVariantIds = [...new Set(bundleComponents.map((component) => id(component.componentVariantId)).filter(Boolean))];
+    const [componentMasters, componentVariants, componentImages] = await Promise.all([
+      componentMasterIds.length ? ProductMaster.find({ _id: { $in: componentMasterIds } })
+        .select('title slug skuGlobal kind type shortDescription manufacturer modelNumber condition countryOfOrigin defaultSellingUnit warranty tags')
+        .lean() : [],
+      componentVariantIds.length ? ProductVariant.find({ _id: { $in: componentVariantIds } })
+        .select('displayLabel value combinationKey optionValues sku sellQuantity')
+        .lean() : [],
+      componentMasterIds.length ? ProductImage.find({
+        productMasterId: { $in: componentMasterIds },
+        status: 'active',
+        $or: [{ variantId: null }, { variantId: { $in: componentVariantIds } }],
+      }).select('productMasterId variantId url altText mediaType role mimeType width height focalPoint isPrimary sortOrder status')
+        .lean() : [],
     ]);
     const masterById = new Map(componentMasters.map((item) => [id(item), item]));
     const variantById = new Map(componentVariants.map((item) => [id(item), item]));
+    const imagesByMasterId = new Map();
+    for (const image of componentImages) {
+      const masterKey = id(image.productMasterId);
+      if (!imagesByMasterId.has(masterKey)) imagesByMasterId.set(masterKey, []);
+      imagesByMasterId.get(masterKey).push(image);
+    }
     const packageById = new Map(packages.map((item) => [id(item), item.code]));
     return {
       variantAttributes,
       packages: packages.map((item) => ({ ...item, containedPackageCode: packageById.get(id(item.containedPackageId)) || null })),
-      bundleComponents: bundleComponents.map((component) => ({
-        ...component,
-        product: masterById.get(id(component.componentMasterId)) || null,
-        variant: variantById.get(id(component.componentVariantId)) || null,
-      })),
+      bundleComponents: bundleComponents.map((component) => {
+        const product = masterById.get(id(component.componentMasterId)) || null;
+        const variant = variantById.get(id(component.componentVariantId)) || null;
+        const { images, source } = resolveImagesForVariant(
+          imagesByMasterId.get(id(component.componentMasterId)) || [],
+          component.componentVariantId || null,
+        );
+        const primary = images.find((image) => !image.mediaType || image.mediaType === 'image') || images[0] || null;
+        return {
+          ...component,
+          product: product ? { ...product, imageUrl: primary?.url || null } : null,
+          variant,
+          media: primary ? {
+            url: primary.url,
+            altText: primary.altText || product?.title || null,
+            mediaType: primary.mediaType || 'image',
+            role: primary.role || 'gallery',
+            width: primary.width || null,
+            height: primary.height || null,
+            focalPoint: primary.focalPoint || null,
+            source,
+          } : null,
+        };
+      }),
       compliance,
     };
   }

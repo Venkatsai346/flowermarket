@@ -11,6 +11,7 @@ import { success } from '../utils/ApiResponse.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
 import { pickDefaultVariant, variantDisplayLabel } from '../utils/catalog/variantImages.js';
 import { PRODUCT_MASTER_STATUS } from '../constants/enums.js';
+import { publicBundleComponents } from '../utils/catalog/publicBundle.js';
 
 const OBJECT_ID_RX = /^[0-9a-fA-F]{24}$/;
 
@@ -243,6 +244,7 @@ class CatalogPublicController {
         title: selected.merchandising?.titleOverride || master.title,
         canonicalTitle: master.title,
         shortDescription: selected.merchandising?.descriptionOverride || master.shortDescription,
+        bundleComponents: master.kind === 'bundle' ? publicBundleComponents(master.bundleComponents) : [],
         compliance: (master.compliance || []).filter((record) =>
           record.status === 'verified' && (!record.validUntil || new Date(record.validUntil) > new Date())
         ).map((record) => ({

@@ -12,6 +12,7 @@ import { resolveVariantForOption, selectedOptionValues, variantOptionState } fro
 import ProductCard from '../components/ProductCard.jsx';
 import ProductImage from '../components/ProductImage.jsx';
 import ProductFallback from '../components/ProductFallback.jsx';
+import BundleContents from '../components/BundleContents.jsx';
 import ArrivalPromise from '../components/ArrivalPromise.jsx';
 import { Button, Empty, Money, ProductSkeleton, Stepper } from '../components/ui.jsx';
 import { cn, errMsg } from '../lib/utils.js';
@@ -39,6 +40,13 @@ function JsonLd({ product, listing, store }) {
     sku: product?.skuGlobal,
     image: images.length ? images : undefined,
     brand: product?.brand?.name ? { '@type': 'Brand', name: product.brand.name } : undefined,
+    isRelatedTo: product?.kind === 'bundle' && product.bundleComponents?.length
+      ? product.bundleComponents.map((component) => ({
+        '@type': 'Product',
+        name: component.product?.title || 'Bundle component',
+        model: component.variant?.displayLabel || component.product?.modelNumber || undefined,
+      }))
+      : undefined,
     offers: {
       '@type': 'Offer',
       priceCurrency: listing?.price?.currency || 'INR',
@@ -138,7 +146,7 @@ export default function Product() {
   const vase = attrs.vase_life_days;
   const colour = attrs.color || attrs.colour;
   const stems = attrs.stem_count || attrs.stems;
-  const care = attrs.care_notes?.value || (product.isPerishable ? CARE_DEFAULT : null);
+  const care = attrs.care_notes?.value || (product.type === 'fresh_flower' ? CARE_DEFAULT : null);
   const price = effListing.price?.sellingPrice ?? 0;
   const mrp = effListing.price?.mrp ?? null;
   const stock = effListing.stockQty ?? 0;
@@ -216,7 +224,7 @@ export default function Product() {
       <div className="wrap py-16">
         <Empty
           floral
-          title="We couldn't find that bouquet"
+          title="We couldn't find that product"
           message={errMsg(error) || 'The link may be old, or this store no longer lists it.'}
           action={<Button variant="soft" onClick={() => window.location.assign('/')}>{t(language, 'backToShop')}</Button>}
         />
@@ -510,12 +518,12 @@ export default function Product() {
             {care && (
               <section className="mt-8 rounded-2xl border border-slate-200/80 bg-slate-50/60 p-4">
                 <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
-                  <Scissors className="h-4 w-4" style={{ color: 'var(--brand)' }} /> Care
+                  {product.type === 'fresh_flower' ? <Scissors className="h-4 w-4" style={{ color: 'var(--brand)' }} /> : <ShieldCheck className="h-4 w-4" style={{ color: 'var(--brand)' }} />} Care &amp; usage
                 </h2>
                 <p className="text-sm leading-relaxed text-slate-600">{care}</p>
-                <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-slate-400">
+                {product.type === 'fresh_flower' && <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-slate-400">
                   <Sun className="h-3.5 w-3.5" /> Keep cool, never on a sunny sill.
-                </p>
+                </p>}
               </section>
             )}
 
@@ -561,13 +569,6 @@ export default function Product() {
               </section>
             )}
 
-            {product.kind === 'bundle' && (product.bundleComponents || []).length > 0 && (
-              <section className="mt-5 rounded-2xl border border-slate-200 p-4">
-                <h2 className="text-sm font-semibold text-slate-800">What’s included</h2>
-                <ul className="mt-3 space-y-2">{product.bundleComponents.map((component) => <li key={component._id || `${component.componentMasterId}-${component.selectionGroup}`} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm"><span>{component.product?.title || 'Bundle item'}{component.variant && <span className="ml-1 text-slate-400">· {component.variant.displayLabel || component.variant.value}</span>}</span><span className="font-semibold">{component.quantity} {component.unitCode}</span></li>)}</ul>
-              </section>
-            )}
-
             {(product.compliance || []).length > 0 && (
               <section className="mt-5 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-4">
                 <h2 className="flex items-center gap-2 text-sm font-semibold text-emerald-900"><ShieldCheck className="h-4 w-4" />Verified standards & compliance</h2>
@@ -577,6 +578,8 @@ export default function Product() {
             )}
           </div>
         </div>
+
+        {product.kind === 'bundle' && <BundleContents components={product.bundleComponents || []} />}
 
         {addons.length > 0 && (
           <section className="mt-14">
