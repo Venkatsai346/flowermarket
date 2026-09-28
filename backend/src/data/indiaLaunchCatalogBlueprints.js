@@ -72,7 +72,7 @@ export const INDIA_LAUNCH_BRANDS = BRAND_GROUPS.flatMap(([verticals, list]) => l
 })).filter((brand, index, rows) => rows.findIndex((candidate) => candidate.slug === brand.slug) === index);
 
 const VARIANTS = {
-  grocery: [['500 g',500,'g'],['1 kg',1000,'g']], vegetables: [['500 g',500,'g'],['1 kg',1000,'g']], fashion: [['Black · M',1,'piece'],['Black · L',1,'piece'],['Blue · M',1,'piece']], beauty: [['50 ml',50,'ml'],['100 ml',100,'ml']], electronics: [['Standard · Black',1,'piece'],['Standard · Silver',1,'piece']], dairy: [['500 ml',500,'ml'],['1 L',1000,'ml']], eggs: [['Pack of 6',6,'piece'],['Pack of 12',12,'piece']], household: [['500 ml',500,'ml'],['1 L',1000,'ml']], flowers: [['Standard',1,'piece'],['Premium',1,'piece']],
+  grocery: [['500 g',500,'gram'],['1 kg',1000,'gram']], vegetables: [['500 g',500,'gram'],['1 kg',1000,'gram']], fashion: [['Black · M',1,'piece'],['Black · L',1,'piece'],['Blue · M',1,'piece']], beauty: [['50 ml',50,'millilitre'],['100 ml',100,'millilitre']], electronics: [['Standard · Black',1,'piece'],['Standard · Silver',1,'piece']], dairy: [['500 ml',500,'millilitre'],['1 L',1000,'millilitre']], eggs: [['Pack of 6',6,'piece'],['Pack of 12',12,'piece']], household: [['500 ml',500,'millilitre'],['1 L',1000,'millilitre']], flowers: [['Standard',1,'piece'],['Premium',1,'piece']],
 };
 const attrsFor = (category) => SCHEMAS[category.vertical].filter((item) => item.appliesTo === 'master').map((item) => ({ key: item.key, value: item.type === 'number' ? Math.max(item.min || 1, 1) : item.options?.[0] || ({ ingredients: 'See product label', storage_instructions: 'Store as directed on pack', variety: category.name, origin_state: 'India', material: 'See product label', care_instructions: 'Follow product care label', model_name: category.name, warranty_months: 12, power_requirement: 'As specified by manufacturer', connectivity: 'As applicable', primary_use: category.name, material_or_formula: 'See product label', usage_instructions: 'Use as directed', safety_notes: 'Read product label before use', flower_type: category.name, color_family: 'Assorted', care_notes: 'Follow included care instructions' }[item.key] || category.name), unit: item.unit || null }));
 
@@ -99,7 +99,7 @@ export function buildIndiaLaunchProducts() {
       skuGlobal: `IN26-${String(index + 1).padStart(4, '0')}`, title: `${brand.name} ${category.name}`, slug: `india-${slugify(brand.name)}-${slugify(category.name)}-${index + 1}`,
       type: category.vertical === 'flowers' ? 'fresh_flower' : category.vertical === 'electronics' ? 'electronics' : category.vertical === 'fashion' ? 'apparel' : category.vertical === 'beauty' ? 'beauty' : category.vertical === 'household' ? 'home' : 'grocery',
       kind: 'physical', categorySlug: category.slug, brandSlug: brand.slug, shortDescription: `${brand.name} ${category.name} for the India launch catalog.`, description: `A catalog-ready ${category.name.toLowerCase()} product with governed specifications and purchasable variants.`,
-      defaultSellingUnit: ({ g: 'gram', ml: 'millilitre', piece: 'piece' })[variants[0].sellQuantity.unitCode], attributes: attrsFor(category), variants,
+      defaultSellingUnit: variants[0].sellQuantity.unitCode, attributes: attrsFor(category), variants,
       images: [{ url: photo(MEDIA[category.vertical], 1400, 1400), altText: `${brand.name} ${category.name}`, mediaType: 'image', role: 'gallery', isPrimary: true, sortOrder: 0 }],
       tags: ['india-launch-2026', category.vertical, category.slug, 'media:representative-editorial'],
     };
