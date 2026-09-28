@@ -103,7 +103,9 @@ const fulfillmentFor = (vertical, quantity, unitCode) => ({
   fragile: ['electronics', 'eggs', 'flowers'].includes(vertical), hazardous: false, ageRestricted: false, requiresSerialTracking: vertical === 'electronics',
 });
 
-/** Exactly 1,000 deterministic masters; every leaf and every brand receives coverage. */
+export const INDIA_LAUNCH_PRODUCT_COUNT = 1060;
+
+/** Preserve the original 1,000 identities and append 60 flower masters that the initial bounded slice excluded. */
 export function buildIndiaLaunchProducts() {
   const leaves = INDIA_LAUNCH_CATEGORIES.filter((category) => category.level === 'leaf');
   const pairs = [];
@@ -114,7 +116,10 @@ export function buildIndiaLaunchProducts() {
   }
   let cursor = 0;
   while (pairs.length < 1000) { const category = leaves[cursor % leaves.length]; const eligible = INDIA_LAUNCH_BRANDS.filter((brand) => brand.verticals.includes(category.vertical)); pairs.push([category, eligible[(Math.floor(cursor / leaves.length) + 6) % eligible.length]]); cursor += 1; }
-  return pairs.slice(0, 1000).map(([category, brand], index) => {
+  const selectedPairs = pairs.slice(0, 1000); const coveredFlowerSlugs = new Set(selectedPairs.filter(([category]) => category.vertical === 'flowers').map(([category]) => category.slug));
+  for (const category of leaves.filter((leaf) => leaf.vertical === 'flowers' && !coveredFlowerSlugs.has(leaf.slug))) { const eligible = INDIA_LAUNCH_BRANDS.filter((brand) => brand.verticals.includes('flowers')); for (let index = 0; index < 4; index += 1) selectedPairs.push([category, eligible[index % eligible.length]]); }
+  if (selectedPairs.length !== INDIA_LAUNCH_PRODUCT_COUNT) throw new Error(`India launch product count drift: expected ${INDIA_LAUNCH_PRODUCT_COUNT}, generated ${selectedPairs.length}`);
+  return selectedPairs.map(([category, brand], index) => {
     const skuGlobal = `IN26-${String(index + 1).padStart(4, '0')}`;
     const variants = VARIANTS[category.vertical].map(([label, quantity, unit], variantIndex) => {
       const optionValues = optionValuesFor(category.vertical, label); const optionByCode = new Map(optionValues.map((option) => [option.code, option.value]));

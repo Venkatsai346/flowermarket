@@ -6,14 +6,14 @@ import User from '../src/models/user.model.js'; import Category from '../src/mod
 import ProductMaster from '../src/models/productMaster.model.js'; import ProductVariant from '../src/models/productVariant.model.js'; import ProductImage from '../src/models/productImage.model.js'; import ProductAttributeValue from '../src/models/productAttributeValue.model.js'; import ProductVariantAttributeValue from '../src/models/productVariantAttributeValue.model.js';
 import productMasterService from '../src/services/productMaster.service.js';
 import { masterCreateSchema } from '../src/utils/validators/catalog.validators.js';
-import { buildIndiaLaunchProducts, INDIA_LAUNCH_CATEGORIES, INDIA_LAUNCH_BRANDS } from '../src/data/indiaLaunchCatalogBlueprints.js';
+import { buildIndiaLaunchProducts, INDIA_LAUNCH_CATEGORIES, INDIA_LAUNCH_BRANDS, INDIA_LAUNCH_PRODUCT_COUNT } from '../src/data/indiaLaunchCatalogBlueprints.js';
 
 const argv = process.argv.slice(2); const args = new Set(argv); const valueArg = (name) => argv.find((item) => item.startsWith(`${name}=`))?.slice(name.length + 1);
 const options = { apply: args.has('--apply'), validateOnly: args.has('--validate-only'), continueOnError: args.has('--continue-on-error'), status: args.has('--active') ? 'active' : 'pending_review', actorId: valueArg('--actor') || '6a97b0e9a61173c01d040435' };
 const fail = (message) => { throw new Error(message); }; const rows = buildIndiaLaunchProducts();
 async function validate() {
   const errors = []; const eavCandidates = []; const mediaUrls = new Set(); const masterSkus = new Set(); const slugs = new Set(); const variantSkus = new Set(); const categories = new Map(INDIA_LAUNCH_CATEGORIES.map((row) => [row.slug, row])); const brands = new Set(INDIA_LAUNCH_BRANDS.map((row) => row.slug));
-  if (rows.length !== 1000) errors.push(`expected 1000 masters, found ${rows.length}`);
+  if (rows.length !== INDIA_LAUNCH_PRODUCT_COUNT) errors.push(`expected ${INDIA_LAUNCH_PRODUCT_COUNT} masters, found ${rows.length}`);
   for (const row of rows) {
     if (masterSkus.has(row.skuGlobal)) errors.push(`duplicate SKU ${row.skuGlobal}`); if (slugs.has(row.slug)) errors.push(`duplicate slug ${row.slug}`); masterSkus.add(row.skuGlobal); slugs.add(row.slug);
     const category = categories.get(row.categorySlug); if (!category || category.level !== 'leaf') errors.push(`${row.skuGlobal}: invalid leaf category`); if (!brands.has(row.brandSlug)) errors.push(`${row.skuGlobal}: unknown brand`);
@@ -71,6 +71,12 @@ async function main() {
         // Master writes remain ordered for deterministic audit and outbox events.
         // eslint-disable-next-line no-await-in-loop
         master = await productMasterService.createMaster({ payload: { ...payload, categoryId: categories.get(categorySlug)._id, brandId: brands.get(brandSlug)._id, attributes, variants: variants.map(({ attributes: ignored, ...variant }) => variant) }, actorId: options.actorId, status: options.status, allowPossibleDuplicate: true }); }
+      if (existed && options.status === 'active' && master.status === 'pending_review') {
+        // Explicit --active is a super-admin lifecycle decision; approvals stay ordered and audited.
+        // eslint-disable-next-line no-await-in-loop
+        master = await productMasterService.reviewCreateMaster({ masterId: master._id, decision: 'approve', actorId: options.actorId, note: 'Approved by deterministic India launch seed --active run' });
+      }
+      if (existed && options.status === 'active' && master.status !== 'active') fail(`${row.skuGlobal}: cannot activate master from lifecycle status ${master.status}`);
       if (existed) {
         // Reconciliation is ordered because optimistic versions and variant vocabularies depend on the preceding master.
         // eslint-disable-next-line no-await-in-loop
