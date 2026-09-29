@@ -310,20 +310,21 @@ class BulkImportService {
   async processPriceRow(job, row) {
     const { listing, masterId } = await this.findListing(job.tenantId, row);
     const price = this.parsePrice(row);
+    if (!listing && !masterId) {
+      throw badRequest(`No listing or master for ${row.listingId || row.sku || row.masterId || 'row'}`, 'LISTING_NOT_FOUND');
+    }
     if (job.dryRun) return;
     if (listing) {
       await tenantProductService.updatePrice({
         tenantId: job.tenantId, listingId: listing.id, price,
         expectedVersion: listing.version, actorId: job.requestedBy, reason: 'bulk', source: 'tenant',
       });
-    } else if (masterId) {
+    } else {
       await tenantProductService.createListing({
         tenantId: job.tenantId,
         payload: { productMasterId: masterId, variantId: null, price, status: TENANT_LISTING_STATUS.ACTIVE, stockQty: 0 },
         actorId: job.requestedBy,
       });
-    } else {
-      throw badRequest(`No listing or master for ${row.listingId || row.sku || row.masterId || 'row'}`, 'LISTING_NOT_FOUND');
     }
   }
 
