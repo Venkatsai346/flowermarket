@@ -6,6 +6,8 @@ import ProductImage from '../src/models/productImage.model.js';
 import ProductMaster from '../src/models/productMaster.model.js';
 import Category from '../src/models/category.model.js';
 import productMasterService from '../src/services/productMaster.service.js';
+import searchIndexerService from '../src/services/searchIndexer.service.js';
+import { catalogQuerySchema } from '../src/utils/validators/catalog.validators.js';
 
 const masterId = '66a000000000000000000001';
 const listingId = '66a000000000000000000002';
@@ -172,4 +174,40 @@ try {
   Category.aggregate = originalCategoryAggregate;
   Category.find = originalCategoryFind;
   catalogSearchService.groupListingRows = originalGrouping;
+}
+
+{
+  const encoded = JSON.stringify({ colour: ['Red', 'Green'], capacity_l: { min: 1, max: 5 } });
+  const valid = catalogQuerySchema.validate({ groupBy: 'master', categoryId: masterId, attributes: encoded });
+  assert.equal(valid.error, undefined);
+  assert.deepEqual(valid.value.attributes, { colour: ['Red', 'Green'], capacity_l: { min: 1, max: 5 } });
+  assert.ok(catalogQuerySchema.validate({ attributes: JSON.stringify({ '$where': ['x'] }) }).error);
+  assert.ok(catalogQuerySchema.validate({ attributes: JSON.stringify({ capacity_l: { min: 9, max: 2 } }) }).error);
+  assert.ok(catalogQuerySchema.validate({ attributes: '{broken' }).error);
+  console.log('catalog filters: bounded typed attribute query contract PASS');
+}
+
+{
+  const doc = await searchIndexerService.buildDocument({
+    listing: {
+      _id: listingId, tenantId, productMasterId: masterId, variantId,
+      price: { sellingPrice: 499, mrp: 599 }, stockQty: 4, status: 'active',
+      channels: { storefront: true }, merchandising: {}, version: 1,
+    },
+    master: {
+      _id: masterId, title: 'Filterable phone', slug: 'filterable-phone', status: 'active',
+      complianceStatus: 'not_required', categoryId: null, brandId: null,
+      type: 'smartphone', tags: [], version: 1,
+    },
+    categoryById: new Map(), brandById: new Map(),
+    variantById: new Map([[variantId, { _id: variantId, value: 'Blue', status: 'active', optionValues: [] }]]),
+    imagesByMaster: new Map([[masterId, []]]),
+    structuresByMaster: new Map([[masterId, { packages: [], compliance: [] }]]),
+    attributesByMaster: new Map([[masterId, [{ attributeKey: 'ram_gb', value: 8, textValue: '8', unit: 'GB' }]]]),
+    attributesByVariant: new Map([[variantId, [{ attributeKey: 'colour', value: 'Blue', textValue: 'Blue' }]]]),
+  });
+  assert.deepEqual(doc.attributes, { ram_gb: 8, colour: 'Blue' });
+  assert.match(doc.searchText, /ram_gb/);
+  assert.match(doc.searchText, /blue/);
+  console.log('search projection: governed master + variant attributes PASS');
 }

@@ -12,6 +12,7 @@ import { notFound, badRequest } from '../utils/ApiError.js';
 import { pickDefaultVariant, variantDisplayLabel } from '../utils/catalog/variantImages.js';
 import { PRODUCT_MASTER_STATUS } from '../constants/enums.js';
 import { publicBundleComponents } from '../utils/catalog/publicBundle.js';
+import { catalogReadDuration, catalogReadRequests, catalogFamiliesReturned } from '../observability/registry.js';
 
 const OBJECT_ID_RX = /^[0-9a-fA-F]{24}$/;
 
@@ -33,7 +34,9 @@ class CatalogPublicController {
    *
    * `?groupBy=master` uses the authoritative family read model: filtering,
    * facets, count and cursor pagination all operate on distinct masters before
-   * each result is hydrated with its complete listed-variant family.
+   * each result is hydrated with its complete listed-variant family. Text
+   * relevance contributes ordered master candidates only; live publication,
+   * price, inventory and variant truth remain authoritative.
    */
   search = asyncHandler(async (req, res) => {
     const resolvedTenantId = req.tenantId || req.headers['x-tenant-id'];
@@ -53,11 +56,57 @@ class CatalogPublicController {
     // through the legacy listing-ranked path, which could split one family
     // across pages and performed a second full live probe on every request.
     if (grouped) {
-      const result = await catalogSearchService.searchGrouped({ tenantId: resolvedTenantId, query });
-      return res.status(200).json(success(result.items, {
-        message: 'Catalog fetched',
-        meta: { ...result.meta, indexState: 'authoritative' },
-      }));
+      const started = process.hrtime.bigint();
+      let source = 'authoritative';
+      try {
+        let ranking = null;
+        // Attribute projection was added after the original search documents.
+        // Until every deployment has completed a full reindex, attribute-filtered
+        // searches stay on live truth rather than risking false zero results
+        // from a partially upgraded index.
+        const hasAttributeFilters = Object.keys(query.attributes || {}).length > 0;
+        if (config.search.rankedCatalog && query.search && !hasAttributeFilters && (!query.sort || query.sort === 'relevance')) {
+          try {
+            const categoryIds = query.categoryId
+              ? await catalogSearchService.categoryScope(query.categoryId)
+              : null;
+            ranking = await searchService.search({
+              tenantId: resolvedTenantId,
+              query: categoryIds ? { ...query, categoryIds } : query,
+              sessionKey: req.get('x-session-id') || req.ip || null,
+              masterCandidates: true,
+            });
+            source = 'ranked_hydration';
+          } catch (err) {
+            // The family read model remains independently authoritative. Search
+            // enrichment can degrade without taking browse/discovery offline.
+            console.error('[search] family ranking failed, using live matching:', err.message);
+            source = 'ranked_fallback';
+          }
+        }
+        const result = await catalogSearchService.searchGrouped({
+          tenantId: resolvedTenantId,
+          query,
+          rankedMasterIds: ranking?.masterIds ?? null,
+        });
+        const durationSeconds = Number(process.hrtime.bigint() - started) / 1e9;
+        catalogReadDuration.observe({ source, outcome: 'ok' }, durationSeconds);
+        catalogReadRequests.inc({ source, outcome: 'ok' });
+        catalogFamiliesReturned.observe({ source }, result.items.length);
+        res.set('Server-Timing', `catalog;dur=${(durationSeconds * 1000).toFixed(1)};desc="${source}"`);
+        return res.status(200).json(success(result.items, {
+          message: 'Catalog fetched',
+          meta: {
+            ...result.meta,
+            indexState: ranking ? 'ranked_authoritative_hydration' : 'authoritative',
+            ...(ranking ? { query: ranking.query, profile: ranking.profile, queryId: ranking.meta.queryId } : {}),
+          },
+        }));
+      } catch (err) {
+        catalogReadDuration.observe({ source, outcome: 'error' }, Number(process.hrtime.bigint() - started) / 1e9);
+        catalogReadRequests.inc({ source, outcome: 'error' });
+        throw err;
+      }
     }
 
     if (config.search.rankedCatalog) {

@@ -131,7 +131,7 @@ class SearchService {
    * response, plus additive fields — the storefront and mobile client keep
    * working without a change.
    */
-  async search({ tenantId, query = {}, sessionKey = null, log = true }) {
+  async search({ tenantId, query = {}, sessionKey = null, log = true, masterCandidates = false }) {
     const started = process.hrtime.bigint();
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(60, Math.max(1, Number(query.limit) || 24));
@@ -147,7 +147,7 @@ class SearchService {
     // explicit filters win over anything inferred from the text
     const filters = {
       ...parsed.filters,
-      ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+      ...(query.categoryIds?.length ? { categoryIds: query.categoryIds } : query.categoryId ? { categoryId: query.categoryId } : {}),
       ...(query.brandId ? { brandId: query.brandId } : {}),
       ...(query.type ? { productType: query.type } : {}),
       ...(query.vendorId ? { vendorId: query.vendorId } : {}),
@@ -156,6 +156,7 @@ class SearchService {
       ...(query.inStock ? { inStock: true } : {}),
       // an EXPLICIT colour from the client constrains; an inferred one does not
       ...(query.colour ? { colour: query.colour } : {}),
+      ...(query.attributes && Object.keys(query.attributes).length ? { attributes: query.attributes } : {}),
     };
 
     let candidates = await searchProvider.retrieve({ tenantId, parsed, filters });
@@ -208,6 +209,44 @@ class SearchService {
       ranked.sort((a, b) => new Date(b.doc.listedAt || 0) - new Date(a.doc.listedAt || 0));
     } else if (query.sort === 'popularity') {
       ranked.sort((a, b) => (b.doc.soldCount30d || 0) - (a.doc.soldCount30d || 0));
+    }
+
+    // Family PLPs need the ranker's ordered master identities, not a page of
+    // listing rows. Returning this bounded internal projection lets the
+    // authoritative catalog read model perform exact master-level facets,
+    // visibility checks and cursor pagination without giving up typo recovery,
+    // synonyms, experiments or editorial ranking.
+    if (masterCandidates) {
+      const seen = new Set();
+      const masterIds = [];
+      for (const row of ranked) {
+        const id = String(row.doc.masterId || '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        masterIds.push(id);
+      }
+      const latencyMs = Number(process.hrtime.bigint() - started) / 1e6;
+      const queryId = crypto.randomUUID();
+      if (log) {
+        this.logQuery({
+          tenantId, sessionKey, queryId, parsed, filters, profile,
+          resultCount: masterIds.length, relaxedTo, latencyMs,
+          topListingIds: ranked.slice(0, 10).map((row) => String(row.doc.listingId)),
+        }).catch(() => {});
+      }
+      return {
+        masterIds,
+        meta: { total: masterIds.length, queryId, latencyMs: Number(latencyMs.toFixed(1)) },
+        query: {
+          raw: parsed.raw,
+          normalized: parsed.normalized,
+          corrections: parsed.corrections,
+          appliedFilters: filters,
+          relaxedTo,
+          inferredColour: parsed.inferredColour,
+        },
+        profile: { code: profile.code, bucket: profile.bucket },
+      };
     }
 
     const total = ranked.length;

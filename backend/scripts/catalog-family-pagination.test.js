@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import catalogSearchService from '../src/services/catalogSearch.service.js';
+import { up as createDiscoveryIndexes } from '../src/migrations/006_catalog_discovery_read_model.js';
 
 const oid = (suffix) => new mongoose.Types.ObjectId(`66b00000000000000000${suffix}`);
 const tenantId = oid('0001');
@@ -30,10 +31,14 @@ try {
   await mongoose.connect(mongoUri, { dbName: 'catalog-family-pagination' });
   const db = mongoose.connection.db;
   await db.dropDatabase();
+  await createDiscoveryIndexes(db);
 
   await db.collection('categories').insertMany([
     { _id: rootId, name: 'Food', slug: 'food', parentId: null, status: 'active', isDeleted: false },
-    { _id: leafId, name: 'Fruit', slug: 'fruit', parentId: rootId, status: 'active', isDeleted: false },
+    {
+      _id: leafId, name: 'Fruit', slug: 'fruit', parentId: rootId, status: 'active', isDeleted: false,
+      attributeSchema: [{ key: 'colour', label: 'Colour', type: 'select', facetable: true, filterable: true, options: ['Red', 'Green', 'Blue'] }],
+    },
   ]);
   await db.collection('productmasters').insertMany(masterIds.map((id, index) => ({
     _id: id,
@@ -86,6 +91,15 @@ try {
   }
   await db.collection('productvariants').insertMany(variants);
   await db.collection('tenantproducts').insertMany(listings);
+  await db.collection('productattributevalues').insertMany(masterIds.map((productMasterId, index) => ({
+    _id: oid(String(3001 + index).padStart(4, '0')),
+    productMasterId,
+    attributeKey: 'colour',
+    value: ['Red', 'Green', 'Blue'][index],
+    valueType: 'select',
+    textValue: ['Red', 'Green', 'Blue'][index],
+    isDeleted: false,
+  })));
 
   const first = await catalogSearchService.searchGrouped({
     tenantId,
@@ -97,6 +111,8 @@ try {
   assert.equal(first.meta.facets.categories[0].count, 3, 'facets count each family once');
   assert.equal(first.meta.facets.inStock, 2);
   assert.equal(first.meta.facets.outOfStock, 1);
+  assert.equal(first.meta.facets.attributes[0].key, 'colour');
+  assert.equal(first.meta.facets.attributes[0].values.length, 3);
   assert.equal(first.meta.hasMore, true);
   assert.ok(first.meta.nextCursor);
 
@@ -119,7 +135,14 @@ try {
   assert.equal(inStock.meta.total, 2);
   assert.equal(inStock.items.every((item) => item.inStockCount > 0), true);
 
-  console.log('catalog family pagination: master totals, descendant scope, facets and cursor PASS');
+  const red = await catalogSearchService.searchGrouped({
+    tenantId,
+    query: { groupBy: 'master', categoryId: rootId, attributes: { colour: ['Red'] }, limit: 10 },
+  });
+  assert.equal(red.meta.total, 1);
+  assert.equal(red.items[0].masterId, String(masterIds[0]));
+
+  console.log('catalog family pagination: master totals, descendant scope, dynamic facets and cursor PASS');
 } finally {
   if (mongoose.connection.readyState) await mongoose.connection.db.dropDatabase();
   await mongoose.disconnect();

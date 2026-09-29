@@ -632,6 +632,32 @@ export const catalogQuerySchema = Joi.object({
   sort: Joi.string().valid('relevance', 'price_asc', 'price_desc', 'newest', 'popularity').default('relevance'),
   // groupBy=master -> one card per master with the full variant family.
   groupBy: Joi.string().valid('master'),
+  // JSON-encoded category-governed attribute filters. Keeping this as one
+  // bounded query parameter makes the GET contract portable across web,
+  // mobile and proxies that do not agree on nested query-string parsing.
+  attributes: Joi.string().max(3000).custom((raw, helpers) => {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return helpers.error('any.invalid');
+      const entries = Object.entries(parsed);
+      if (entries.length > 12) return helpers.error('object.max', { limit: 12 });
+      for (const [key, filter] of entries) {
+        if (!/^[a-z0-9_]{1,80}$/.test(key)) return helpers.error('any.invalid');
+        if (Array.isArray(filter)) {
+          if (!filter.length || filter.length > 20 || filter.some((value) => !['string', 'number', 'boolean'].includes(typeof value))) return helpers.error('any.invalid');
+        } else if (filter && typeof filter === 'object') {
+          const keys = Object.keys(filter);
+          if (!keys.length || keys.some((name) => !['min', 'max'].includes(name))) return helpers.error('any.invalid');
+          if (filter.min != null && !Number.isFinite(Number(filter.min))) return helpers.error('any.invalid');
+          if (filter.max != null && !Number.isFinite(Number(filter.max))) return helpers.error('any.invalid');
+          if (filter.min != null && filter.max != null && Number(filter.min) > Number(filter.max)) return helpers.error('any.invalid');
+        } else if (!['string', 'number', 'boolean'].includes(typeof filter)) return helpers.error('any.invalid');
+      }
+      return parsed;
+    } catch {
+      return helpers.error('any.invalid');
+    }
+  }, 'catalog attribute filters'),
   // Opaque keyset cursor returned by the grouped read model. Page remains
   // supported for older clients, but cursor pagination is stable while the
   // catalogue changes between requests.
@@ -648,7 +674,7 @@ export const catalogQuerySchema = Joi.object({
     try {
       const cursor = JSON.parse(Buffer.from(value.cursor, 'base64url').toString('utf8'));
       const validKey = typeof cursor.k === 'number' || typeof cursor.k === 'string';
-      if (cursor.v !== 1 || cursor.s !== value.sort || !validKey || !/^[0-9a-fA-F]{24}$/.test(cursor.i)) {
+      if (cursor.v !== 2 || cursor.s !== value.sort || !validKey || !/^[0-9a-fA-F]{24}$/.test(cursor.i) || !/^[0-9a-f]{16}$/.test(cursor.f)) {
         return helpers.message({ custom: 'cursor is invalid for the selected sort' });
       }
     } catch {

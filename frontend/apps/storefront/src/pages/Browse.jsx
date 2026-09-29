@@ -30,6 +30,15 @@ export default function Browse() {
   const categoryId = searchParams.get('category') || '';
   const sort = searchParams.get('sort') || '';
   const inStock = searchParams.get('inStock') === '1';
+  const attributesParam = searchParams.get('attributes') || '';
+  const selectedAttributes = useMemo(() => {
+    try {
+      const parsed = JSON.parse(attributesParam || '{}');
+      return parsed && !Array.isArray(parsed) && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }, [attributesParam]);
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
 
   const { data: categories } = useApi(() => api.shop.categories(), []);
@@ -42,6 +51,7 @@ export default function Browse() {
     categoryId: categoryId || undefined,
     sort: sort || undefined,
     inStock: inStock || undefined,
+    attributes: attributesParam || undefined,
   }, { limit: 24 });
 
   const items = data || [];
@@ -96,6 +106,21 @@ export default function Browse() {
     const params = new URLSearchParams(searchParams);
     if (id) params.set('category', id);
     else params.delete('category');
+    params.delete('attributes');
+    setSearchParams(params);
+  };
+  const toggleAttribute = (key, value) => {
+    const next = { ...selectedAttributes };
+    const current = Array.isArray(next[key]) ? next[key] : [];
+    const identity = JSON.stringify(value);
+    const values = current.some((item) => JSON.stringify(item) === identity)
+      ? current.filter((item) => JSON.stringify(item) !== identity)
+      : [...current, value];
+    if (values.length) next[key] = values;
+    else delete next[key];
+    const params = new URLSearchParams(searchParams);
+    if (Object.keys(next).length) params.set('attributes', JSON.stringify(next));
+    else params.delete('attributes');
     setSearchParams(params);
   };
 
@@ -220,6 +245,26 @@ export default function Browse() {
           </select>
         </label>
       </div>
+
+      {meta?.facets?.attributes?.length > 0 && (
+        <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">Refine this category</p>
+            {attributesParam && <button type="button" onClick={() => { const params = new URLSearchParams(searchParams); params.delete('attributes'); setSearchParams(params); }} className="text-xs font-semibold text-rose-600">Clear specifications</button>}
+          </div>
+          {meta.facets.attributes.map((facet) => (
+            <div key={facet.key} className="flex flex-col gap-2 sm:flex-row sm:items-start">
+              <p className="w-32 shrink-0 pt-1 text-xs font-semibold text-slate-600">{facet.label}{facet.unit ? ` (${facet.unit})` : ''}</p>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {facet.values.map((option) => {
+                  const selected = (selectedAttributes[facet.key] || []).some((value) => JSON.stringify(value) === JSON.stringify(option.value));
+                  return <button key={`${facet.key}:${JSON.stringify(option.value)}`} type="button" aria-pressed={selected} onClick={() => toggleAttribute(facet.key, option.value)} className={cn('chip shrink-0', selected && 'chip-active')}>{String(option.value)} {option.count != null && <span className="opacity-65">· {option.count}</span>}</button>;
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Products grid */}
       {loading && !data ? (

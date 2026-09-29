@@ -30,6 +30,20 @@ import { textRelevance } from '../utils/queryUnderstanding.js';
 
 const CANDIDATE_CAP = 400;
 
+function applyAttributeFilters(match, attributes = {}) {
+  for (const [key, filter] of Object.entries(attributes)) {
+    const path = `attributes.${key}`;
+    if (filter && typeof filter === 'object' && !Array.isArray(filter)) {
+      match[path] = {
+        ...(filter.min != null ? { $gte: Number(filter.min) } : {}),
+        ...(filter.max != null ? { $lte: Number(filter.max) } : {}),
+      };
+    } else {
+      match[path] = { $in: Array.isArray(filter) ? filter : [filter] };
+    }
+  }
+}
+
 class MongoSearchProvider {
   get name() { return 'mongo'; }
 
@@ -71,7 +85,8 @@ class MongoSearchProvider {
       isDeleted: { $ne: true },
     };
 
-    if (filters.categoryId) match.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.categoryIds?.length) match.categoryId = { $in: filters.categoryIds.map((id) => new mongoose.Types.ObjectId(String(id))) };
+    else if (filters.categoryId) match.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
     if (filters.brandId) match.brandId = new mongoose.Types.ObjectId(String(filters.brandId));
     if (filters.productType) match.productType = filters.productType;
     if (filters.vendorId) match.vendorId = new mongoose.Types.ObjectId(String(filters.vendorId));
@@ -83,6 +98,7 @@ class MongoSearchProvider {
       };
     }
     if (filters.colour) match['attributes.colour'] = filters.colour;
+    applyAttributeFilters(match, filters.attributes);
 
     const terms = parsed?.expanded?.length ? parsed.expanded : parsed?.tokens || [];
 
@@ -112,7 +128,8 @@ class MongoSearchProvider {
       status: 'active',
       isDeleted: { $ne: true },
     };
-    if (filters.categoryId) base.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.categoryIds?.length) base.categoryId = { $in: filters.categoryIds.map((id) => new mongoose.Types.ObjectId(String(id))) };
+    else if (filters.categoryId) base.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
     if (filters.brandId) base.brandId = new mongoose.Types.ObjectId(String(filters.brandId));
     if (filters.productType) base.productType = filters.productType;
     if (filters.vendorId) base.vendorId = new mongoose.Types.ObjectId(String(filters.vendorId));
@@ -124,6 +141,7 @@ class MongoSearchProvider {
       };
     }
     if (filters.colour) base['attributes.colour'] = filters.colour;
+    applyAttributeFilters(base, filters.attributes);
 
     const terms = parsed?.expanded?.length ? parsed.expanded : parsed?.tokens || [];
     if (terms.length) {

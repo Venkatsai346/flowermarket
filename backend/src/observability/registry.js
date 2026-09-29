@@ -44,6 +44,25 @@ export const httpDuration = registry.histogram(
   ['method', 'route'],
 );
 
+// ---- Catalog discovery (bounded labels; never tenant/query cardinality) ----
+export const catalogReadDuration = registry.histogram(
+  'catalog_read_duration_seconds',
+  'Authoritative grouped catalog read duration by source and outcome.',
+  ['source', 'outcome'],
+  [0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 2, 5],
+);
+export const catalogReadRequests = registry.counter(
+  'catalog_read_requests_total',
+  'Grouped catalog requests by source and outcome.',
+  ['source', 'outcome'],
+);
+export const catalogFamiliesReturned = registry.histogram(
+  'catalog_families_returned',
+  'Number of product families returned by one grouped catalog request.',
+  ['source'],
+  [0, 1, 6, 12, 24, 36, 60],
+);
+
 // ---- DB ----
 const dbConnected = registry.gauge('db_connected', '1 when the Mongo connection is ready, 0 otherwise.');
 

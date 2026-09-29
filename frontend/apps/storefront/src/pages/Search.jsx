@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { PackageSearch, SlidersHorizontal } from 'lucide-react';
+import { PackageSearch, SlidersHorizontal, X } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useCatalogFeed } from '../lib/useCatalogFeed.js';
@@ -37,6 +37,16 @@ export default function Search() {
   const inStock = params.get('inStock') === '1';
   const minPrice = params.get('minPrice') || '';
   const maxPrice = params.get('maxPrice') || '';
+  const attributesParam = params.get('attributes') || '';
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const selectedAttributes = useMemo(() => {
+    try {
+      const parsed = JSON.parse(attributesParam || '{}');
+      return parsed && !Array.isArray(parsed) && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }, [attributesParam]);
   const set = (patch) => {
     const next = new URLSearchParams(params);
     for (const [k, v] of Object.entries(patch)) {
@@ -45,6 +55,18 @@ export default function Search() {
     }
     if (!('page' in patch)) next.delete('page');
     setParams(next, { replace: true });
+  };
+  const toggleAttribute = (key, value) => {
+    const next = { ...selectedAttributes };
+    const current = Array.isArray(next[key]) ? next[key] : [];
+    const identity = JSON.stringify(value);
+    const exists = current.some((item) => JSON.stringify(item) === identity);
+    const values = exists
+      ? current.filter((item) => JSON.stringify(item) !== identity)
+      : [...current, value];
+    if (values.length) next[key] = values;
+    else delete next[key];
+    set({ attributes: Object.keys(next).length ? JSON.stringify(next) : '' });
   };
 
   const { data: categories } = useApi(() => api.shop.categories(), []);
@@ -64,6 +86,7 @@ export default function Search() {
     inStock: inStock || undefined,
     minPrice: minPrice || undefined,
     maxPrice: maxPrice || undefined,
+    attributes: attributesParam || undefined,
   }, { limit: 24 });
 
   const items = data || [];
@@ -73,6 +96,8 @@ export default function Search() {
     || (storeBrands || []).find((b) => String(b.id) === brandId)?.name
     || '';
   const unserviceable = Boolean(pincode && serviceability && serviceability.serviceable === false);
+  const activeFilterCount = [categoryId, brandId, inStock, minPrice || maxPrice]
+    .filter(Boolean).length + Object.values(selectedAttributes).filter((value) => Array.isArray(value) ? value.length : value != null).length;
   const facetCats = useMemo(() => {
     if (facets.categories?.length) return facets.categories;
     return tree.map((c) => ({ id: String(c.id), name: c.name, count: null }));
@@ -110,19 +135,51 @@ export default function Search() {
             </button>
           </div>
         )}
+        {(inStock || minPrice || maxPrice || Object.keys(selectedAttributes).length > 0) && (
+          <div className="mt-3 flex flex-wrap gap-2" aria-label="Active filters">
+            {inStock && <button type="button" className="chip chip-active" onClick={() => set({ inStock: '' })}>In stock <X className="h-3 w-3" /></button>}
+            {(minPrice || maxPrice) && <button type="button" className="chip chip-active" onClick={() => set({ minPrice: '', maxPrice: '' })}>₹{minPrice || '0'}–{maxPrice || 'Any'} <X className="h-3 w-3" /></button>}
+            {Object.entries(selectedAttributes).flatMap(([key, values]) => (Array.isArray(values) ? values : []).map((value) => (
+              <button key={`${key}:${JSON.stringify(value)}`} type="button" className="chip chip-active" onClick={() => toggleAttribute(key, value)}>
+                {key.replace(/_/g, ' ')}: {String(value)} <X className="h-3 w-3" />
+              </button>
+            )))}
+          </div>
+        )}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
-        <aside className="space-y-5">
+      <div className="mb-4 flex items-center justify-between lg:hidden">
+        <button
+          type="button"
+          onClick={() => setFiltersOpen(true)}
+          className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm"
+        >
+          <SlidersHorizontal className="h-4 w-4" /> Filters
+          {activeFilterCount > 0 && <span className="grid h-5 min-w-5 place-items-center rounded-full bg-slate-900 px-1 text-[10px] text-white">{activeFilterCount}</span>}
+        </button>
+        {activeFilterCount > 0 && <button type="button" onClick={() => set({ categoryId: '', brand: '', brandName: '', inStock: '', minPrice: '', maxPrice: '', attributes: '' })} className="text-xs font-semibold text-rose-600">Clear all</button>}
+      </div>
+      {filtersOpen && <button type="button" aria-label="Close filters" onClick={() => setFiltersOpen(false)} className="fixed inset-0 z-40 bg-slate-950/45 backdrop-blur-[2px] lg:hidden" />}
+
+      <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
+        <aside className={cn(
+          'space-y-5 lg:sticky lg:top-24 lg:self-start',
+          'max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:z-50 max-lg:w-[min(88vw,360px)] max-lg:overflow-y-auto max-lg:bg-white max-lg:p-5 max-lg:shadow-2xl max-lg:transition-transform',
+          filtersOpen ? 'max-lg:translate-x-0' : 'max-lg:-translate-x-full',
+        )} aria-label="Product filters">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-4 lg:hidden">
+            <div><p className="font-display text-xl text-slate-900">Filters</p><p className="text-xs text-slate-500">{meta?.total ?? items.length} matching products</p></div>
+            <button type="button" onClick={() => setFiltersOpen(false)} aria-label="Close filters" className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-slate-600"><X className="h-5 w-5" /></button>
+          </div>
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Category</p>
             <div className="flex flex-wrap gap-2 lg:flex-col">
-              <button type="button" onClick={() => set({ categoryId: '' })} className={cn('chip', !categoryId && 'chip-active')}>All</button>
+              <button type="button" onClick={() => set({ categoryId: '', attributes: '' })} className={cn('chip', !categoryId && 'chip-active')}>All</button>
               {facetCats.map((c) => (
                 <button
                   key={c.id}
                   type="button"
-                  onClick={() => set({ categoryId: String(c.id) === categoryId ? '' : String(c.id) })}
+                  onClick={() => set({ categoryId: String(c.id) === categoryId ? '' : String(c.id), attributes: '' })}
                   className={cn('chip', categoryId === String(c.id) && 'chip-active')}
                 >
                   {c.name || 'Category'}
@@ -175,6 +232,31 @@ export default function Search() {
               </div>
             </form>
           </div>
+          {(facets.attributes || []).map((facet) => (
+            <div key={facet.key}>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                {facet.label}{facet.unit ? ` · ${facet.unit}` : ''}
+              </p>
+              <div className="flex max-h-40 flex-wrap gap-2 overflow-y-auto lg:flex-col lg:flex-nowrap">
+                {facet.values.map((option) => {
+                  const selected = (selectedAttributes[facet.key] || [])
+                    .some((value) => JSON.stringify(value) === JSON.stringify(option.value));
+                  return (
+                    <button
+                      key={`${facet.key}:${JSON.stringify(option.value)}`}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => toggleAttribute(facet.key, option.value)}
+                      className={cn('chip justify-between', selected && 'chip-active')}
+                    >
+                      <span className="truncate">{String(option.value)}</span>
+                      {option.count != null && <span className="opacity-65">· {option.count}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Availability</p>
             <button
@@ -190,6 +272,9 @@ export default function Search() {
               ₹{Math.round(facets.priceRange.min)} – ₹{Math.round(facets.priceRange.max)}
             </p>
           )}
+          <div className="sticky bottom-0 -mx-5 border-t border-slate-200 bg-white/95 p-4 backdrop-blur lg:hidden">
+            <Button className="w-full justify-center" onClick={() => setFiltersOpen(false)}>View {meta?.total ?? items.length} products</Button>
+          </div>
         </aside>
 
         <div>

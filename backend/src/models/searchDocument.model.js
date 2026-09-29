@@ -82,6 +82,12 @@ const SearchDocumentSchema = new Schema(
 // the candidate-retrieval index: tenant + active + in-stock, then price
 SearchDocumentSchema.index({ tenantId: 1, status: 1, inStock: -1, pricePaise: 1 });
 SearchDocumentSchema.index({ tenantId: 1, categoryId: 1, status: 1 });
+// Governed category attributes are dynamic by design; a compound wildcard
+// keeps tenant/status pruning indexed without creating one migration per field.
+SearchDocumentSchema.index(
+  { tenantId: 1, status: 1, 'attributes.$**': 1 },
+  { name: 'search_attribute_facets_idx' },
+);
 // full-text retrieval, weighted so a title hit beats a description hit
 SearchDocumentSchema.index(
   { title: 'text', searchText: 'text', tags: 'text', brandName: 'text' },

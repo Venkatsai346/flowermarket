@@ -128,6 +128,10 @@ TenantProductSchema.index(
   { unique: true, partialFilterExpression: { $and: [{ sellerSku: { $type: 'string' } }, { isDeleted: false }] } }
 );
 TenantProductSchema.index({ tenantId: 1, status: 1, 'channels.storefront': 1 });
+TenantProductSchema.index(
+  { tenantId: 1, status: 1, 'channels.storefront': 1, productMasterId: 1, variantId: 1 },
+  { name: 'catalog_family_read_idx' },
+);
 TenantProductSchema.index({ tenantId: 1, productMasterId: 1 });
 
 TenantProductSchema.plugin(auditPlugin);

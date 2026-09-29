@@ -4,6 +4,7 @@ import ProductVariant from '../models/productVariant.model.js';
 import ProductImage from '../models/productImage.model.js';
 import ProductPackage from '../models/productPackage.model.js';
 import ProductCompliance from '../models/productCompliance.model.js';
+import ProductAttributeValue from '../models/productAttributeValue.model.js';
 import ProductVariantAttributeValue from '../models/productVariantAttributeValue.model.js';
 import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
@@ -88,7 +89,7 @@ class SearchIndexerService {
   };
 
   /** Build the denormalized row for one listing. */
-  async buildDocument({ listing, master, categoryById, brandById, variantById = null, imagesByMaster = null, structuresByMaster = null, attributesByVariant = null }) {
+  async buildDocument({ listing, master, categoryById, brandById, variantById = null, imagesByMaster = null, structuresByMaster = null, attributesByMaster = null, attributesByVariant = null }) {
     const category = master.categoryId ? categoryById.get(String(master.categoryId)) : null;
     const brand = master.brandId ? brandById.get(String(master.brandId)) : null;
 
@@ -118,18 +119,29 @@ class SearchIndexerService {
       ]);
       structures = { packages, compliance };
     }
+    let masterAttributes = attributesByMaster?.get(String(master._id)) || [];
+    if (!attributesByMaster) {
+      masterAttributes = await ProductAttributeValue.find({ productMasterId: master._id, isDeleted: { $ne: true } })
+        .select('attributeKey value textValue numberValue booleanValue unit').lean().catch(() => []);
+    }
     let variantAttributes = attributesByVariant?.get(String(listing.variantId || '')) || [];
     if (!attributesByVariant && listing.variantId) {
-      variantAttributes = await ProductVariantAttributeValue.find({ productVariantId: listing.variantId })
-        .select('attributeKey value textValue unit').lean().catch(() => []);
+      variantAttributes = await ProductVariantAttributeValue.find({ productVariantId: listing.variantId, isDeleted: { $ne: true } })
+        .select('attributeKey value textValue numberValue booleanValue unit').lean().catch(() => []);
     }
     const packageTokens = (structures.packages || []).flatMap((item) => [item.code, item.label, item.identifiers?.sku, item.identifiers?.barcode, item.identifiers?.gtin]);
     const complianceTokens = (structures.compliance || []).flatMap((item) => [item.code, item.title, item.authority]);
-    const attributeTokens = variantAttributes.flatMap((item) => [
+    const allAttributes = [...masterAttributes, ...variantAttributes];
+    const attributeTokens = allAttributes.flatMap((item) => [
       item.attributeKey,
       item.textValue || (item.value && typeof item.value === 'object' ? JSON.stringify(item.value) : item.value),
       item.unit,
     ]);
+    // Variant values intentionally override master defaults for the same key.
+    // Mongo/Atlas can now apply the exact same governed attribute filters as
+    // the authoritative family read model before ranking candidates.
+    const attributeProjection = {};
+    for (const item of allAttributes) attributeProjection[item.attributeKey] = item.value;
 
     const searchText = [
       title, master.title, listing.merchandising?.descriptionOverride,
@@ -165,6 +177,7 @@ class SearchIndexerService {
       packageCodes: (structures.packages || []).map((item) => item.code).slice(0, 100),
       complianceCodes: (structures.compliance || []).map((item) => item.code).slice(0, 100),
       variantAttributes: variantAttributes.slice(0, 100).map((item) => ({ key: item.attributeKey, value: item.value, unit: item.unit || null })),
+      attributes: attributeProjection,
       categoryId: master.categoryId || null,
       categoryPath,
       tags,
@@ -208,12 +221,12 @@ class SearchIndexerService {
     const master = await ProductMaster.findById(listing.productMasterId).lean();
     if (!master) return { indexed: 0 };
 
-    const [categoryById, brandById, { structuresByMaster, attributesByVariant }] = await Promise.all([
+    const [categoryById, brandById, { structuresByMaster, attributesByMaster, attributesByVariant }] = await Promise.all([
       this.categoryMap([master.categoryId]),
       this.brandMap([master.brandId]),
       this.structureMaps([listing]),
     ]);
-    const doc = await this.buildDocument({ listing, master, categoryById, brandById, structuresByMaster, attributesByVariant });
+    const doc = await this.buildDocument({ listing, master, categoryById, brandById, structuresByMaster, attributesByMaster, attributesByVariant });
     return searchProvider.index([doc]);
   }
 
@@ -244,21 +257,28 @@ class SearchIndexerService {
   async structureMaps(listings) {
     const masterIds = [...new Set(listings.map((listing) => String(listing.productMasterId)).filter(Boolean))];
     const variantIds = [...new Set(listings.map((listing) => String(listing.variantId || '')).filter(Boolean))];
-    const [packages, compliance, attributes] = await Promise.all([
+    const [packages, compliance, masterAttributes, variantAttributes] = await Promise.all([
       ProductPackage.find({ productMasterId: { $in: masterIds }, status: 'active' }).select('productMasterId code label identifiers').lean(),
       ProductCompliance.find({ productMasterId: { $in: masterIds }, status: 'verified' }).select('productMasterId code title authority').lean(),
-      ProductVariantAttributeValue.find({ productVariantId: { $in: variantIds } }).select('productVariantId attributeKey value textValue unit').lean(),
+      ProductAttributeValue.find({ productMasterId: { $in: masterIds }, isDeleted: { $ne: true } }).select('productMasterId attributeKey value textValue numberValue booleanValue unit').lean(),
+      ProductVariantAttributeValue.find({ productVariantId: { $in: variantIds }, isDeleted: { $ne: true } }).select('productVariantId attributeKey value textValue numberValue booleanValue unit').lean(),
     ]);
     const structuresByMaster = new Map(masterIds.map((masterId) => [masterId, { packages: [], compliance: [] }]));
     for (const item of packages) structuresByMaster.get(String(item.productMasterId))?.packages.push(item);
     for (const item of compliance) structuresByMaster.get(String(item.productMasterId))?.compliance.push(item);
+    const attributesByMaster = new Map();
+    for (const item of masterAttributes) {
+      const key = String(item.productMasterId);
+      if (!attributesByMaster.has(key)) attributesByMaster.set(key, []);
+      attributesByMaster.get(key).push(item);
+    }
     const attributesByVariant = new Map();
-    for (const item of attributes) {
+    for (const item of variantAttributes) {
       const key = String(item.productVariantId);
       if (!attributesByVariant.has(key)) attributesByVariant.set(key, []);
       attributesByVariant.get(key).push(item);
     }
-    return { structuresByMaster, attributesByVariant };
+    return { structuresByMaster, attributesByMaster, attributesByVariant };
   }
 
   /** A taxonomy compliance/schema change can alter publishability and search text for every child product. */
@@ -308,7 +328,7 @@ class SearchIndexerService {
       if (!master) break;
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
-      const [categoryById, brandById, { variantById, imagesByMaster }, { structuresByMaster, attributesByVariant }] = await Promise.all([
+      const [categoryById, brandById, { variantById, imagesByMaster }, { structuresByMaster, attributesByMaster, attributesByVariant }] = await Promise.all([
         this.categoryMap([master.categoryId]),
         this.brandMap([master.brandId]),
         this.variantImageMaps(listings),
@@ -317,7 +337,7 @@ class SearchIndexerService {
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const docs = await Promise.all(
-        listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster, structuresByMaster, attributesByVariant }))
+        listings.map((listing) => this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster, structuresByMaster, attributesByMaster, attributesByVariant }))
       );
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
@@ -371,7 +391,7 @@ class SearchIndexerService {
       const masterById = new Map(masters.map((m) => [String(m._id), m]));
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
-      const [categoryById, brandById, { variantById, imagesByMaster }, { structuresByMaster, attributesByVariant }] = await Promise.all([
+      const [categoryById, brandById, { variantById, imagesByMaster }, { structuresByMaster, attributesByMaster, attributesByVariant }] = await Promise.all([
         this.categoryMap(masters.map((m) => m.categoryId)),
         this.brandMap(masters.map((m) => m.brandId)),
         this.variantImageMaps(listings),
@@ -384,7 +404,7 @@ class SearchIndexerService {
         if (!master) continue;
         // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
         // eslint-disable-next-line no-await-in-loop
-        docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster, structuresByMaster, attributesByVariant }));
+        docs.push(await this.buildDocument({ listing, master, categoryById, brandById, variantById, imagesByMaster, structuresByMaster, attributesByMaster, attributesByVariant }));
       }
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop

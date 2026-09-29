@@ -1,14 +1,18 @@
+import crypto from 'node:crypto';
 import mongoose from 'mongoose';
 import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
 import ProductImage from '../models/productImage.model.js';
 import ProductVariant from '../models/productVariant.model.js';
+import ProductAttributeValue from '../models/productAttributeValue.model.js';
+import ProductVariantAttributeValue from '../models/productVariantAttributeValue.model.js';
 import Category from '../models/category.model.js';
 import Brand from '../models/brand.model.js';
 import inventoryService from './inventory.service.js';
 import { groupImagesByVariant, resolveImagesForVariant, variantDisplayLabel, pickDefaultVariant } from '../utils/catalog/variantImages.js';
 import { literalRegex } from '../utils/regex.js';
 import { TENANT_LISTING_STATUS, PRODUCT_MASTER_STATUS } from '../constants/enums.js';
+import { badRequest } from '../utils/ApiError.js';
 
 /** Aggregation pipelines do NOT auto-cast ids — always normalize to ObjectId. */
 const toObjectId = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoose.Types.ObjectId(v));
@@ -21,16 +25,16 @@ const GROUPED_SORTS = Object.freeze({
   popularity: { direction: -1, kind: 'number' },
 });
 
-/** Cursor payloads are deliberately opaque and versioned, not trusted input. */
-const encodeCatalogCursor = ({ sort, value, id }) => Buffer.from(JSON.stringify({
-  v: 1, s: sort, k: value instanceof Date ? value.toISOString() : value, i: String(id),
+/** Cursor payloads are deliberately opaque, query-bound and versioned. */
+const encodeCatalogCursor = ({ sort, value, id, fingerprint }) => Buffer.from(JSON.stringify({
+  v: 2, s: sort, k: value instanceof Date ? value.toISOString() : value, i: String(id), f: fingerprint,
 })).toString('base64url');
 
-const decodeCatalogCursor = (raw, expectedSort) => {
+const decodeCatalogCursor = (raw, expectedSort, expectedFingerprint) => {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(Buffer.from(String(raw), 'base64url').toString('utf8'));
-    if (parsed?.v !== 1 || parsed.s !== expectedSort || !mongoose.isValidObjectId(parsed.i)) return null;
+    if (parsed?.v !== 2 || parsed.s !== expectedSort || parsed.f !== expectedFingerprint || !mongoose.isValidObjectId(parsed.i)) return null;
     const config = GROUPED_SORTS[expectedSort];
     const value = config.kind === 'date' ? new Date(parsed.k) : Number(parsed.k);
     if ((config.kind === 'date' && Number.isNaN(value.getTime())) || (config.kind === 'number' && !Number.isFinite(value))) return null;
@@ -73,6 +77,35 @@ class CatalogSearchService {
     return scope?.ids || [];
   }
 
+  /** Category-governed attributes that are safe and meaningful on a PLP. */
+  async facetDefinitions(categoryIds) {
+    if (!categoryIds?.length) return [];
+    const categories = await Category.find({ _id: { $in: categoryIds }, isDeleted: { $ne: true } })
+      .select('attributeSchema').lean();
+    const byKey = new Map();
+    for (const category of categories) {
+      const seenInCategory = new Set();
+      for (const field of category.attributeSchema || []) {
+        if ((!field.facetable && !field.filterable) || seenInCategory.has(field.key)) continue;
+        seenInCategory.add(field.key);
+        const existing = byKey.get(field.key);
+        if (existing) existing.categoryCount += 1;
+        else byKey.set(field.key, {
+          key: field.key,
+          label: field.label || field.key.replace(/_/g, ' '),
+          type: field.type || 'string',
+          unit: field.unit || null,
+          options: (field.options || []).slice(0, 100),
+          categoryCount: 1,
+        });
+      }
+    }
+    return [...byKey.values()]
+      .sort((a, b) => (b.categoryCount - a.categoryCount) || a.key.localeCompare(b.key))
+      .slice(0, 16)
+      .map(({ categoryCount, ...definition }) => definition);
+  }
+
   /**
    * Product-family read model used by every modern storefront PLP.
    *
@@ -82,13 +115,36 @@ class CatalogSearchService {
    * stock filter determines whether a product matches without silently hiding
    * its other selectable variants.
    */
-  async searchGrouped({ tenantId, query = {} }) {
+  async searchGrouped({ tenantId, query = {}, rankedMasterIds = null }) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(60, Math.max(1, Number(query.limit) || 24));
     const sort = GROUPED_SORTS[query.sort] ? query.sort : 'relevance';
     const sortConfig = GROUPED_SORTS[sort];
-    const cursor = decodeCatalogCursor(query.cursor, sort);
     const categoryIds = await this.categoryScope(query.categoryId);
+    const attributeFilters = query.attributes || {};
+    const attributeDefinitions = await this.facetDefinitions(categoryIds);
+    const allowedAttributeKeys = new Set(attributeDefinitions.map((field) => field.key));
+    const requestedAttributeKeys = Object.keys(attributeFilters);
+    const unknownAttributeKeys = requestedAttributeKeys.filter((key) => !allowedAttributeKeys.has(key));
+    if (unknownAttributeKeys.length) {
+      throw badRequest(
+        'One or more attribute filters are not available for this category',
+        'INVALID_CATALOG_ATTRIBUTE_FILTER',
+        { attributes: unknownAttributeKeys },
+      );
+    }
+    const normalizedAttributeFilters = Object.entries(attributeFilters);
+    const rankedIds = Array.isArray(rankedMasterIds) ? rankedMasterIds.map(toObjectId) : null;
+    const cursorFingerprint = crypto.createHash('sha256').update(JSON.stringify({
+      tenantId: String(tenantId), search: query.search || '', categoryId: query.categoryId || '',
+      brandId: query.brandId || '', type: query.type || '', minPrice: query.minPrice ?? null,
+      maxPrice: query.maxPrice ?? null, inStock: Boolean(query.inStock), sort,
+      attributes: Object.fromEntries(Object.entries(attributeFilters).sort(([a], [b]) => a.localeCompare(b))),
+    })).digest('hex').slice(0, 16);
+    const cursor = decodeCatalogCursor(query.cursor, sort, cursorFingerprint);
+    if (query.cursor && !cursor) {
+      throw badRequest('Catalog cursor is stale or does not belong to this filter set', 'INVALID_CATALOG_CURSOR');
+    }
 
     const pipeline = [
       {
@@ -119,7 +175,8 @@ class CatalogSearchService {
       },
     ];
 
-    if (query.search) {
+    if (rankedIds) pipeline.push({ $match: { 'master._id': { $in: rankedIds } } });
+    if (query.search && !rankedIds) {
       const rx = literalRegex(query.search);
       pipeline.push({ $match: { $or: [
         { 'master.title': rx }, { 'master.searchText': rx },
@@ -134,6 +191,35 @@ class CatalogSearchService {
     if (query.maxPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $lte: Number(query.maxPrice) } } });
     if (query.inStock) pipeline.push({ $match: { stockQty: { $gt: 0 } } });
 
+    if (attributeDefinitions.length) {
+      pipeline.push(
+        { $lookup: { from: ProductAttributeValue.collection.name, localField: 'master._id', foreignField: 'productMasterId', as: 'masterAttributes' } },
+        { $lookup: { from: ProductVariantAttributeValue.collection.name, localField: 'variant._id', foreignField: 'productVariantId', as: 'variantAttributes' } },
+        {
+          $set: {
+            allAttributes: {
+              $filter: {
+                input: { $concatArrays: ['$masterAttributes', '$variantAttributes'] },
+                as: 'attribute',
+                cond: { $ne: ['$$attribute.isDeleted', true] },
+              },
+            },
+          },
+        },
+      );
+      for (const [key, filter] of normalizedAttributeFilters) {
+        const valueMatch = filter && typeof filter === 'object' && !Array.isArray(filter)
+          ? {
+            numberValue: {
+              ...(filter.min != null ? { $gte: Number(filter.min) } : {}),
+              ...(filter.max != null ? { $lte: Number(filter.max) } : {}),
+            },
+          }
+          : { value: { $in: Array.isArray(filter) ? filter : [filter] } };
+        pipeline.push({ $match: { allAttributes: { $elemMatch: { attributeKey: key, ...valueMatch } } } });
+      }
+    }
+
     pipeline.push({
       $group: {
         _id: '$master._id',
@@ -146,13 +232,16 @@ class CatalogSearchService {
         newestAt: { $max: '$createdAt' },
         featured: { $max: { $cond: ['$merchandising.featured', 1, 0] } },
         searchBoost: { $max: { $ifNull: ['$merchandising.searchBoost', 0] } },
+        attributeRows: { $push: { $ifNull: ['$allAttributes', []] } },
       },
     });
 
     const sortExpression = {
       price_asc: '$minPrice', price_desc: '$maxPrice', newest: '$newestAt',
       popularity: { $ifNull: ['$master.soldCount', 0] },
-      relevance: { $add: [{ $multiply: ['$featured', 1000] }, '$searchBoost', { $ifNull: ['$master.soldCount', 0] }] },
+      relevance: rankedIds
+        ? { $subtract: [rankedIds.length, { $indexOfArray: [rankedIds, '$_id'] }] }
+        : { $add: [{ $multiply: ['$featured', 1000] }, '$searchBoost', { $ifNull: ['$master.soldCount', 0] }] },
     }[sort];
     pipeline.push({ $set: { _sort: sortExpression } });
 
@@ -177,19 +266,38 @@ class CatalogSearchService {
       },
     );
 
+    const facetPipelines = {
+      items: itemStages,
+      total: [{ $count: 'count' }],
+      categories: [{ $group: { _id: '$master.categoryId', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
+      brands: [{ $match: { 'master.brandId': { $ne: null } } }, { $group: { _id: '$master.brandId', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
+      types: [{ $match: { 'master.type': { $nin: [null, ''] } } }, { $group: { _id: '$master.type', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
+      availability: [{ $group: { _id: '$anyInStock', count: { $sum: 1 } } }],
+      price: [{ $group: { _id: null, min: { $min: '$minPrice' }, max: { $max: '$maxPrice' } } }],
+    };
+    if (attributeDefinitions.length) {
+      facetPipelines.attributes = [
+        { $unwind: '$attributeRows' },
+        { $unwind: '$attributeRows' },
+        { $match: { 'attributeRows.attributeKey': { $in: attributeDefinitions.map((field) => field.key) } } },
+        {
+          $project: {
+            masterId: '$_id', key: '$attributeRows.attributeKey', unit: '$attributeRows.unit',
+            values: { $cond: [{ $isArray: '$attributeRows.value' }, '$attributeRows.value', ['$attributeRows.value']] },
+          },
+        },
+        { $unwind: '$values' },
+        { $match: { $expr: { $in: [{ $type: '$values' }, ['string', 'double', 'int', 'long', 'decimal', 'bool']] } } },
+        { $group: { _id: { masterId: '$masterId', key: '$key', value: '$values' }, unit: { $first: '$unit' } } },
+        { $group: { _id: { key: '$_id.key', value: '$_id.value' }, count: { $sum: 1 }, unit: { $first: '$unit' } } },
+        { $sort: { count: -1, '_id.value': 1 } },
+        { $limit: 320 },
+      ];
+    }
+
     const [result = {}] = await TenantProduct.aggregate([
       ...pipeline,
-      {
-        $facet: {
-          items: itemStages,
-          total: [{ $count: 'count' }],
-          categories: [{ $group: { _id: '$master.categoryId', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
-          brands: [{ $match: { 'master.brandId': { $ne: null } } }, { $group: { _id: '$master.brandId', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
-          types: [{ $match: { 'master.type': { $nin: [null, ''] } } }, { $group: { _id: '$master.type', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
-          availability: [{ $group: { _id: '$anyInStock', count: { $sum: 1 } } }],
-          price: [{ $group: { _id: null, min: { $min: '$minPrice' }, max: { $max: '$maxPrice' } } }],
-        },
-      },
+      { $facet: facetPipelines },
     ]);
 
     const candidates = result.items || [];
@@ -236,10 +344,30 @@ class CatalogSearchService {
     ]);
     const categoryNames = new Map(cats.map((cat) => [String(cat._id), cat.name]));
     const brandNames = new Map(brands.map((brand) => [String(brand._id), brand.name]));
+    const attributeRowsByKey = new Map();
+    for (const row of result.attributes || []) {
+      const key = String(row._id?.key || '');
+      if (!key) continue;
+      if (!attributeRowsByKey.has(key)) attributeRowsByKey.set(key, []);
+      const values = attributeRowsByKey.get(key);
+      if (values.length < 20) values.push({ value: row._id.value, count: row.count, unit: row.unit || null });
+    }
+    const attributeFacets = attributeDefinitions.map((definition) => {
+      const observed = attributeRowsByKey.get(definition.key) || [];
+      const observedByValue = new Map(observed.map((row) => [JSON.stringify(row.value), row]));
+      const vocabulary = (definition.options || []).map((value) => (
+        observedByValue.get(JSON.stringify(value)) || { value, count: null, unit: definition.unit || null }
+      ));
+      const vocabularyKeys = new Set(vocabulary.map((row) => JSON.stringify(row.value)));
+      return {
+        ...definition,
+        values: [...vocabulary, ...observed.filter((row) => !vocabularyKeys.has(JSON.stringify(row.value)))].slice(0, 20),
+      };
+    }).filter((definition) => definition.values.length);
     const total = result.total?.[0]?.count || 0;
     const last = selected[selected.length - 1];
     const nextCursor = hasMore && last
-      ? encodeCatalogCursor({ sort, value: last._sort, id: last._id })
+      ? encodeCatalogCursor({ sort, value: last._sort, id: last._id, fingerprint: cursorFingerprint })
       : null;
 
     return {
@@ -264,6 +392,7 @@ class CatalogSearchService {
           types: (result.types || []).filter((row) => row._id).map((row) => ({
             value: String(row._id), count: row.count,
           })),
+          attributes: attributeFacets,
           inStock: (result.availability || []).find((row) => row._id === 1)?.count || 0,
           outOfStock: (result.availability || []).find((row) => row._id === 0)?.count || 0,
           priceRange: result.price?.[0] ? { min: result.price[0].min || 0, max: result.price[0].max || 0 } : null,
