@@ -1,11 +1,10 @@
-import { useState, useMemo } from 'react';
+import { useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { ChevronRight, PackageSearch, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
-import { useShop } from '../store.js';
+import { useCatalogFeed } from '../lib/useCatalogFeed.js';
 import { useCartActions } from '../lib/useCart.js';
-import { t } from '../i18n.js';
 import ProductCard from '../components/ProductCard.jsx';
 import ProductImage from '../components/ProductImage.jsx';
 import { Empty, Money, ProductSkeleton, Button } from '../components/ui.jsx';
@@ -30,22 +29,20 @@ export default function Browse() {
   const [searchParams, setSearchParams] = useSearchParams();
   const categoryId = searchParams.get('category') || '';
   const sort = searchParams.get('sort') || '';
-  const language = useShop((s) => s.language);
-  const pincode = useShop((s) => s.pincode);
+  const inStock = searchParams.get('inStock') === '1';
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
 
   const { data: categories } = useApi(() => api.shop.categories(), []);
   // Store-scoped index: live counts per category (+ subtree roll-up). The
   // global tree stays as the nav fallback when the store index is empty.
   const { data: storeCats } = useApi(() => api.shop.storeCategories(), []);
-  const { data, loading, error } = useApi(
-    () => api.shop.products({
-      categoryId: categoryId || undefined,
-      sort: sort || undefined,
-      limit: 48,
-    }),
-    [categoryId, sort],
-  );
+  const {
+    data, meta, loading, loadingMore, error, loadMore, refetch,
+  } = useCatalogFeed({
+    categoryId: categoryId || undefined,
+    sort: sort || undefined,
+    inStock: inStock || undefined,
+  }, { limit: 24 });
 
   const items = data || [];
   const tree = categories || [];
@@ -183,10 +180,25 @@ export default function Browse() {
       )}
 
       {/* Sort bar */}
-      <div className="mt-6 flex items-center justify-between">
-        <p className="text-sm text-slate-500">
-          {loading ? 'Loading…' : `${items.length} product${items.length === 1 ? '' : 's'}`}
-        </p>
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="mr-1 text-sm text-slate-500" aria-live="polite">
+            {loading && !data ? 'Loading…' : `${items.length} of ${meta?.total ?? items.length} products`}
+          </p>
+          <button
+            type="button"
+            className={cn('chip', inStock && 'chip-active')}
+            aria-pressed={inStock}
+            onClick={() => {
+              const params = new URLSearchParams(searchParams);
+              if (inStock) params.delete('inStock');
+              else params.set('inStock', '1');
+              setSearchParams(params);
+            }}
+          >
+            In stock{meta?.facets?.inStock != null ? ` · ${meta.facets.inStock}` : ''}
+          </button>
+        </div>
         <label className="relative">
           <SlidersHorizontal className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
           <select
@@ -214,9 +226,9 @@ export default function Browse() {
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => <ProductSkeleton key={i} />)}
         </div>
-      ) : error ? (
+      ) : error && !data ? (
         <div className="mt-8">
-          <Empty floral icon={PackageSearch} title="Could not load products" message={errMsg(error)} />
+          <Empty floral icon={PackageSearch} title="Could not load products" message={errMsg(error)} action={<Button variant="soft" onClick={refetch}>Retry</Button>} />
         </div>
       ) : items.length === 0 ? (
         <div className="mt-8">
@@ -229,18 +241,29 @@ export default function Browse() {
           />
         </div>
       ) : (
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {items.map((l) => (
-            <ProductCard
-              key={l.masterId || l.listingId}
-              listing={l}
-              qtyByListing={qtyByListing}
-              busyId={busyId}
-              onAdd={add}
-              onQty={changeQty}
-            />
-          ))}
-        </div>
+        <>
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {items.map((l) => (
+              <ProductCard
+                key={l.masterId || l.listingId}
+                listing={l}
+                qtyByListing={qtyByListing}
+                busyId={busyId}
+                onAdd={add}
+                onQty={changeQty}
+              />
+            ))}
+          </div>
+          {meta?.hasMore && (
+            <div className="mt-8 flex flex-col items-center gap-2">
+              <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
+                {loadingMore ? 'Loading more…' : 'Show more products'}
+              </Button>
+              <span className="text-xs tabular-nums text-slate-400">{items.length} of {meta.total}</span>
+              {error && <span role="alert" className="text-xs text-rose-600">Could not load the next page. Your current products are still here—try again.</span>}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

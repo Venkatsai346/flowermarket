@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, BadgeCheck, MapPin, PackageSearch, Sparkles } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
+import { useCatalogFeed } from '../lib/useCatalogFeed.js';
 import { useCartActions } from '../lib/useCart.js';
 import ProductCard from '../components/ProductCard.jsx';
 import ProductImage from '../components/ProductImage.jsx';
@@ -12,7 +13,7 @@ export default function Brand() {
   const { id } = useParams();
   const { qtyByListing, busyId, add, changeQty } = useCartActions();
   const brands = useApi(() => api.shop.storeBrands(), []);
-  const products = useApi(() => api.shop.products({ brandId: id, groupBy: 'master', limit: 100 }), [id]);
+  const products = useCatalogFeed({ brandId: id }, { limit: 24 });
   const brand = (brands.data || []).find((item) => String(item.id) === String(id));
   const items = products.data || [];
 
@@ -48,10 +49,21 @@ export default function Brand() {
         <div className="mb-4 flex items-end justify-between"><div><p className="text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: 'var(--brand)' }}>Available now</p><h2 className="font-display text-2xl text-slate-900">Shop {brand?.name}</h2></div><span className="text-xs text-slate-400">{products.loading ? 'Loading…' : `${items.length} results`}</span></div>
         {products.loading && !products.data ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{Array.from({ length: 8 }).map((_, index) => <ProductSkeleton key={index} />)}</div>
-        ) : products.error ? (
+        ) : products.error && !products.data ? (
           <Empty floral icon={PackageSearch} title="Could not load this collection" message={errMsg(products.error)} action={<Button variant="soft" onClick={products.refetch}>Retry</Button>} />
         ) : items.length ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{items.map((listing) => <ProductCard key={listing.masterId || listing.listingId} listing={listing} qtyByListing={qtyByListing} busyId={busyId} onAdd={add} onQty={changeQty} />)}</div>
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">{items.map((listing) => <ProductCard key={listing.masterId || listing.listingId} listing={listing} qtyByListing={qtyByListing} busyId={busyId} onAdd={add} onQty={changeQty} />)}</div>
+            {products.meta?.hasMore && (
+              <div className="mt-8 flex flex-col items-center gap-2">
+                <Button variant="outline" onClick={products.loadMore} disabled={products.loadingMore}>
+                  {products.loadingMore ? 'Loading more…' : 'Show more products'}
+                </Button>
+                <span className="text-xs tabular-nums text-slate-400">{items.length} of {products.meta.total}</span>
+                {products.error && <span role="alert" className="text-xs text-rose-600">The next page did not load. Your current products are safe—try again.</span>}
+              </div>
+            )}
+          </>
         ) : <Empty floral icon={PackageSearch} title="Nothing available right now" message="Check back soon for new products from this brand." />}
       </section>
     </div>

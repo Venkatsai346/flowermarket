@@ -13,6 +13,33 @@ import { TENANT_LISTING_STATUS, PRODUCT_MASTER_STATUS } from '../constants/enums
 /** Aggregation pipelines do NOT auto-cast ids — always normalize to ObjectId. */
 const toObjectId = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoose.Types.ObjectId(v));
 
+const GROUPED_SORTS = Object.freeze({
+  relevance: { direction: -1, kind: 'number' },
+  price_asc: { direction: 1, kind: 'number' },
+  price_desc: { direction: -1, kind: 'number' },
+  newest: { direction: -1, kind: 'date' },
+  popularity: { direction: -1, kind: 'number' },
+});
+
+/** Cursor payloads are deliberately opaque and versioned, not trusted input. */
+const encodeCatalogCursor = ({ sort, value, id }) => Buffer.from(JSON.stringify({
+  v: 1, s: sort, k: value instanceof Date ? value.toISOString() : value, i: String(id),
+})).toString('base64url');
+
+const decodeCatalogCursor = (raw, expectedSort) => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(String(raw), 'base64url').toString('utf8'));
+    if (parsed?.v !== 1 || parsed.s !== expectedSort || !mongoose.isValidObjectId(parsed.i)) return null;
+    const config = GROUPED_SORTS[expectedSort];
+    const value = config.kind === 'date' ? new Date(parsed.k) : Number(parsed.k);
+    if ((config.kind === 'date' && Number.isNaN(value.getTime())) || (config.kind === 'number' && !Number.isFinite(value))) return null;
+    return { value, id: toObjectId(parsed.i) };
+  } catch {
+    return null;
+  }
+};
+
 /**
  * CatalogSearchService — the CUSTOMER-facing merged view (read side).
  *
@@ -28,6 +55,223 @@ const toObjectId = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoo
  * service is the correct source-of-truth query behind them.
  */
 class CatalogSearchService {
+  /** Resolve a category to itself + all active descendants in one server-side walk. */
+  async categoryScope(categoryId) {
+    if (!categoryId) return null;
+    const [scope] = await Category.aggregate([
+      { $match: { _id: toObjectId(categoryId), status: { $ne: 'inactive' }, isDeleted: { $ne: true } } },
+      {
+        $graphLookup: {
+          from: 'categories', startWith: '$_id', connectFromField: '_id', connectToField: 'parentId',
+          as: 'descendants', restrictSearchWithMatch: { status: { $ne: 'inactive' }, isDeleted: { $ne: true } },
+        },
+      },
+      { $project: { ids: { $concatArrays: [['$_id'], '$descendants._id'] } } },
+    ]);
+    // A deleted/unknown category intentionally matches nothing rather than
+    // accidentally widening the request to the complete catalogue.
+    return scope?.ids || [];
+  }
+
+  /**
+   * Product-family read model used by every modern storefront PLP.
+   *
+   * Filtering happens against valid live variant listings, then rows are
+   * grouped BEFORE count, facets and pagination. The selected page is hydrated
+   * with the complete active family through groupListingRows(), so a price or
+   * stock filter determines whether a product matches without silently hiding
+   * its other selectable variants.
+   */
+  async searchGrouped({ tenantId, query = {} }) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(60, Math.max(1, Number(query.limit) || 24));
+    const sort = GROUPED_SORTS[query.sort] ? query.sort : 'relevance';
+    const sortConfig = GROUPED_SORTS[sort];
+    const cursor = decodeCatalogCursor(query.cursor, sort);
+    const categoryIds = await this.categoryScope(query.categoryId);
+
+    const pipeline = [
+      {
+        $match: {
+          tenantId: toObjectId(tenantId), status: TENANT_LISTING_STATUS.ACTIVE,
+          isDeleted: { $ne: true }, 'price.sellingPrice': { $ne: null },
+          'channels.storefront': { $ne: false },
+        },
+      },
+      { $lookup: { from: 'productmasters', localField: 'productMasterId', foreignField: '_id', as: 'master' } },
+      { $unwind: { path: '$master', preserveNullAndEmptyArrays: false } },
+      {
+        $match: {
+          'master.status': PRODUCT_MASTER_STATUS.ACTIVE,
+          'master.complianceStatus': { $ne: 'pending' },
+          'master.isDeleted': { $ne: true },
+        },
+      },
+      { $lookup: { from: 'productvariants', localField: 'variantId', foreignField: '_id', as: 'variant' } },
+      { $unwind: { path: '$variant', preserveNullAndEmptyArrays: true } },
+      {
+        $match: {
+          $or: [
+            { variantId: null },
+            { 'variant._id': { $ne: null }, 'variant.status': 'active', 'variant.isDeleted': { $ne: true } },
+          ],
+        },
+      },
+    ];
+
+    if (query.search) {
+      const rx = literalRegex(query.search);
+      pipeline.push({ $match: { $or: [
+        { 'master.title': rx }, { 'master.searchText': rx },
+        { 'master.skuGlobal': rx }, { 'master.tags': rx },
+      ] } });
+    }
+    if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': { $in: categoryIds } } });
+    if (query.brandId) pipeline.push({ $match: { 'master.brandId': toObjectId(query.brandId) } });
+    if (query.excludeMasterId) pipeline.push({ $match: { 'master._id': { $ne: toObjectId(query.excludeMasterId) } } });
+    if (query.type) pipeline.push({ $match: { 'master.type': query.type } });
+    if (query.minPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $gte: Number(query.minPrice) } } });
+    if (query.maxPrice !== undefined) pipeline.push({ $match: { 'price.sellingPrice': { $lte: Number(query.maxPrice) } } });
+    if (query.inStock) pipeline.push({ $match: { stockQty: { $gt: 0 } } });
+
+    pipeline.push({
+      $group: {
+        _id: '$master._id',
+        master: { $first: '$master' },
+        titleOverride: { $first: '$merchandising.titleOverride' },
+        descriptionOverride: { $first: '$merchandising.descriptionOverride' },
+        minPrice: { $min: '$price.sellingPrice' },
+        maxPrice: { $max: '$price.sellingPrice' },
+        anyInStock: { $max: { $cond: [{ $gt: ['$stockQty', 0] }, 1, 0] } },
+        newestAt: { $max: '$createdAt' },
+        featured: { $max: { $cond: ['$merchandising.featured', 1, 0] } },
+        searchBoost: { $max: { $ifNull: ['$merchandising.searchBoost', 0] } },
+      },
+    });
+
+    const sortExpression = {
+      price_asc: '$minPrice', price_desc: '$maxPrice', newest: '$newestAt',
+      popularity: { $ifNull: ['$master.soldCount', 0] },
+      relevance: { $add: [{ $multiply: ['$featured', 1000] }, '$searchBoost', { $ifNull: ['$master.soldCount', 0] }] },
+    }[sort];
+    pipeline.push({ $set: { _sort: sortExpression } });
+
+    const itemStages = [];
+    if (cursor) {
+      const comparator = sortConfig.direction === 1 ? '$gt' : '$lt';
+      itemStages.push({ $match: { $or: [
+        { _sort: { [comparator]: cursor.value } },
+        { _sort: cursor.value, _id: { $gt: cursor.id } },
+      ] } });
+    }
+    itemStages.push(
+      { $sort: { _sort: sortConfig.direction, _id: 1 } },
+      // Fetch one extra family to produce an exact hasMore without arithmetic.
+      ...(cursor ? [] : [{ $skip: (page - 1) * limit }]),
+      { $limit: limit + 1 },
+      {
+        $project: {
+          _id: 1, master: 1, titleOverride: 1, descriptionOverride: 1,
+          minPrice: 1, maxPrice: 1, anyInStock: 1, newestAt: 1, _sort: 1,
+        },
+      },
+    );
+
+    const [result = {}] = await TenantProduct.aggregate([
+      ...pipeline,
+      {
+        $facet: {
+          items: itemStages,
+          total: [{ $count: 'count' }],
+          categories: [{ $group: { _id: '$master.categoryId', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
+          brands: [{ $match: { 'master.brandId': { $ne: null } } }, { $group: { _id: '$master.brandId', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
+          types: [{ $match: { 'master.type': { $nin: [null, ''] } } }, { $group: { _id: '$master.type', count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 24 }],
+          availability: [{ $group: { _id: '$anyInStock', count: { $sum: 1 } } }],
+          price: [{ $group: { _id: null, min: { $min: '$minPrice' }, max: { $max: '$maxPrice' } } }],
+        },
+      },
+    ]);
+
+    const candidates = result.items || [];
+    const hasMore = candidates.length > limit;
+    const selected = candidates.slice(0, limit);
+    const representativeRows = selected.map((entry) => ({
+      product: {
+        id: String(entry._id),
+        title: entry.titleOverride || entry.master.title,
+        canonicalTitle: entry.master.title,
+        slug: entry.master.slug,
+        skuGlobal: entry.master.skuGlobal,
+        type: entry.master.type,
+        kind: entry.master.kind,
+        complianceStatus: entry.master.complianceStatus,
+        shortDescription: entry.descriptionOverride || entry.master.shortDescription,
+        categoryId: entry.master.categoryId,
+        brandId: entry.master.brandId,
+        isPerishable: entry.master.isPerishable,
+        requiresColdChain: entry.master.requiresColdChain,
+        defaultSellingUnit: entry.master.defaultSellingUnit,
+        unitPolicy: entry.master.unitPolicy,
+        options: entry.master.options,
+        optionRules: entry.master.optionRules,
+        manufacturer: entry.master.manufacturer,
+        modelNumber: entry.master.modelNumber,
+        condition: entry.master.condition,
+        fulfillmentProfile: entry.master.fulfillmentProfile,
+        soldCount: entry.master.soldCount,
+        searchText: entry.master.searchText,
+      },
+    }));
+    const cards = await this.groupListingRows({ tenantId, rows: representativeRows });
+    // Preserve aggregate order even if legacy data caused a family to be
+    // discarded during hydration.
+    const cardById = new Map(cards.map((card) => [String(card.masterId), card]));
+    const orderedCards = selected.map((entry) => cardById.get(String(entry._id))).filter(Boolean);
+
+    const catIds = (result.categories || []).map((row) => row._id).filter(Boolean);
+    const brandIds = (result.brands || []).map((row) => row._id).filter(Boolean);
+    const [cats, brands] = await Promise.all([
+      catIds.length ? Category.find({ _id: { $in: catIds } }).select('name').lean() : [],
+      brandIds.length ? Brand.find({ _id: { $in: brandIds } }).select('name').lean() : [],
+    ]);
+    const categoryNames = new Map(cats.map((cat) => [String(cat._id), cat.name]));
+    const brandNames = new Map(brands.map((brand) => [String(brand._id), brand.name]));
+    const total = result.total?.[0]?.count || 0;
+    const last = selected[selected.length - 1];
+    const nextCursor = hasMore && last
+      ? encodeCatalogCursor({ sort, value: last._sort, id: last._id })
+      : null;
+
+    return {
+      items: orderedCards,
+      meta: {
+        page: cursor ? null : page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+        hasMore,
+        nextCursor,
+        pagination: 'master_cursor',
+        grouped: true,
+        groupedCount: orderedCards.length,
+        facets: {
+          categories: (result.categories || []).filter((row) => row._id).map((row) => ({
+            id: String(row._id), name: categoryNames.get(String(row._id)) || null, count: row.count,
+          })),
+          brands: (result.brands || []).filter((row) => row._id).map((row) => ({
+            id: String(row._id), name: brandNames.get(String(row._id)) || null, count: row.count,
+          })),
+          types: (result.types || []).filter((row) => row._id).map((row) => ({
+            value: String(row._id), count: row.count,
+          })),
+          inStock: (result.availability || []).find((row) => row._id === 1)?.count || 0,
+          outOfStock: (result.availability || []).find((row) => row._id === 0)?.count || 0,
+          priceRange: result.price?.[0] ? { min: result.price[0].min || 0, max: result.price[0].max || 0 } : null,
+        },
+      },
+    };
+  }
+
   /**
    * Customer catalog query for one tenant.
    */
@@ -308,8 +552,8 @@ class CatalogSearchService {
         'price.sellingPrice': { $ne: null },
         'channels.storefront': { $ne: false },
       }).select('_id productMasterId variantId price priceBasis stockQty availability').lean(),
-      ProductVariant.find({ productMasterId: { $in: masterIds }, status: 'active' }).lean(),
-      ProductImage.find({ productMasterId: { $in: masterIds }, status: 'active' }).sort({ isPrimary: -1, sortOrder: 1 }).lean(),
+      ProductVariant.find({ productMasterId: { $in: masterIds }, status: 'active', isDeleted: { $ne: true } }).lean(),
+      ProductImage.find({ productMasterId: { $in: masterIds }, status: 'active', isDeleted: { $ne: true } }).sort({ isPrimary: -1, sortOrder: 1 }).lean(),
     ]);
     const variantById = new Map(variants.map((v) => [String(v._id), v]));
     const imagesByMaster = new Map();

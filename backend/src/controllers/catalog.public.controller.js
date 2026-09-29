@@ -31,9 +31,9 @@ class CatalogPublicController {
    * If the ranked path throws for any reason we fall back to the legacy scan
    * rather than failing the request: a degraded catalogue beats no catalogue.
    *
-   * `?groupBy=master` collapses the page into ONE card per master with the full
-   * listed-variant family (storefront dropdown cards). Grouping is order-
-   * preserving, so ranked relevance survives it; pagination stays listing-based.
+   * `?groupBy=master` uses the authoritative family read model: filtering,
+   * facets, count and cursor pagination all operate on distinct masters before
+   * each result is hydrated with its complete listed-variant family.
    */
   search = asyncHandler(async (req, res) => {
     const resolvedTenantId = req.tenantId || req.headers['x-tenant-id'];
@@ -47,6 +47,19 @@ class CatalogPublicController {
       const cards = await catalogSearchService.groupListingRows({ tenantId: resolvedTenantId, rows: items });
       return { items: cards, meta: { ...meta, grouped: true, groupedCount: cards.length } };
     };
+
+    // Modern storefronts use the authoritative product-family read model.
+    // It groups before facets/count/pagination and therefore must not pass
+    // through the legacy listing-ranked path, which could split one family
+    // across pages and performed a second full live probe on every request.
+    if (grouped) {
+      const result = await catalogSearchService.searchGrouped({ tenantId: resolvedTenantId, query });
+      return res.status(200).json(success(result.items, {
+        message: 'Catalog fetched',
+        meta: { ...result.meta, indexState: 'authoritative' },
+      }));
+    }
+
     if (config.search.rankedCatalog) {
       try {
         const ranked = await searchService.search({

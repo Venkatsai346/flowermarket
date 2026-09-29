@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { PackageSearch, SlidersHorizontal } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
+import { useCatalogFeed } from '../lib/useCatalogFeed.js';
 import { useShop } from '../store.js';
 import { useCartActions } from '../lib/useCart.js';
 import ProductCard from '../components/ProductCard.jsx';
@@ -34,8 +35,8 @@ export default function Search() {
   const brandNameParam = params.get('brandName') || '';
   const sort = params.get('sort') || 'relevance';
   const inStock = params.get('inStock') === '1';
-  const page = Math.max(1, Number(params.get('page')) || 1);
-
+  const minPrice = params.get('minPrice') || '';
+  const maxPrice = params.get('maxPrice') || '';
   const set = (patch) => {
     const next = new URLSearchParams(params);
     for (const [k, v] of Object.entries(patch)) {
@@ -53,19 +54,17 @@ export default function Search() {
     () => (brandId && !brandNameParam ? api.shop.storeBrands() : Promise.resolve({ data: [] })),
     [brandId, brandNameParam]
   );
-  const { data, meta, loading, error } = useApi(
-    () => api.shop.products({
-      search: q || undefined,
-      categoryId: categoryId || undefined,
-      brandId: brandId || undefined,
-      sort: sort || undefined,
-      inStock: inStock || undefined,
-      groupBy: 'master',
-      page,
-      limit: 24,
-    }),
-    [q, categoryId, brandId, sort, inStock, page]
-  );
+  const {
+    data, meta, loading, loadingMore, error, loadMore, refetch,
+  } = useCatalogFeed({
+    search: q || undefined,
+    categoryId: categoryId || undefined,
+    brandId: brandId || undefined,
+    sort: sort || undefined,
+    inStock: inStock || undefined,
+    minPrice: minPrice || undefined,
+    maxPrice: maxPrice || undefined,
+  }, { limit: 24 });
 
   const items = data || [];
   const facets = meta?.facets || {};
@@ -132,6 +131,50 @@ export default function Search() {
               ))}
             </div>
           </div>
+          {facets.brands?.length > 0 && (
+            <div>
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Brand</p>
+              <div className="flex flex-wrap gap-2 lg:flex-col">
+                {facets.brands.map((brand) => (
+                  <button
+                    key={brand.id}
+                    type="button"
+                    onClick={() => set({ brand: brandId === String(brand.id) ? '' : brand.id, brandName: brand.name || '' })}
+                    className={cn('chip', brandId === String(brand.id) && 'chip-active')}
+                  >
+                    {brand.name || 'Brand'} <span className="opacity-70">· {brand.count}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Price</p>
+            <form
+              key={`${minPrice}-${maxPrice}-${facets.priceRange?.min}-${facets.priceRange?.max}`}
+              className="space-y-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const form = new FormData(event.currentTarget);
+                set({ minPrice: form.get('minPrice'), maxPrice: form.get('maxPrice') });
+              }}
+            >
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-[11px] text-slate-500">
+                  Minimum
+                  <input name="minPrice" type="number" min="0" step="1" defaultValue={minPrice} placeholder={facets.priceRange?.min != null ? `₹${Math.floor(facets.priceRange.min)}` : '₹0'} className="input mt-1 !py-1.5 text-sm" />
+                </label>
+                <label className="text-[11px] text-slate-500">
+                  Maximum
+                  <input name="maxPrice" type="number" min="0" step="1" defaultValue={maxPrice} placeholder={facets.priceRange?.max != null ? `₹${Math.ceil(facets.priceRange.max)}` : 'Any'} className="input mt-1 !py-1.5 text-sm" />
+                </label>
+              </div>
+              <div className="flex gap-2">
+                <Button type="submit" variant="soft" className="!px-3 !py-1.5 text-xs">Apply</Button>
+                {(minPrice || maxPrice) && <Button type="button" variant="ghost" className="!px-2 !py-1.5 text-xs" onClick={() => set({ minPrice: '', maxPrice: '' })}>Clear</Button>}
+              </div>
+            </form>
+          </div>
           <div>
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Availability</p>
             <button
@@ -175,8 +218,8 @@ export default function Search() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {Array.from({ length: 6 }).map((_, i) => <ProductSkeleton key={i} />)}
             </div>
-          ) : error ? (
-            <Empty icon={PackageSearch} title="Search failed" message={errMsg(error)} />
+          ) : error && !data ? (
+            <Empty icon={PackageSearch} title="Search failed" message={errMsg(error)} action={<Button variant="soft" onClick={refetch}>Try again</Button>} />
           ) : items.length === 0 ? (
             <Empty
               icon={PackageSearch}
@@ -199,8 +242,11 @@ export default function Search() {
                 ))}
               </div>
               {meta?.hasMore && (
-                <div className="mt-6 flex justify-center">
-                  <Button variant="outline" onClick={() => set({ page: page + 1 })}>Load more</Button>
+                <div className="mt-6 flex flex-col items-center gap-2">
+                  <Button variant="outline" onClick={loadMore} disabled={loadingMore}>
+                    {loadingMore ? 'Loading more…' : `Show more · ${items.length} of ${meta.total}`}
+                  </Button>
+                  {error && <span role="alert" className="text-xs text-rose-600">Could not load the next page. Your current products are still here—try again.</span>}
                 </div>
               )}
             </>

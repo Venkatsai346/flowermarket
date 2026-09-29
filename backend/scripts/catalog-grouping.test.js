@@ -4,6 +4,7 @@ import TenantProduct from '../src/models/tenantProduct.model.js';
 import ProductVariant from '../src/models/productVariant.model.js';
 import ProductImage from '../src/models/productImage.model.js';
 import ProductMaster from '../src/models/productMaster.model.js';
+import Category from '../src/models/category.model.js';
 import productMasterService from '../src/services/productMaster.service.js';
 
 const masterId = '66a000000000000000000001';
@@ -106,4 +107,69 @@ try {
 } finally {
   ProductMaster.find = originalMasterFind;
   ProductMaster.countDocuments = originalMasterCount;
+}
+
+// Product-family pagination contract: aggregate/group happens before facet and
+// the continuation cursor uses keyset matching rather than skip arithmetic.
+const originalTenantAggregate = TenantProduct.aggregate;
+const originalCategoryAggregate = Category.aggregate;
+const originalCategoryFind = Category.find;
+const originalGrouping = catalogSearchService.groupListingRows;
+try {
+  const masters = [
+    '66a000000000000000000011',
+    '66a000000000000000000012',
+    '66a000000000000000000013',
+  ];
+  let capturedPipeline = null;
+  Category.aggregate = async () => [{ ids: ['66a000000000000000000099'] }];
+  Category.find = () => ({ select: () => ({ lean: async () => [{ _id: '66a000000000000000000099', name: 'Leaf' }] }) });
+  TenantProduct.aggregate = async (pipeline) => {
+    capturedPipeline = pipeline;
+    return [{
+      items: masters.map((id, index) => ({
+        _id: id,
+        _sort: 100 - index,
+        master: { _id: id, title: `Master ${index}`, categoryId: '66a000000000000000000099' },
+      })),
+      total: [{ count: 3 }],
+      categories: [{ _id: '66a000000000000000000099', count: 3 }],
+      availability: [{ _id: 1, count: 2 }, { _id: 0, count: 1 }],
+      price: [{ min: 10, max: 90 }],
+    }];
+  };
+  catalogSearchService.groupListingRows = async ({ rows }) => rows.map((row) => ({
+    masterId: row.product.id,
+    product: row.product,
+    variants: [{ listingId: `listing-${row.product.id}` }],
+  }));
+
+  const first = await catalogSearchService.searchGrouped({
+    tenantId,
+    query: { groupBy: 'master', categoryId: '66a000000000000000000099', sort: 'popularity', limit: 2 },
+  });
+  assert.equal(first.items.length, 2);
+  assert.equal(first.meta.total, 3);
+  assert.equal(first.meta.hasMore, true);
+  assert.equal(first.meta.pagination, 'master_cursor');
+  assert.ok(first.meta.nextCursor);
+  assert.equal(first.meta.facets.categories[0].count, 3);
+  const groupIndex = capturedPipeline.findIndex((stage) => stage.$group?._id === '$master._id');
+  const facetIndex = capturedPipeline.findIndex((stage) => stage.$facet);
+  assert.ok(groupIndex >= 0 && facetIndex > groupIndex, 'master grouping must precede pagination facets');
+  assert.equal(capturedPipeline[facetIndex].$facet.items.some((stage) => Object.hasOwn(stage, '$skip')), true);
+
+  await catalogSearchService.searchGrouped({
+    tenantId,
+    query: { groupBy: 'master', categoryId: '66a000000000000000000099', sort: 'popularity', limit: 2, cursor: first.meta.nextCursor },
+  });
+  const cursorFacet = capturedPipeline.find((stage) => stage.$facet);
+  assert.equal(cursorFacet.$facet.items.some((stage) => stage.$skip), false);
+  assert.equal(Boolean(cursorFacet.$facet.items[0].$match?.$or), true);
+  console.log('catalog grouping: master-first facets and stable keyset cursor PASS');
+} finally {
+  TenantProduct.aggregate = originalTenantAggregate;
+  Category.aggregate = originalCategoryAggregate;
+  Category.find = originalCategoryFind;
+  catalogSearchService.groupListingRows = originalGrouping;
 }

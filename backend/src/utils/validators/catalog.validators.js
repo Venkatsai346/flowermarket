@@ -632,7 +632,30 @@ export const catalogQuerySchema = Joi.object({
   sort: Joi.string().valid('relevance', 'price_asc', 'price_desc', 'newest', 'popularity').default('relevance'),
   // groupBy=master -> one card per master with the full variant family.
   groupBy: Joi.string().valid('master'),
+  // Opaque keyset cursor returned by the grouped read model. Page remains
+  // supported for older clients, but cursor pagination is stable while the
+  // catalogue changes between requests.
+  cursor: Joi.string().base64({ urlSafe: true, paddingRequired: false }).max(700),
   ...pagination,
+}).custom((value, helpers) => {
+  if (value.minPrice != null && value.maxPrice != null && value.minPrice > value.maxPrice) {
+    return helpers.message({ custom: 'minPrice must be less than or equal to maxPrice' });
+  }
+  if (value.cursor) {
+    if (value.page && value.page !== 1) {
+      return helpers.message({ custom: 'cursor and page pagination cannot be combined' });
+    }
+    try {
+      const cursor = JSON.parse(Buffer.from(value.cursor, 'base64url').toString('utf8'));
+      const validKey = typeof cursor.k === 'number' || typeof cursor.k === 'string';
+      if (cursor.v !== 1 || cursor.s !== value.sort || !validKey || !/^[0-9a-fA-F]{24}$/.test(cursor.i)) {
+        return helpers.message({ custom: 'cursor is invalid for the selected sort' });
+      }
+    } catch {
+      return helpers.message({ custom: 'cursor is malformed' });
+    }
+  }
+  return value;
 });
 
 /** PDP / stock-check variant selection (?variantId=). */
