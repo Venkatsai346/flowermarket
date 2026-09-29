@@ -23,6 +23,7 @@ import ScheduledJob from '../models/scheduledJob.model.js';
 import SystemHeartbeat from '../models/systemHeartbeat.model.js';
 import Payment from '../models/payment.model.js';
 import RefundTransaction from '../models/refundTransaction.model.js';
+import CatalogBulkJob from '../models/catalogBulkJob.model.js';
 import catalogEventService from '../services/catalogEvent.service.js';
 import { PAYMENT_STATUS, PAYMENT_PROVIDER, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
 import { createRegistry } from './metrics.js';
@@ -89,6 +90,15 @@ export const catalogMediaMutations = registry.counter(
   'catalog_media_mutations_total',
   'Successful governed catalog media mutations by bounded operation.',
   ['operation'],
+);
+const catalogBulkJobs = registry.gauge(
+  'catalog_bulk_jobs',
+  'Durable catalog bulk jobs by bounded status.',
+  ['status'],
+);
+const catalogBulkOldestQueuedAge = registry.gauge(
+  'catalog_bulk_oldest_queued_age_seconds',
+  'Age of the oldest queued catalog bulk job; zero when no job is queued.',
 );
 
 // ---- DB ----
@@ -221,6 +231,15 @@ export async function collectDynamic() {
       .lean();
     outboxOldestAge.set(oldest ? Math.max(0, (Date.now() - new Date(oldest.availableAt).getTime()) / 1000) : 0);
     outboxDlq.set(st.failed || 0);
+
+    // durable catalog imports
+    catalogBulkJobs.reset();
+    const bulkCounts = await CatalogBulkJob.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    for (const status of ['queued', 'running', 'cancel_requested', 'cancelled', 'completed', 'failed']) {
+      catalogBulkJobs.set({ status }, bulkCounts.find((row) => row._id === status)?.count || 0);
+    }
+    const oldestBulk = await CatalogBulkJob.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
+    catalogBulkOldestQueuedAge.set(oldestBulk ? Math.max(0, (Date.now() - new Date(oldestBulk.createdAt).getTime()) / 1000) : 0);
 
     // worker liveness
     const hb = await SystemHeartbeat.findOne({ role: 'worker' }).lean();

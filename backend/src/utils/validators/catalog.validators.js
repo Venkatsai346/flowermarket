@@ -741,6 +741,17 @@ export const bulkQuerySchema = Joi.object({
   dryRun: Joi.boolean().default(false),
 });
 
+export const bulkUploadSchema = Joi.object({
+  csv: Joi.string().max(5_000_000),
+  file: Joi.string().max(5_000_000),
+}).xor('csv', 'file');
+
+export const bulkJobsQuerySchema = Joi.object({ ...pagination });
+
+export const bulkJobParamSchema = Joi.object({
+  jobId: objectId.required(),
+});
+
 export const idParamSchema = Joi.object({
   id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
 });

@@ -217,28 +217,52 @@ class CatalogTenantController {
     if (rows.length > bulkImportService.BULK_MAX_ROWS) {
       throw badRequest(`Too many rows: max ${bulkImportService.BULK_MAX_ROWS} per upload`, 'CSV_TOO_LARGE');
     }
-    const job = bulkImportService.createJob({ kind, rows, tenantId: req.tenantId, actorId: req.auth.userId });
-    const dryRun = req.query.dryRun === 'true';
-    // Process in background; client polls GET /bulk/:jobId. An unexpected
-    // crash in the runner must be VISIBLE (job failed + logged) — the old
-    // .catch(() => {}) left jobs stuck in "running" forever.
-    bulkImportService.runJob(job, { dryRun }).catch((err) => {
-      job.status = 'failed';
-      job.finishedAt = new Date();
-      job.errors.push({ row: 0, message: err?.message || String(err) });
-      console.error('[bulk-import] job crashed:', err);
+    const dryRun = req.query.dryRun === true || req.query.dryRun === 'true';
+    const job = await bulkImportService.createJob({
+      kind, rows, tenantId: req.tenantId, actorId: req.auth.userId, dryRun,
     });
-    res.status(202).json(success({ jobId: job.id, status: 'queued', dryRun }, { message: 'Bulk job queued' }));
+    // Kick the durable queue for single-process development. Production workers
+    // race on the same atomic lease, so this is safe across API/worker replicas.
+    setImmediate(() => {
+      bulkImportService.processAvailable({ workerId: `api-${process.pid}`, maxJobs: 1 })
+        // Operational crash visibility; the durable lease remains reclaimable.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[bulk-import] durable runner failed:', error));
+    });
+    res.status(202).json(success({ jobId: job.id, status: job.status, dryRun }, { message: 'Durable bulk job queued' }));
   });
 
   getBulkJob = asyncHandler(async (req, res) => {
-    const job = bulkImportService.getJob(req.params.jobId);
+    const job = await bulkImportService.getJob(req.params.jobId, { tenantId: req.tenantId });
     res.status(200).json(success(job, { message: 'Bulk job status' }));
   });
 
   listBulkJobs = asyncHandler(async (req, res) => {
-    const jobs = bulkImportService.listJobs({ tenantId: req.tenantId });
-    res.status(200).json(success(jobs, { message: 'Bulk jobs' }));
+    const result = await bulkImportService.listJobs({ tenantId: req.tenantId, page: req.query.page, limit: req.query.limit });
+    res.status(200).json(success(result.items, { message: 'Bulk jobs', meta: result.meta }));
+  });
+
+  listBulkFailures = asyncHandler(async (req, res) => {
+    const result = await bulkImportService.listFailures({
+      jobId: req.params.jobId, tenantId: req.tenantId, page: req.query.page, limit: req.query.limit,
+    });
+    res.status(200).json(success(result.items, { message: 'Bulk job failures', meta: result.meta }));
+  });
+
+  cancelBulkJob = asyncHandler(async (req, res) => {
+    const job = await bulkImportService.cancelJob({ jobId: req.params.jobId, tenantId: req.tenantId });
+    res.status(200).json(success(job, { message: 'Bulk job cancellation accepted' }));
+  });
+
+  retryBulkFailures = asyncHandler(async (req, res) => {
+    const job = await bulkImportService.retryFailures({ jobId: req.params.jobId, tenantId: req.tenantId });
+    setImmediate(() => {
+      bulkImportService.processAvailable({ workerId: `api-${process.pid}`, maxJobs: 1 })
+        // Operational crash visibility; the durable lease remains reclaimable.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[bulk-import] durable retry failed:', error));
+    });
+    res.status(202).json(success(job, { message: 'Failed rows re-queued' }));
   });
 
   downloadTemplate = asyncHandler(async (req, res) => {

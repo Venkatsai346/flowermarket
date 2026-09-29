@@ -21,6 +21,10 @@ import {
   versionOnlySchema,
   catalogQualityQuerySchema,
   qualityMasterParamSchema,
+  bulkQuerySchema,
+  bulkUploadSchema,
+  bulkJobsQuerySchema,
+  bulkJobParamSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -79,10 +83,13 @@ router.get('/quality/summary', tenantQualityAdmin, CatalogTenantController.quali
 router.get('/quality/assessments', tenantQualityAdmin, validate(catalogQualityQuerySchema, 'query'), CatalogTenantController.listQuality);
 router.get('/quality/assessments/:masterId', tenantQualityAdmin, validate(qualityMasterParamSchema, 'params'), CatalogTenantController.qualityDetail);
 
-// ---- bulk ----
-router.post('/bulk/:kind', CatalogTenantController.bulkUpload);
-router.get('/bulk/jobs', CatalogTenantController.listBulkJobs);
-router.get('/bulk/jobs/:jobId', CatalogTenantController.getBulkJob);
+// ---- durable bulk operations ----
+router.post('/bulk/:kind', validate(bulkQuerySchema, 'query'), validate(bulkUploadSchema), CatalogTenantController.bulkUpload);
+router.get('/bulk/jobs', validate(bulkJobsQuerySchema, 'query'), CatalogTenantController.listBulkJobs);
+router.get('/bulk/jobs/:jobId/failures', validate(bulkJobParamSchema, 'params'), validate(bulkJobsQuerySchema, 'query'), CatalogTenantController.listBulkFailures);
+router.post('/bulk/jobs/:jobId/cancel', validate(bulkJobParamSchema, 'params'), CatalogTenantController.cancelBulkJob);
+router.post('/bulk/jobs/:jobId/retry-failures', validate(bulkJobParamSchema, 'params'), CatalogTenantController.retryBulkFailures);
+router.get('/bulk/jobs/:jobId', validate(bulkJobParamSchema, 'params'), CatalogTenantController.getBulkJob);
 router.get('/bulk/template/:kind', CatalogTenantController.downloadTemplate);
 
 export default router;

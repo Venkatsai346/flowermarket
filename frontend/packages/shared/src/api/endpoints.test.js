@@ -166,8 +166,16 @@ test('catalog tenant and catalog admin helpers map correctly', async () => {
   api.catalogTenant.listings({ status: 'active' });
   check(api, client.calls, ['GET', '/catalog/tenant/listings']);
 
-  api.catalogTenant.bulkUpload('masters', { rows: [{}] });
-  check(api, client.calls, ['POST', '/catalog/tenant/bulk/masters']);
+  api.catalogTenant.bulkUpload('price', { csv: 'sku,price' }, { dryRun: true });
+  const bulkUpload = check(api, client.calls, ['POST', '/catalog/tenant/bulk/price']);
+  assert.deepEqual(bulkUpload.opts.query, { dryRun: true });
+
+  api.catalogTenant.bulkJobFailures('job_1', { page: 2 });
+  check(api, client.calls, ['GET', '/catalog/tenant/bulk/jobs/job_1/failures']);
+  api.catalogTenant.cancelBulkJob('job_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/bulk/jobs/job_1/cancel']);
+  api.catalogTenant.retryBulkFailures('job_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/bulk/jobs/job_1/retry-failures']);
 
   api.catalogTenant.bulkTemplate('inventory');
   check(api, client.calls, ['DOWNLOAD', '/catalog/tenant/bulk/template/inventory']);

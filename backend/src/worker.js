@@ -10,7 +10,9 @@
  *     claimedBy + leaseExpiresAt). Handler failures back off exponentially
  *     (30s/2m/10m/30m) and dead-letter after WORKER_MAX_ATTEMPTS; ops can
  *     re-queue via POST /catalog/admin/events/retry-failed.
- *  2. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
+ *  2. CATALOG BULK JOBS — advances one bounded, durable row checkpoint batch
+ *     per tick. Mongo leases make restarts and concurrent workers safe.
+ *  3. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
  *     nightly) at their scheduled hour. Single-flight across workers via an
  *     atomic nextRunAt advance (see workers/scheduler.js).
  *
@@ -29,6 +31,7 @@ import catalogEventService from './services/catalogEvent.service.js';
 import notificationService from './services/notification.service.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import heartbeatService from './services/heartbeat.service.js';
+import bulkImportService from './services/bulkImport.service.js';
 import { seedJobs, tick as schedulerTick } from './workers/scheduler.js';
 
 const workerId = `worker-${process.pid}-${crypto.randomBytes(2).toString('hex')}`;
@@ -41,6 +44,7 @@ const counters = {
   eventsFailed: 0,
   leasesReclaimed: 0,
   jobsStarted: 0,
+  bulkJobsAdvanced: 0,
 };
 
 async function main() {
@@ -90,6 +94,15 @@ async function main() {
         console.log(`[worker] drained ${res.published} ok / ${res.failed} failed (scanned ${res.scanned})`);
       }
     }
+    const bulkResults = await bulkImportService.processAvailable({
+      workerId, maxJobs: 1, maxBatchesPerJob: 1,
+    }).catch((e) => {
+      // Worker failures must be visible; leases make the batch reclaimable.
+      // eslint-disable-next-line no-console
+      console.error('[worker] bulk import advance failed:', e?.message);
+      return [];
+    });
+    counters.bulkJobsAdvanced += bulkResults.length;
     try {
       const started = await schedulerTick(workerId);
       counters.jobsStarted += started.length;

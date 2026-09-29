@@ -244,9 +244,12 @@ export function createEndpoints(client) {
       qualitySummary: () => c.get('/catalog/tenant/quality/summary'),
       qualityAssessments: (q = {}) => c.get('/catalog/tenant/quality/assessments', { query: q }),
       qualityAssessment: (masterId) => c.get(`/catalog/tenant/quality/assessments/${masterId}`),
-      bulkUpload: (kind, body) => c.post(`/catalog/tenant/bulk/${kind}`, body),
+      bulkUpload: (kind, body, q = {}) => c.post(`/catalog/tenant/bulk/${kind}`, body, { query: q }),
       bulkJobs: (q = {}) => c.get('/catalog/tenant/bulk/jobs', { query: q }),
       bulkJob: (id) => c.get(`/catalog/tenant/bulk/jobs/${id}`),
+      bulkJobFailures: (id, q = {}) => c.get(`/catalog/tenant/bulk/jobs/${id}/failures`, { query: q }),
+      cancelBulkJob: (id) => c.post(`/catalog/tenant/bulk/jobs/${id}/cancel`),
+      retryBulkFailures: (id) => c.post(`/catalog/tenant/bulk/jobs/${id}/retry-failures`),
       bulkTemplate: (kind) => c.download(`/catalog/tenant/bulk/template/${kind}`),
     },
 

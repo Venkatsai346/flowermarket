@@ -333,6 +333,8 @@ export const EVENT_STATUS_META = {
 export const BULK_JOB_STATUS_META = {
   queued: { label: 'Queued', tone: 'amber' },
   running: { label: 'Running', tone: 'sky' },
+  cancel_requested: { label: 'Stopping', tone: 'amber' },
+  cancelled: { label: 'Cancelled', tone: 'slate' },
   completed: { label: 'Completed', tone: 'emerald' },
   failed: { label: 'Failed', tone: 'rose' },
 };

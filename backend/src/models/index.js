@@ -116,5 +116,7 @@ export { default as SearchQueryLog } from './searchQueryLog.model.js';
 // ---- Phase 7.4: reviews, compliance, infrastructure ----
 export { default as ProductReview } from './productReview.model.js';
 export { default as ScheduledJob } from './scheduledJob.model.js';
+export { default as CatalogBulkJob } from './catalogBulkJob.model.js';
+export { default as CatalogBulkJobRow } from './catalogBulkJobRow.model.js';
 export { default as FiscalPeriod } from './fiscalPeriod.model.js';
 export { default as StatutoryDeposit } from './statutoryDeposit.model.js';
