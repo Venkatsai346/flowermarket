@@ -34,6 +34,9 @@ import {
   idParamSchema,
   masterVariantParamSchema,
   masterImageParamSchema,
+  mediaOperationsQuerySchema,
+  mediaAssetUpdateSchema,
+  mediaGalleryOrderSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -64,6 +67,10 @@ router.patch('/brands/:id', validate(idParamSchema, 'params'), validate(brandUpd
 router.patch('/brands/:id/verify', validate(idParamSchema, 'params'), validate(brandVerifySchema), CatalogAdminController.verifyBrand);
 router.delete('/brands/:id', validate(idParamSchema, 'params'), CatalogAdminController.deleteBrand);
 
+// ---- global media operations ----
+router.get('/media/summary', CatalogAdminController.mediaSummary);
+router.get('/media/families', validate(mediaOperationsQuerySchema, 'query'), CatalogAdminController.listMediaFamilies);
+
 // ---- global masters ----
 router.post('/masters', validate(masterCreateSchema), CatalogAdminController.createMaster);
 router.get('/masters', validate(masterQuerySchema, 'query'), CatalogAdminController.listMasters);
@@ -79,6 +86,8 @@ router.post('/masters/:id/variants/:variantId/images', validate(masterVariantPar
 router.post('/masters/:id/images', validate(idParamSchema, 'params'), validate(imageCreateSchema), CatalogAdminController.addImage);
 router.delete('/masters/:id/images/:imageId', validate(masterImageParamSchema, 'params'), validate(versionOnlySchema), CatalogAdminController.removeImage);
 router.patch('/masters/:id/images/:imageId/primary', validate(masterImageParamSchema, 'params'), validate(imagePrimarySchema), CatalogAdminController.setImagePrimary);
+router.patch('/masters/:id/images/:imageId/metadata', validate(masterImageParamSchema, 'params'), validate(mediaAssetUpdateSchema), CatalogAdminController.updateMediaAsset);
+router.put('/masters/:id/images/order', validate(idParamSchema, 'params'), validate(mediaGalleryOrderSchema), CatalogAdminController.reorderMediaGallery);
 router.put('/masters/:id/attributes', validate(idParamSchema, 'params'), validate(attributeSetSchema), CatalogAdminController.setAttributes);
 router.get('/masters/:id/structures', validate(idParamSchema, 'params'), CatalogAdminController.getStructures);
 router.get('/masters/:id/integrity', validate(idParamSchema, 'params'), CatalogAdminController.getIntegrityReport);

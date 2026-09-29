@@ -383,6 +383,33 @@ export const versionOnlySchema = Joi.object({
 
 export const imagePrimarySchema = versionOnlySchema;
 
+export const mediaOperationsQuerySchema = Joi.object({
+  search: Joi.string().trim().max(120).allow(''),
+  issue: Joi.string().valid('no_media', 'no_primary', 'primary_conflict', 'missing_alt', 'dimensions', 'variant_coverage', 'healthy'),
+  sort: Joi.string().valid('priority', 'newest').default('priority'),
+  ...pagination,
+});
+
+export const mediaAssetUpdateSchema = Joi.object({
+  altText: Joi.string().trim().max(300).allow(null, ''),
+  role: Joi.string().valid('gallery', 'thumbnail', 'swatch', 'lifestyle', 'size_chart', 'manual'),
+  mimeType: Joi.string().trim().max(100).allow(null, ''),
+  width: Joi.number().integer().min(1).allow(null),
+  height: Joi.number().integer().min(1).allow(null),
+  fileSize: Joi.number().integer().min(0).allow(null),
+  focalPoint: Joi.object({ x: Joi.number().min(0).max(1).required(), y: Joi.number().min(0).max(1).required() }),
+  sortOrder: Joi.number().integer().min(0),
+  expectedVersion: Joi.number().integer().min(1).required(),
+}).min(2);
+
+export const mediaGalleryOrderSchema = Joi.object({
+  items: Joi.array().items(Joi.object({
+    imageId: objectId.required(),
+    sortOrder: Joi.number().integer().min(0).max(10000).required(),
+  })).min(1).max(100).required(),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+
 export const masterReviewSchema = Joi.object({
   decision: Joi.string().valid('approve', 'reject').required(),
   note: Joi.string().max(500).allow(null, ''),

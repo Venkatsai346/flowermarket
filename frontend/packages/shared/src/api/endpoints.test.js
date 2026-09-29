@@ -182,6 +182,19 @@ test('catalog tenant and catalog admin helpers map correctly', async () => {
   api.catalogTenant.qualityAssessment('master_1');
   check(api, client.calls, ['GET', '/catalog/tenant/quality/assessments/master_1']);
 
+  api.catalogAdmin.mediaSummary();
+  check(api, client.calls, ['GET', '/catalog/admin/media/summary']);
+
+  api.catalogAdmin.mediaFamilies({ issue: 'missing_alt' });
+  const mediaFamilies = check(api, client.calls, ['GET', '/catalog/admin/media/families']);
+  assert.deepEqual(mediaFamilies.opts.query, { issue: 'missing_alt' });
+
+  api.catalogAdmin.updateMediaAsset('master_1', 'image_1', { altText: 'Red rose', expectedVersion: 3 });
+  check(api, client.calls, ['PATCH', '/catalog/admin/masters/master_1/images/image_1/metadata']);
+
+  api.catalogAdmin.reorderMediaGallery('master_1', { items: [], expectedVersion: 3 });
+  check(api, client.calls, ['PUT', '/catalog/admin/masters/master_1/images/order']);
+
   api.catalogAdmin.masterVariants('master_1');
   check(api, client.calls, ['GET', '/catalog/admin/masters/master_1/variants']);
 

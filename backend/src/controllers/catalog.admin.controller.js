@@ -2,6 +2,7 @@ import categoryService from '../services/category.service.js';
 import brandService from '../services/brand.service.js';
 import productMasterService from '../services/productMaster.service.js';
 import catalogStructureService from '../services/catalogStructure.service.js';
+import catalogMediaService from '../services/catalogMedia.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import auditService from '../services/audit.service.js';
 import catalogEventService from '../services/catalogEvent.service.js';
@@ -9,6 +10,7 @@ import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { notFound } from '../utils/ApiError.js';
 import { invalidateCache } from '../middleware/responseCache.js';
+import { catalogMediaReadDuration, catalogMediaMutations } from '../observability/registry.js';
 
 /**
  * Taxonomy writes shift public reads (global lists, store-scoped indexes,
@@ -18,6 +20,10 @@ import { invalidateCache } from '../middleware/responseCache.js';
  */
 function bustCatalogCache() {
   invalidateCache('/catalog/');
+}
+
+function observeMediaRead(operation, outcome, started) {
+  catalogMediaReadDuration.observe({ operation, outcome }, Number(process.hrtime.bigint() - started) / 1e9);
 }
 
 /**
@@ -131,6 +137,52 @@ class CatalogAdminController {
     res.status(200).json(success(master, { message: 'Master deprecated' }));
   });
 
+  // ---------------- media operations ----------------
+  mediaSummary = asyncHandler(async (_req, res) => {
+    const started = process.hrtime.bigint();
+    try {
+      const result = await catalogMediaService.summary();
+      observeMediaRead('summary', 'ok', started);
+      res.status(200).json(success(result, { message: 'Catalog media summary fetched' }));
+    } catch (error) {
+      observeMediaRead('summary', 'error', started);
+      throw error;
+    }
+  });
+
+  listMediaFamilies = asyncHandler(async (req, res) => {
+    const started = process.hrtime.bigint();
+    try {
+      const result = await catalogMediaService.listFamilies({ query: req.query });
+      observeMediaRead('families', 'ok', started);
+      res.status(200).json(success(result.items, { message: 'Media operations queue fetched', meta: result.meta }));
+    } catch (error) {
+      observeMediaRead('families', 'error', started);
+      throw error;
+    }
+  });
+
+  updateMediaAsset = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...patch } = req.body;
+    const result = await catalogMediaService.updateAsset({
+      masterId: req.params.id, imageId: req.params.imageId, patch, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'metadata' });
+    res.status(200).json(success(result, { message: 'Media asset metadata updated' }));
+  });
+
+  reorderMediaGallery = asyncHandler(async (req, res) => {
+    const result = await catalogMediaService.reorderGallery({
+      masterId: req.params.id, items: req.body.items, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'reorder' });
+    res.status(200).json(success(result, { message: 'Media gallery reordered' }));
+  });
+
   // ---------------- variants / images / attributes ----------------
   addVariant = asyncHandler(async (req, res) => {
     const { expectedVersion, ...payload } = req.body;
@@ -163,6 +215,8 @@ class CatalogAdminController {
       masterId: req.params.id, variantId: req.params.variantId, payload, expectedVersion,
       actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'add' });
     res.status(201).json(created(image, { message: 'Variant image added' }));
   });
 
@@ -171,6 +225,8 @@ class CatalogAdminController {
     const image = await productMasterService.addImage({
       id: req.params.id, payload, expectedVersion, actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'add' });
     res.status(201).json(created(image, { message: 'Image added' }));
   });
 
@@ -179,6 +235,8 @@ class CatalogAdminController {
       masterId: req.params.id, imageId: req.params.imageId,
       expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'retire' });
     res.status(200).json(success(result, { message: 'Image removed' }));
   });
 
@@ -187,6 +245,8 @@ class CatalogAdminController {
       masterId: req.params.id, imageId: req.params.imageId,
       expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'primary' });
     res.status(200).json(success(image, { message: 'Primary image set' }));
   });
 

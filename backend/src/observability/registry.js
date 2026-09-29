@@ -79,6 +79,17 @@ export const catalogQualityFamilies = registry.histogram(
   [],
   [0, 1, 10, 50, 100, 500, 1000, 5000, 10000, 50000],
 );
+export const catalogMediaReadDuration = registry.histogram(
+  'catalog_media_read_duration_seconds',
+  'Global media operations read duration by bounded operation and outcome.',
+  ['operation', 'outcome'],
+  [0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
+);
+export const catalogMediaMutations = registry.counter(
+  'catalog_media_mutations_total',
+  'Successful governed catalog media mutations by bounded operation.',
+  ['operation'],
+);
 
 // ---- DB ----
 const dbConnected = registry.gauge('db_connected', '1 when the Mongo connection is ready, 0 otherwise.');

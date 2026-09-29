@@ -52,6 +52,14 @@ const ProductImageSchema = new Schema(
 ProductImageSchema.index({ productMasterId: 1, isPrimary: 1, status: 1 });
 // Variant-gallery reads: all active images of one variant, primary first.
 ProductImageSchema.index({ productMasterId: 1, variantId: 1, status: 1, isPrimary: -1, sortOrder: 1 });
+ProductImageSchema.index(
+  { productMasterId: 1, status: 1, isDeleted: 1, mediaType: 1, variantId: 1, isPrimary: -1, sortOrder: 1 },
+  { name: 'media_operations_gallery_idx' },
+);
+ProductImageSchema.index(
+  { status: 1, isDeleted: 1, mediaType: 1, updatedAt: -1 },
+  { name: 'media_operations_quality_scan_idx' },
+);
 
 ProductImageSchema.plugin(auditPlugin);
 ProductImageSchema.plugin(softDeletePlugin);

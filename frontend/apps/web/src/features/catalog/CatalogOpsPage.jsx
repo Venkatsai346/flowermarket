@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { BookOpen, Boxes, History, Inbox, ShieldCheck, UploadCloud, Zap } from 'lucide-react';
+import { BookOpen, Boxes, History, Image, Inbox, ShieldCheck, UploadCloud, Zap } from 'lucide-react';
 import { useAuthStore } from '@flower-market/shared';
 import { cn } from '../../lib/utils.js';
 import PageHeader from '../../components/ui/PageHeader.jsx';
@@ -11,12 +11,14 @@ import BulkPanel from './BulkPanel.jsx';
 
 const CatalogGuidanceBook = lazy(() => import('./CatalogGuidanceBook.jsx'));
 const QualityPanel = lazy(() => import('./QualityPanel.jsx'));
+const MediaOperationsPanel = lazy(() => import('./MediaOperationsPanel.jsx'));
 
 // Listings + bulk are tenant-scoped (store owners included); review/audit/
 // events are platform operations hitting super_admin-only APIs.
 const TABS = [
   ['listings', 'Listings', Boxes, ['admin', 'super_admin']],
   ['quality', 'Quality', ShieldCheck, ['admin', 'super_admin']],
+  ['media', 'Media', Image, ['super_admin']],
   ['guide', 'Guidance book', BookOpen, ['admin', 'super_admin']],
   ['review', 'Review queue', Inbox, ['super_admin']],
   ['audit', 'Audit', History, ['super_admin']],
@@ -56,6 +58,7 @@ export default function CatalogOpsPage() {
 
       {activeTab === 'listings' && <ListingPanel />}
       {activeTab === 'quality' && <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400">Loading quality control plane…</div>}><QualityPanel /></Suspense>}
+      {activeTab === 'media' && <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400">Building media operations…</div>}><MediaOperationsPanel /></Suspense>}
       {activeTab === 'guide' && <Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400">Opening the guidance book…</div>}><CatalogGuidanceBook /></Suspense>}
       {activeTab === 'review' && <ReviewQueuePanel />}
       {activeTab === 'audit' && <AuditPanel />}
