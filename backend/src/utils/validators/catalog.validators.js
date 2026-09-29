@@ -689,6 +689,15 @@ export const productDetailQuerySchema = Joi.object({
   variantId: optionalObjectId,
 });
 
+// ---------------- Catalog quality control plane ----------------
+export const catalogQualityQuerySchema = Joi.object({
+  search: Joi.string().trim().max(120).allow(''),
+  grade: Joi.string().valid('A', 'B', 'C', 'D', 'F'),
+  readiness: Joi.string().valid('ready', 'blocked'),
+  issueCode: Joi.string().pattern(/^[A-Z0-9_]{2,80}$/),
+  ...pagination,
+});
+
 // ---------------- Audit ----------------
 export const auditQuerySchema = Joi.object({
   entityType: Joi.string().max(60),
@@ -707,6 +716,10 @@ export const bulkQuerySchema = Joi.object({
 
 export const idParamSchema = Joi.object({
   id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+});
+
+export const qualityMasterParamSchema = Joi.object({
+  masterId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
 });
 
 /** Nested master sub-resources: /masters/:id/variants/:variantId etc. */

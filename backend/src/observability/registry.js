@@ -62,6 +62,23 @@ export const catalogFamiliesReturned = registry.histogram(
   ['source'],
   [0, 1, 6, 12, 24, 36, 60],
 );
+export const catalogQualityEvaluationDuration = registry.histogram(
+  'catalog_quality_evaluation_duration_seconds',
+  'Tenant catalog quality sweep duration by bounded outcome.',
+  ['outcome'],
+  [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60],
+);
+export const catalogQualityEvaluations = registry.counter(
+  'catalog_quality_evaluations_total',
+  'Tenant catalog quality sweeps by bounded outcome.',
+  ['outcome'],
+);
+export const catalogQualityFamilies = registry.histogram(
+  'catalog_quality_families_evaluated',
+  'Product families evaluated by a completed quality sweep.',
+  [],
+  [0, 1, 10, 50, 100, 500, 1000, 5000, 10000, 50000],
+);
 
 // ---- DB ----
 const dbConnected = registry.gauge('db_connected', '1 when the Mongo connection is ready, 0 otherwise.');

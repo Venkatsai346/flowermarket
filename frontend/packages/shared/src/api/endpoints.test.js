@@ -172,6 +172,16 @@ test('catalog tenant and catalog admin helpers map correctly', async () => {
   api.catalogTenant.bulkTemplate('inventory');
   check(api, client.calls, ['DOWNLOAD', '/catalog/tenant/bulk/template/inventory']);
 
+  api.catalogTenant.evaluateQuality();
+  check(api, client.calls, ['POST', '/catalog/tenant/quality/evaluate']);
+
+  api.catalogTenant.qualityAssessments({ grade: 'A' });
+  const qualityList = check(api, client.calls, ['GET', '/catalog/tenant/quality/assessments']);
+  assert.deepEqual(qualityList.opts.query, { grade: 'A' });
+
+  api.catalogTenant.qualityAssessment('master_1');
+  check(api, client.calls, ['GET', '/catalog/tenant/quality/assessments/master_1']);
+
   api.catalogAdmin.masterVariants('master_1');
   check(api, client.calls, ['GET', '/catalog/admin/masters/master_1/variants']);
 

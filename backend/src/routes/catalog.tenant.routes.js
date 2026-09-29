@@ -19,6 +19,8 @@ import {
   stockSetSchema,
   stockAdjustSchema,
   versionOnlySchema,
+  catalogQualityQuerySchema,
+  qualityMasterParamSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -69,6 +71,13 @@ router.post('/change-requests', validate(changeRequestCreateSchema), CatalogTena
 router.get('/change-requests', validate(changeRequestQuerySchema, 'query'), CatalogTenantController.listMyChangeRequests);
 router.post('/change-requests/:id/cancel', validate(idParamSchema, 'params'), CatalogTenantController.cancelChangeRequest);
 router.post('/change-requests/:id/revise', validate(idParamSchema, 'params'), CatalogTenantController.reviseChangeRequest);
+
+// ---- catalog quality control plane (tenant-wide; vendors are intentionally excluded) ----
+const tenantQualityAdmin = authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN);
+router.post('/quality/evaluate', tenantQualityAdmin, CatalogTenantController.evaluateQuality);
+router.get('/quality/summary', tenantQualityAdmin, CatalogTenantController.qualitySummary);
+router.get('/quality/assessments', tenantQualityAdmin, validate(catalogQualityQuerySchema, 'query'), CatalogTenantController.listQuality);
+router.get('/quality/assessments/:masterId', tenantQualityAdmin, validate(qualityMasterParamSchema, 'params'), CatalogTenantController.qualityDetail);
 
 // ---- bulk ----
 router.post('/bulk/:kind', CatalogTenantController.bulkUpload);

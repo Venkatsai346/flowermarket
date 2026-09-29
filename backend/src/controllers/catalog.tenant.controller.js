@@ -3,6 +3,12 @@ import tenantProductService from '../services/tenantProduct.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import inventoryService from '../services/inventory.service.js';
 import bulkImportService from '../services/bulkImport.service.js';
+import catalogQualityService from '../services/catalogQuality.service.js';
+import {
+  catalogQualityEvaluationDuration,
+  catalogQualityEvaluations,
+  catalogQualityFamilies,
+} from '../observability/registry.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { badRequest } from '../utils/ApiError.js';
@@ -164,6 +170,38 @@ class CatalogTenantController {
       payload: req.body.payload, diff: req.body.diff, note: req.body.note, req,
     });
     res.status(200).json(success(cr, { message: 'Change request revised' }));
+  });
+
+  // ---------------- quality control plane ----------------
+  evaluateQuality = asyncHandler(async (req, res) => {
+    const started = process.hrtime.bigint();
+    try {
+      const result = await catalogQualityService.evaluateTenant({ tenantId: req.tenantId });
+      catalogQualityEvaluationDuration.observe({ outcome: 'ok' }, Number(process.hrtime.bigint() - started) / 1e9);
+      catalogQualityEvaluations.inc({ outcome: 'ok' });
+      catalogQualityFamilies.observe({}, result.evaluated);
+      res.status(200).json(success(result, { message: 'Catalog quality evaluated' }));
+    } catch (error) {
+      const outcome = error?.code === 'QUALITY_SWEEP_TOO_LARGE' ? 'bounded' : 'error';
+      catalogQualityEvaluationDuration.observe({ outcome }, Number(process.hrtime.bigint() - started) / 1e9);
+      catalogQualityEvaluations.inc({ outcome });
+      throw error;
+    }
+  });
+
+  qualitySummary = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.summary({ tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Catalog quality summary fetched' }));
+  });
+
+  listQuality = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.list({ tenantId: req.tenantId, query: req.query });
+    res.status(200).json(success(result.items, { message: 'Catalog quality assessments fetched', meta: result.meta }));
+  });
+
+  qualityDetail = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.detail({ tenantId: req.tenantId, masterId: req.params.masterId });
+    res.status(200).json(success(result, { message: 'Catalog quality assessment fetched' }));
   });
 
   // ---------------- bulk ----------------
