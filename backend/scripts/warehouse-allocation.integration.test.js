@@ -5,7 +5,6 @@ import Hub from '../src/models/hub.model.js';
 import Inventory from '../src/models/inventory.model.js';
 import InventoryTransfer from '../src/models/inventoryTransfer.model.js';
 import warehouseTransferService from '../src/services/warehouseTransfer.service.js';
-import { up as migrate } from '../src/migrations/014_multi_warehouse_allocation.js';
 
 let mongod = null;
 let mongoUri = process.env.MONGODB_URI || null;
@@ -25,7 +24,7 @@ if (!mongoUri) {
 try {
   await mongoose.connect(mongoUri, { dbName: 'warehouse-allocation-integration' });
   await mongoose.connection.db.dropDatabase();
-  await migrate(mongoose.connection.db);
+  await Promise.all([Hub.init(), Inventory.init(), InventoryTransfer.init()]);
 
   const tenantId = new mongoose.Types.ObjectId();
   const actorId = new mongoose.Types.ObjectId();
