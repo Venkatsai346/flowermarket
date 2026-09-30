@@ -529,6 +529,10 @@ export function createEndpoints(client) {
       reindex: (body = {}) => c.post('/search/reindex', body),
       health: () => c.get('/search/health'),
       analytics: (q = {}) => c.get('/search/analytics', { query: q }),
+      merchandisingRules: (q = {}) => c.get('/search/merchandising-rules', { query: q }),
+      createMerchandisingRule: (body) => c.post('/search/merchandising-rules', body),
+      updateMerchandisingRule: (id, body) => c.patch(`/search/merchandising-rules/${id}`, body),
+      deleteMerchandisingRule: (id) => c.delete(`/search/merchandising-rules/${id}`),
     },
 
     media: {

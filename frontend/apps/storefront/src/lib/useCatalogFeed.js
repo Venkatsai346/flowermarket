@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api, useShopAuth } from '../api.js';
 
 const FEED_CACHE = new Map();
@@ -21,6 +22,7 @@ const rememberFeed = (key, state) => {
  */
 export function useCatalogFeed(params, { limit = 24 } = {}) {
   const sessionId = useShopAuth((state) => state.sessionId);
+  const navigate = useNavigate();
   const rawQueryKey = JSON.stringify(params || {});
   const stableParams = useMemo(() => {
     const out = {};
@@ -59,7 +61,19 @@ export function useCatalogFeed(params, { limit = 24 } = {}) {
       });
       if (requestGeneration !== generation.current) return response;
       setState((current) => {
-        const incoming = response.data || [];
+        const pageOffset = append ? (current.data || []).length : 0;
+        const attribution = {
+          queryId: response.meta?.queryId || null,
+          normalizedQuery: response.meta?.normalizedQuery || '',
+          profile: response.meta?.profile || null,
+        };
+        const incoming = (response.data || []).map((item, index) => ({
+          ...item,
+          _search: { ...attribution, position: pageOffset + index },
+          listings: (item.listings || []).map((listing) => ({
+            ...listing, _search: { ...attribution, position: pageOffset + index },
+          })),
+        }));
         const combined = append ? [...(current.data || []), ...incoming] : incoming;
         const seen = new Set();
         const data = combined.filter((item) => {
@@ -92,6 +106,11 @@ export function useCatalogFeed(params, { limit = 24 } = {}) {
     setState({ data: null, meta: null, loading: true, loadingMore: false, error: null });
     fetchPage().catch(() => {});
   }, [cacheKey, fetchPage]);
+
+  useEffect(() => {
+    const path = state.meta?.redirect?.path;
+    if (path && stableParams.search) navigate(path, { replace: true });
+  }, [navigate, stableParams.search, state.meta?.redirect?.path]);
 
   const loadMore = useCallback(() => {
     if (loadingMoreRef.current || state.loading || state.loadingMore || !state.meta?.hasMore || !state.meta?.nextCursor) {

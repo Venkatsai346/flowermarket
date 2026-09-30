@@ -46,6 +46,8 @@ class CartController {
     const result = await cartService.addItem({
       ...owner,
       tenantProductId: req.body.tenantProductId, qty: req.body.qty,
+      searchQueryId: req.body.searchQueryId || null,
+      searchSessionKey: req.get('x-session-id') || req.ip || null,
     });
     res.status(200).json(success(result, { message: 'Item added to cart' }));
   });

@@ -99,7 +99,16 @@ class CatalogPublicController {
           meta: {
             ...result.meta,
             indexState: ranking ? 'ranked_authoritative_hydration' : 'authoritative',
-            ...(ranking ? { query: ranking.query, profile: ranking.profile, queryId: ranking.meta.queryId } : {}),
+            ...(ranking ? {
+              query: ranking.query,
+              normalizedQuery: ranking.query?.normalized || '',
+              profile: ranking.profile,
+              queryId: ranking.meta.queryId,
+              redirect: ranking.meta.redirect || null,
+              substitutions: ranking.meta.substitutions || [],
+              shelves: ranking.meta.shelves || [],
+              appliedMerchandisingRules: ranking.meta.appliedMerchandisingRules || [],
+            } : {}),
           },
         }));
       } catch (err) {

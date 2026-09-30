@@ -67,6 +67,11 @@ class MongoSearchProvider {
     return { indexed: (res.upsertedCount || 0) + (res.modifiedCount || 0) + (res.matchedCount || 0) };
   }
 
+  async findByKeys(keys = []) {
+    if (!keys.length) return [];
+    return SearchDocument.find({ key: { $in: keys } }).lean();
+  }
+
   async remove(keys = []) {
     if (!keys.length) return { removed: 0 };
     const res = await SearchDocument.deleteMany({ key: { $in: keys } });

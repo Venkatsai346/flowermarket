@@ -154,7 +154,7 @@ class CartService {
   }
 
   /** Add or increment an item; snapshots price/stock from the live listing. */
-  async addItem({ tenantId, userId, guestKey, tenantProductId, qty }) {
+  async addItem({ tenantId, userId, guestKey, tenantProductId, qty, searchQueryId = null, searchSessionKey = null }) {
     const q = Math.max(1, Math.floor(Number(qty) || 1));
     const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
 
@@ -182,6 +182,15 @@ class CartService {
 
     if (nextQty > available) {
       throw conflict(`Only ${available} available`, 'INSUFFICIENT_STOCK', { available });
+    }
+
+    let verifiedSearchQueryId = existing?.searchQueryId || null;
+    if (searchQueryId) {
+      const { default: searchAnalyticsService } = await import('./searchAnalytics.service.js');
+      const valid = await searchAnalyticsService.validateAttribution({
+        tenantId, sessionKey: searchSessionKey, queryId: searchQueryId, listingId: listing._id,
+      });
+      if (valid) verifiedSearchQueryId = searchQueryId;
     }
 
     const snapshot = {
@@ -216,6 +225,7 @@ class CartService {
       existing.imageUrlSnapshot = imageUrlSnapshot;
       existing.unitSnapshot = listing.priceBasis?.unitCode || master.defaultSellingUnit || null;
       existing.unitQuantitySnapshot = listing.priceBasis?.quantity || 1;
+      existing.searchQueryId = verifiedSearchQueryId;
       existing.updatedAt = new Date();
       await existing.save();
     } else {
@@ -233,6 +243,7 @@ class CartService {
         unitSnapshot: listing.priceBasis?.unitCode || master.defaultSellingUnit || null,
         unitQuantitySnapshot: listing.priceBasis?.quantity || 1,
         lineTotal,
+        searchQueryId: verifiedSearchQueryId,
         isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),
       });
     }

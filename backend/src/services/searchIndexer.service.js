@@ -190,7 +190,8 @@ class SearchIndexerService {
       unit: master.defaultSellingUnit || null,
       imageUrl,
 
-      soldCount30d: master.soldCount || 0,
+      // soldCount30d/clicks30d/impressions30d are owned by the rolling analytics
+      // materializer. Lifetime ProductMaster.soldCount must never overwrite them.
       isPerishable: Boolean(master.isPerishable),
       vendorRating: 0,
       marginScore: 0,

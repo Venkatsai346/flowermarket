@@ -50,6 +50,16 @@ class MaintenanceService {
       out.analytics = { error: err?.message || String(err) };
     }
 
+    // 2b. genuine rolling search signals (engagement + paid order facts).
+    try {
+      const { default: searchAnalyticsService } = await import('./searchAnalytics.service.js');
+      out.searchAnalytics = await searchAnalyticsService.rollup30d({ tenantId });
+    } catch (err) {
+      const { searchRollups } = await import('../observability/registry.js');
+      searchRollups.inc({ outcome: 'error' });
+      out.searchAnalytics = { error: err?.message || String(err) };
+    }
+
     // 3. create analytics_daily export jobs (idempotent jobKey)
     try {
       const created = [];

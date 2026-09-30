@@ -35,7 +35,7 @@ const MODEL_FILES = [
   'payoutPolicy.model.js', 'vendorPayoutAccount.model.js', 'payoutLineItem.model.js',
   'payoutBatch.model.js', 'payoutStatusHistory.model.js', 'payoutAdjustment.model.js',
   // ---- observability ----
-  'systemHeartbeat.model.js',
+  'systemHeartbeat.model.js', 'searchInteraction.model.js', 'searchMerchandisingRule.model.js',
   // ---- Phase 10: money audit backbone ----
   'domainEvent.model.js',
   // ---- Phase 11: tamper-evident audit chain + fiscal periods ----

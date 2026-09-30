@@ -1,5 +1,5 @@
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BadgeCheck, Check, Heart, Package, Plus, ShieldCheck, Sparkles } from 'lucide-react';
 import { inr } from '@flower-market/shared';
@@ -7,6 +7,10 @@ import { Money, Stepper } from './ui.jsx';
 import ProductImage from './ProductImage.jsx';
 import { cn } from '../lib/utils.js';
 import { useWishlist } from '../lib/useWishlist.js';
+import { api } from '../api.js';
+
+const eventId = () => globalThis.crypto?.randomUUID?.()
+  || `00000000-0000-4000-8000-${Math.random().toString(16).slice(2).padEnd(12, '0').slice(0, 12)}`;
 
 /**
  * A product tile — two shapes, one look.
@@ -50,6 +54,7 @@ export default function ProductCard({
     price: listing.price,
     priceBasis: listing.priceBasis,
     stockQty: listing.stockQty ?? 0,
+    _search: listing._search || null,
     product: p,
   };
   const productPath = `/p/${p.slug || p.id || listing.listingId}`;
@@ -105,6 +110,7 @@ function GroupedCard({
     },
     priceBasis: sel.priceBasis || listing.priceBasis,
     stockQty: sel.stockQty ?? 0,
+    _search: sel._search || listing._search || null,
     product: {
       ...p,
       imageUrl: sel.imageUrl || p.imageUrl,
@@ -214,6 +220,34 @@ function CardShell({
       : 0;
 
   const stock = line.stockQty ?? 0;
+  const cardRef = useRef(null);
+  const impressionId = useRef(eventId());
+  const clicked = useRef(false);
+  const attribution = line._search;
+  useEffect(() => {
+    impressionId.current = eventId();
+    clicked.current = false;
+    if (!attribution?.queryId || !line.listingId || !cardRef.current || typeof IntersectionObserver === 'undefined') return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.5)) return;
+      api.shop.searchEvent({
+        queryId: attribution.queryId, eventId: impressionId.current, type: 'impression',
+        listingId: line.listingId, position: attribution.position,
+      }).catch(() => {});
+      observer.disconnect();
+    }, { threshold: [0.5] });
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, [attribution?.queryId, attribution?.position, line.listingId]);
+  const recordClick = () => {
+    if (clicked.current || !attribution?.queryId) return;
+    clicked.current = true;
+    api.shop.searchEvent({
+      queryId: attribution.queryId,
+      eventId: eventId(),
+      type: 'click', listingId: line.listingId, position: attribution.position,
+    }).catch(() => {});
+  };
   const out = stock <= 0;
   const low = !out && stock <= 5;
 
@@ -250,6 +284,7 @@ function CardShell({
 
   return (
     <article
+      ref={cardRef}
       className={cn(
         'card group relative flex flex-col overflow-hidden rounded-3xl border-slate-200/80 transition duration-300 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lift',
         out && 'bg-slate-50/50',
@@ -259,6 +294,7 @@ function CardShell({
         to={href}
         className="relative block aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-left sm:aspect-square"
         aria-label={`View ${title}`}
+        onClick={recordClick}
       >
         <ProductImage
           src={imageUrl}
@@ -322,7 +358,7 @@ function CardShell({
           </p>
         )}
         <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-800 transition group-hover:text-slate-950">
-          <Link to={href} className="focus-visible:rounded-sm">{title}</Link>
+          <Link to={href} onClick={recordClick} className="focus-visible:rounded-sm">{title}</Link>
         </h3>
         {line.variantLabel && (
           <p className="line-clamp-1 text-[11px] font-semibold text-slate-500" title={line.variantLabel}>{line.variantLabel}</p>

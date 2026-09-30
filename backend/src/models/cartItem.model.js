@@ -43,6 +43,8 @@ const CartItemSchema = new Schema(
 
     lineTotal: { type: Number, default: 0, min: 0 }, // qty * sellingPrice
     isReturnable: { type: Boolean, default: true },
+    /** PII-free search query attribution, verified when the line is added. */
+    searchQueryId: { type: String, default: null, maxlength: 64 },
 
     addedAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },

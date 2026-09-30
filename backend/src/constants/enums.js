@@ -1270,9 +1270,10 @@ export const RANKING_SIGNAL = Object.freeze({
 });
 
 export const SEARCH_EVENT_TYPE = Object.freeze({
+  IMPRESSION: 'impression',
   CLICK: 'click',
   ADD_TO_CART: 'add_to_cart',
-  ORDER: 'order',
+  PURCHASE: 'purchase',
 });
 
 /** Product review moderation status. */

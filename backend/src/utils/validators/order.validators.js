@@ -5,6 +5,7 @@ export const objectId = Joi.string().regex(/^[0-9a-fA-F]{24}$/).message('Invalid
 export const addCartItemSchema = Joi.object({
   tenantProductId: objectId.required(),
   qty: Joi.number().integer().min(1).max(99).required(),
+  searchQueryId: Joi.string().uuid().allow(null),
 });
 
 export const updateCartItemSchema = Joi.object({

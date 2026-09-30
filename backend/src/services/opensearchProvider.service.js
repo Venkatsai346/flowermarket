@@ -320,13 +320,22 @@ export class OpenSearchProvider {
   async index(docs = [], { target = null, canonical = true } = {}) {
     if (!docs.length) return { indexed: 0 };
     if (docs.length > MAX_BULK_DOCS) throw new OpenSearchError(`OpenSearch bulk size exceeds ${MAX_BULK_DOCS}.`, { status: 400, code: 'OPENSEARCH_BULK_TOO_LARGE' });
-    if (canonical) await this.canonical.index(docs);
+    let externalDocs = docs;
+    if (canonical) {
+      await this.canonical.index(docs);
+      // Canonical updates are partial `$set`s. Rehydrate the merged source so
+      // independently materialized analytics signals are never erased from
+      // OpenSearch by an unrelated listing/catalog event.
+      if (typeof this.canonical.findByKeys === 'function') {
+        externalDocs = await this.canonical.findByKeys(docs.map((doc) => doc.key));
+      }
+    }
     await this.ensureReady();
     const destination = target || this.writeAlias;
-    const indexed = await this.bulk(docs, destination);
+    const indexed = await this.bulk(externalDocs, destination);
     if (!target) {
       const rebuilding = await this.rebuildTarget();
-      if (rebuilding) await this.bulk(docs, rebuilding);
+      if (rebuilding) await this.bulk(externalDocs, rebuilding);
     }
     return { indexed };
   }

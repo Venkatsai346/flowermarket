@@ -47,6 +47,8 @@ const OrderItemSchema = new Schema(
     hsnCode: { type: String, default: null, maxlength: 16 },
 
     isReturnable: { type: Boolean, default: true },
+    /** Search query that introduced this line; never contains user identity. */
+    searchQueryId: { type: String, default: null, maxlength: 64 },
     returnedQty: { type: Number, default: 0, min: 0 },
     cancelledQty: { type: Number, default: 0, min: 0 },
   },
@@ -54,6 +56,7 @@ const OrderItemSchema = new Schema(
 );
 
 OrderItemSchema.index({ orderId: 1, tenantProductId: 1 });
+OrderItemSchema.index({ tenantId: 1, searchQueryId: 1, createdAt: -1 }, { sparse: true, name: 'order_item_search_attribution_idx' });
 
 OrderItemSchema.plugin(auditPlugin);
 OrderItemSchema.plugin(softDeletePlugin);

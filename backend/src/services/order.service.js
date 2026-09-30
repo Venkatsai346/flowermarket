@@ -1002,6 +1002,7 @@ class OrderService {
           taxPolicyId: line.taxPolicyId || null,
           hsnCode: line.hsnCode || null,
           isReturnable: i.isReturnable !== false,
+          searchQueryId: i.searchQueryId || null,
         };
       })
     );

@@ -54,6 +54,17 @@ export const searchProviderRequests = registry.counter(
   'External search provider requests by operation and outcome.',
   ['provider', 'operation', 'outcome'],
 );
+export const searchInteractionEvents = registry.counter(
+  'search_interaction_events_total',
+  'Search interaction acceptance and rejection outcomes by bounded event type and reason.',
+  ['type', 'outcome'],
+);
+export const searchRollups = registry.counter(
+  'search_analytics_rollups_total',
+  'Search analytics rollup outcomes.',
+  ['outcome'],
+);
+
 export const searchProviderDuration = registry.histogram(
   'search_provider_request_duration_seconds',
   'External search provider request duration by operation.',
