@@ -10,6 +10,7 @@ import Brand from '../models/brand.model.js';
 import categoryService from './category.service.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
+import { runCatalogCommand } from './catalogCommand.service.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import { pick } from '../utils/catalog/diff.js';
@@ -60,15 +61,15 @@ const MEDIA_FIELDS = [
  */
 class ProductMasterService {
   /** Precompute the search blob (title + desc + tags + category path + brand + attrs). */
-  async buildSearchText(master) {
+  async buildSearchText(master, session = null) {
     const [category, brand, attrs] = await Promise.all([
-      master.categoryId ? Category.findById(master.categoryId).lean() : null,
-      master.brandId ? Brand.findById(master.brandId).lean() : null,
-      ProductAttributeValue.find({ productMasterId: master._id }).lean(),
+      master.categoryId ? Category.findById(master.categoryId).session(session).lean() : null,
+      master.brandId ? Brand.findById(master.brandId).session(session).lean() : null,
+      ProductAttributeValue.find({ productMasterId: master._id }).session(session).lean(),
     ]);
     let categoryPath = category?.name || '';
     if (category?.parentId) {
-      const parent = await Category.findById(category.parentId).lean();
+      const parent = await Category.findById(category.parentId).session(session).lean();
       if (parent) categoryPath = `${parent.name} ${categoryPath}`;
     }
     const parts = [
@@ -139,7 +140,19 @@ class ProductMasterService {
   }
 
   /** Create a master (admin: ACTIVE; tenant proposal: PENDING_REVIEW). */
-  async createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, allowPossibleDuplicate = false, req = null }) {
+  async createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, allowPossibleDuplicate = false, req = null, idempotencyKey = null }) {
+    const { value } = await runCatalogCommand({
+      scopeId: 'global', idempotencyKey, operation: 'product_master.create',
+      request: { payload, status, allowPossibleDuplicate },
+      serialize: (master) => master.toJSON ? master.toJSON() : master,
+      execute: ({ session, registerCompensation }) => this._createMaster({
+        payload, actorId, status, allowPossibleDuplicate, req, session, registerCompensation,
+      }),
+    });
+    return value;
+  }
+
+  async _createMaster({ payload, actorId = null, status = PRODUCT_MASTER_STATUS.ACTIVE, allowPossibleDuplicate = false, req = null, session = null, registerCompensation = () => {} }) {
     payload = this.normalizeStructure(payload);
     const category = await categoryService.getById(payload.categoryId);
     if ((category.complianceRequirements || []).some((requirement) => requirement.required !== false)) {
@@ -160,29 +173,32 @@ class ProductMasterService {
     const slug = payload.slug || (await uniqueSlug(ProductMaster, payload.title));
     if (payload.slug) await assertSlugFree(ProductMaster, payload.slug);
 
-    const master = await ProductMaster.create({
-      ...pick(payload, GLOBAL_FIELDS),
-      slug,
-      status,
-      review: { submittedAt: new Date() },
-      createdBy: actorId,
-    });
+    const masterData = {
+      ...pick(payload, GLOBAL_FIELDS), slug, status,
+      review: { submittedAt: new Date() }, createdBy: actorId,
+    };
+    const master = session
+      ? (await ProductMaster.create([masterData], { session }))[0]
+      : await ProductMaster.create(masterData);
+    registerCompensation(() => ProductMaster.deleteOne({ _id: master.id }));
 
-    await this.syncMasterExtras(master, payload);
-    master.searchText = await this.buildSearchText(master);
-    await master.save();
+    await this.syncMasterExtras(master, payload, { session, registerCompensation });
+    master.searchText = await this.buildSearchText(master, session);
+    await master.save({ session });
 
-    await auditService.record({
+    const audit = await auditService.record({
       action: 'create', entityType: 'product_master', entityId: master.id,
       actorId, actorType: actorId ? 'admin' : 'system',
       after: { sku: master.skuGlobal, title: master.title, status: master.status },
-      meta: similar && allowPossibleDuplicate ? { duplicateHeuristicOverridden: true, similarMasterId: similar.id, similarTitle: similar.title } : {}, req,
+      meta: similar && allowPossibleDuplicate ? { duplicateHeuristicOverridden: true, similarMasterId: similar.id, similarTitle: similar.title } : {}, req, session,
     });
+    registerCompensation(() => audit.constructor.deleteOne({ _id: audit.id }));
     if (master.status === PRODUCT_MASTER_STATUS.ACTIVE) {
-      await catalogEventService.publish({
+      const event = await catalogEventService.publish({
         eventType: 'product_created', entityType: 'product_master', entityId: master.id,
-        payload: { id: master.id, sku: master.skuGlobal, title: master.title },
+        payload: { id: master.id, sku: master.skuGlobal, title: master.title }, session,
       });
+      registerCompensation(() => event.constructor.deleteOne({ _id: event.id }));
     }
     return master;
   }
@@ -435,7 +451,10 @@ class ProductMasterService {
   }
 
   /** Create variants/images/attributes for a new master from the create payload. */
-  async syncMasterExtras(master, payload) {
+  async syncMasterExtras(master, payload, { session = null, registerCompensation = () => {} } = {}) {
+    registerCompensation(() => ProductVariant.deleteMany({ productMasterId: master.id }));
+    registerCompensation(() => ProductImage.deleteMany({ productMasterId: master.id }));
+    registerCompensation(() => ProductAttributeValue.deleteMany({ productMasterId: master.id }));
     if (payload.variants?.length) {
       const docs = payload.variants.map((v, i) => ({
         productMasterId: master.id,
@@ -454,7 +473,7 @@ class ProductMasterService {
         isDefault: v.isDefault || false,
         status: ENTITY_STATUS.ACTIVE,
       }));
-      const created = await ProductVariant.insertMany(docs);
+      const created = await ProductVariant.insertMany(docs, { session });
       // Nested per-variant galleries: variants[i].images[] -> scoped rows.
       const nested = [];
       payload.variants.forEach((v, i) => {
@@ -471,15 +490,16 @@ class ProductMasterService {
           });
         });
       });
-      if (nested.length) await ProductImage.insertMany(nested);
-      await this.ensureSingleVariantPrimary(master.id, created);
+      if (nested.length) await ProductImage.insertMany(nested, { session });
+      await this.ensureSingleVariantPrimary(master.id, created, session);
       const defaultIdx = payload.variants.findIndex((v) => v.isDefault);
       if (defaultIdx >= 0) {
-        const def = await ProductVariant.findOne({ productMasterId: master.id, value: payload.variants[defaultIdx].value });
+        const def = await ProductVariant.findOne({ productMasterId: master.id, value: payload.variants[defaultIdx].value }).session(session);
         if (def) {
           await ProductVariant.updateMany(
             { productMasterId: master.id, _id: { $ne: def.id } },
-            { $set: { isDefault: false } }
+            { $set: { isDefault: false } },
+            { session }
           );
         }
       }
@@ -494,7 +514,8 @@ class ProductMasterService {
           sortOrder: img.sortOrder ?? i,
           uploadedBy: master.createdBy,
           status: ENTITY_STATUS.ACTIVE,
-        }))
+        })),
+        { session }
       );
       const primaryIdx = payload.images.findIndex((img) => img.isPrimary);
       if (primaryIdx >= 0) {
@@ -503,14 +524,15 @@ class ProductMasterService {
         // (each (master, variant) gallery elects its primary independently).
         await ProductImage.updateMany(
           { productMasterId: master.id, variantId: null, isPrimary: true },
-          { $set: { isPrimary: false } }
+          { $set: { isPrimary: false } },
+          { session }
         );
         const primary = await ProductImage.findOne({
           productMasterId: master.id, variantId: null, url: payload.images[primaryIdx].url,
-        });
+        }).session(session);
         if (primary) {
           primary.isPrimary = true;
-          await primary.save();
+          await primary.save({ session });
         }
       }
     }
@@ -522,7 +544,8 @@ class ProductMasterService {
           value: a.value,
           unit: a.unit || null,
           sortOrder: i,
-        }))
+        })),
+        { session }
       );
     }
   }
@@ -571,13 +594,13 @@ class ProductMasterService {
    * Keep at most one `isPrimary` per variant gallery after a bulk insert.
    * The FIRST flagged image wins; extras are demoted (never deleted).
    */
-  async ensureSingleVariantPrimary(masterId, variants) {
+  async ensureSingleVariantPrimary(masterId, variants, session = null) {
     const ids = (variants || []).map((v) => v._id).filter(Boolean);
     if (!ids.length) return;
     // One query across every gallery; the FIRST flagged image per variant wins.
     const primaries = await ProductImage.find({
       productMasterId: masterId, variantId: { $in: ids }, isPrimary: true, status: ENTITY_STATUS.ACTIVE,
-    }).sort({ sortOrder: 1 }).select('_id variantId').lean();
+    }).session(session).sort({ sortOrder: 1 }).select('_id variantId').lean();
     const seen = new Set();
     const demote = [];
     for (const p of primaries) {
@@ -586,7 +609,7 @@ class ProductMasterService {
       else seen.add(k);
     }
     if (demote.length) {
-      await ProductImage.updateMany({ _id: { $in: demote } }, { $set: { isPrimary: false } });
+      await ProductImage.updateMany({ _id: { $in: demote } }, { $set: { isPrimary: false } }, { session });
     }
   }
 

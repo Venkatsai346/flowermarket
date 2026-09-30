@@ -49,6 +49,18 @@ export const httpDuration = registry.histogram(
 );
 
 // ---- Catalog discovery (bounded labels; never tenant/query cardinality) ----
+export const catalogCommandRuns = registry.counter(
+  'catalog_command_runs_total',
+  'Catalog command outcomes by operation, execution mode, and replay status.',
+  ['operation', 'mode', 'outcome'],
+);
+export const catalogCommandDuration = registry.histogram(
+  'catalog_command_duration_seconds',
+  'Catalog command execution duration by operation and execution mode.',
+  ['operation', 'mode'],
+  [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+);
+
 export const catalogReadDuration = registry.histogram(
   'catalog_read_duration_seconds',
   'Authoritative grouped catalog read duration by source and outcome.',

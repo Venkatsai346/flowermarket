@@ -7,6 +7,7 @@ import catalogQualityService from '../services/catalogQuality.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { badRequest } from '../utils/ApiError.js';
+import { catalogIdempotencyKey } from '../services/catalogCommand.service.js';
 
 /**
  * CatalogTenantController — tenant-portal endpoints.
@@ -42,6 +43,7 @@ class CatalogTenantController {
   createListing = asyncHandler(async (req, res) => {
     const listing = await tenantProductService.createListing({
       tenantId: req.tenantId, payload: req.body, actorId: req.auth.userId, req,
+      idempotencyKey: catalogIdempotencyKey(req),
     });
     res.status(201).json(created(listing, { message: 'Listing created' }));
   });
@@ -92,7 +94,7 @@ class CatalogTenantController {
     const { price, reason, expectedVersion } = req.body;
     const listing = await tenantProductService.updatePrice({
       tenantId: req.tenantId, listingId: req.params.id, price, reason, expectedVersion,
-      actorId: req.auth.userId, req,
+      actorId: req.auth.userId, req, idempotencyKey: catalogIdempotencyKey(req),
     });
     res.status(200).json(success(listing, { message: 'Price updated' }));
   });

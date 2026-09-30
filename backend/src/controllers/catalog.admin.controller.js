@@ -6,6 +6,7 @@ import catalogMediaService from '../services/catalogMedia.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import auditService from '../services/audit.service.js';
 import catalogEventService from '../services/catalogEvent.service.js';
+import { catalogIdempotencyKey } from '../services/catalogCommand.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { notFound } from '../utils/ApiError.js';
@@ -96,6 +97,7 @@ class CatalogAdminController {
   createMaster = asyncHandler(async (req, res) => {
     const master = await productMasterService.createMaster({
       payload: req.body, actorId: req.auth.userId, status: req.body.status || 'active', req,
+      idempotencyKey: catalogIdempotencyKey(req),
     });
     res.status(201).json(created(master, { message: 'Product master created' }));
   });

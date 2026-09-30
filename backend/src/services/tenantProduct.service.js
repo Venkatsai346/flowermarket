@@ -7,6 +7,7 @@ import Inventory from '../models/inventory.model.js';
 import PriceHistory from '../models/priceHistory.model.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
+import { runCatalogCommand } from './catalogCommand.service.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import deriveAvailability from '../utils/catalog/availability.js';
 import { normalizeUnitPolicy, assertQuantity } from '../utils/catalog/unitConversion.js';
@@ -40,9 +41,9 @@ import { assertMasterListable } from '../utils/catalogGuards.js';
  */
 class TenantProductService {
   /** A variant may be listed only if it belongs to the master and is active. */
-  async assertVariantListable(masterId, variantId) {
+  async assertVariantListable(masterId, variantId, session = null) {
     if (!variantId) return null;
-    const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId });
+    const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId }).session(session);
     if (!variant) throw badRequest('Variant does not belong to this product', 'VARIANT_MISMATCH');
     if (variant.status !== ENTITY_STATUS.ACTIVE) {
       throw badRequest(`Variant "${variant.value}" is not active`, 'VARIANT_NOT_AVAILABLE');
@@ -50,13 +51,27 @@ class TenantProductService {
     return variant;
   }
 
-  async createListing({ tenantId, payload, actorId = null, req = null }) {
-    const master = await ProductMaster.findById(payload.productMasterId);
+  async createListing({ tenantId, payload, actorId = null, req = null, idempotencyKey = null }) {
+    const { value } = await runCatalogCommand({
+      scopeId: tenantId,
+      idempotencyKey,
+      operation: 'tenant_listing.create',
+      request: payload,
+      serialize: (listing) => listing.toJSON ? listing.toJSON() : listing,
+      execute: ({ session, registerCompensation }) => this._createListing({
+        tenantId, payload, actorId, req, session, registerCompensation,
+      }),
+    });
+    return value;
+  }
+
+  async _createListing({ tenantId, payload, actorId = null, req = null, session = null, registerCompensation = () => {} }) {
+    const master = await ProductMaster.findById(payload.productMasterId).session(session);
     assertMasterListable(master);
 
     const variantId = payload.variantId || null;
-    await this.assertVariantListable(master.id, variantId);
-    const existing = await TenantProduct.findOne({ tenantId, productMasterId: master.id, variantId });
+    await this.assertVariantListable(master.id, variantId, session);
+    const existing = await TenantProduct.findOne({ tenantId, productMasterId: master.id, variantId }).session(session);
     if (existing) throw conflict('A listing already exists for this product', 'LISTING_EXISTS');
 
     if (payload.price && payload.price.sellingPrice != null && payload.price.mrp != null) {
@@ -89,7 +104,7 @@ class TenantProductService {
       await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
     }
 
-    const listing = await TenantProduct.create({
+    const listingData = {
       tenantId,
       productMasterId: master.id,
       variantId,
@@ -108,26 +123,36 @@ class TenantProductService {
         updatedAt: new Date(),
       },
       lastStatusChangedAt: payload.status ? new Date() : null,
-    });
+    };
+    const listing = session
+      ? (await TenantProduct.create([listingData], { session }))[0]
+      : await TenantProduct.create(listingData);
+    registerCompensation(() => TenantProduct.deleteOne({ _id: listing.id }));
 
     if ((payload.stockQty || 0) > 0) {
-      await Inventory.create({
+      const inventoryData = {
         tenantId,
         tenantProductId: listing.id,
         qtyOnHand: payload.stockQty,
         lastUpdatedAt: new Date(),
-      });
+      };
+      const inventory = session
+        ? (await Inventory.create([inventoryData], { session }))[0]
+        : await Inventory.create(inventoryData);
+      registerCompensation(() => Inventory.deleteOne({ _id: inventory.id }));
     }
 
-    await auditService.record({
+    const audit = await auditService.record({
       action: 'create', entityType: 'tenant_product', entityId: listing.id,
       tenantId, actorId, actorType: 'tenant',
-      after: { masterId: master.id, price: listing.price, status: listing.status, stockQty: listing.stockQty }, req,
+      after: { masterId: master.id, price: listing.price, status: listing.status, stockQty: listing.stockQty }, req, session,
     });
-    await catalogEventService.publish({
+    registerCompensation(() => audit.constructor.deleteOne({ _id: audit.id }));
+    const event = await catalogEventService.publish({
       eventType: 'tenant_product_created', entityType: 'tenant_product', entityId: listing.id,
-      tenantId, payload: { id: listing.id, masterId: master.id, status: listing.status },
+      tenantId, payload: { id: listing.id, masterId: master.id, status: listing.status }, session,
     });
+    registerCompensation(() => event.constructor.deleteOne({ _id: event.id }));
     return listing;
   }
 
@@ -285,8 +310,8 @@ class TenantProductService {
     };
   }
 
-  async getListing({ tenantId, listingId }) {
-    const listing = await TenantProduct.findOne({ _id: listingId, tenantId });
+  async getListing({ tenantId, listingId, session = null }) {
+    const listing = await TenantProduct.findOne({ _id: listingId, tenantId }).session(session);
     if (!listing) throw notFound('Listing not found', 'LISTING_NOT_FOUND');
     return listing;
   }
@@ -328,32 +353,48 @@ class TenantProductService {
     return listing;
   }
 
-  async updatePrice({ tenantId, listingId, price, expectedVersion, actorId = null, reason = PRICE_CHANGE_REASON.MANUAL, source = PRICE_CHANGE_SOURCE.TENANT, req = null }) {
-    const listing = await this.getListing({ tenantId, listingId });
-    this.assertPriceValid(price);
-    const before = listing.price.toObject();
-    await updateWithVersion(listing, expectedVersion, { price, lastPriceChangedAt: new Date() });
+  async updatePrice({ tenantId, listingId, price, expectedVersion, actorId = null, reason = PRICE_CHANGE_REASON.MANUAL, source = PRICE_CHANGE_SOURCE.TENANT, req = null, idempotencyKey = null }) {
+    const request = { listingId, price, expectedVersion, reason, source };
+    const { value } = await runCatalogCommand({
+      scopeId: tenantId, idempotencyKey, operation: 'tenant_listing.update_price', request,
+      serialize: (listing) => listing.toJSON ? listing.toJSON() : listing,
+      execute: async ({ session, registerCompensation }) => {
+        const listing = await this.getListing({ tenantId, listingId, session });
+        this.assertPriceValid(price);
+        const before = listing.price.toObject();
+        const beforeChangedAt = listing.lastPriceChangedAt;
+        await updateWithVersion(listing, expectedVersion, { price, lastPriceChangedAt: new Date() }, { session });
+        registerCompensation(() => TenantProduct.updateOne(
+          { _id: listing.id, version: Number(expectedVersion) + 1 },
+          { $set: { price: before, lastPriceChangedAt: beforeChangedAt, version: Number(expectedVersion) } },
+        ));
 
-    await PriceHistory.create({
-      tenantId, tenantProductId: listing.id,
-      before: { mrp: before.mrp, sellingPrice: before.sellingPrice },
-      after: { mrp: price.mrp, sellingPrice: price.sellingPrice },
-      currency: price.currency || 'INR',
-      reason, source, changedBy: actorId,
-    });
+        const historyData = {
+          tenantId, tenantProductId: listing.id,
+          before: { mrp: before.mrp, sellingPrice: before.sellingPrice },
+          after: { mrp: price.mrp, sellingPrice: price.sellingPrice },
+          currency: price.currency || 'INR', reason, source, changedBy: actorId,
+        };
+        const history = session
+          ? (await PriceHistory.create([historyData], { session }))[0]
+          : await PriceHistory.create(historyData);
+        registerCompensation(() => PriceHistory.deleteOne({ _id: history.id }));
 
-    await auditService.record({
-      action: 'price_change', entityType: 'tenant_product', entityId: listing.id,
-      tenantId, actorId, actorType: 'tenant',
-      before: { mrp: before.mrp, sellingPrice: before.sellingPrice },
-      after: { mrp: price.mrp, sellingPrice: price.sellingPrice },
-      meta: { reason }, req,
+        const audit = await auditService.record({
+          action: 'price_change', entityType: 'tenant_product', entityId: listing.id,
+          tenantId, actorId, actorType: 'tenant',
+          before: historyData.before, after: historyData.after, meta: { reason }, req, session,
+        });
+        registerCompensation(() => audit.constructor.deleteOne({ _id: audit.id }));
+        const event = await catalogEventService.publish({
+          eventType: 'price_changed', entityType: 'tenant_product', entityId: listing.id,
+          tenantId, payload: { id: listing.id, price, reason }, session,
+        });
+        registerCompensation(() => event.constructor.deleteOne({ _id: event.id }));
+        return listing;
+      },
     });
-    await catalogEventService.publish({
-      eventType: 'price_changed', entityType: 'tenant_product', entityId: listing.id,
-      tenantId, payload: { id: listing.id, price, reason },
-    });
-    return listing;
+    return value;
   }
 
   async updateStatus({ tenantId, listingId, status, expectedVersion, actorId = null, req = null }) {

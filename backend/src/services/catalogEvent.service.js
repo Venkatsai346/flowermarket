@@ -44,11 +44,11 @@ export function backoffMs(attempts) {
 }
 
 class CatalogEventService {
-  async publish({ eventType, entityType, entityId, tenantId = null, payload = null, delayMs = 0 }) {
+  async publish({ eventType, entityType, entityId, tenantId = null, payload = null, delayMs = 0, session = null }) {
     if (!Object.values(CATALOG_EVENT_TYPE).includes(eventType)) {
       throw new Error(`Unknown catalog event type: ${eventType}`);
     }
-    const row = await CatalogEvent.create({
+    const data = {
       eventType,
       entityType,
       entityId,
@@ -56,11 +56,14 @@ class CatalogEventService {
       payload,
       status: OUTBOX_STATUS.PENDING,
       availableAt: delayMs ? new Date(Date.now() + delayMs) : new Date(),
-    });
-    // Same-process read-cache invalidation: the outbox row is the durable
-    // record (consumed by the worker), but this process's GET cache must not
-    // keep serving the pre-mutation snapshot. Best-effort, never blocks.
-    localEmit(LOCAL_EVENTS.CATALOG_WRITE, { eventType, entityType });
+    };
+    const row = session
+      ? (await CatalogEvent.create([data], { session }))[0]
+      : await CatalogEvent.create(data);
+    // Never expose a cache invalidation for a transaction that may still
+    // abort. Transactional callers invalidate after their commit; the outbox
+    // remains the durable cross-process signal.
+    if (!session) localEmit(LOCAL_EVENTS.CATALOG_WRITE, { eventType, entityType });
     return row;
   }
 

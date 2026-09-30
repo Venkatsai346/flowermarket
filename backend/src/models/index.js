@@ -32,6 +32,7 @@ export { default as Inventory } from './inventory.model.js';
 export { default as ProductChangeRequest } from './productChangeRequest.model.js';
 export { default as AuditLog } from './auditLog.model.js';
 export { default as CatalogEvent } from './catalogEvent.model.js';
+export { default as CatalogCommand } from './catalogCommand.model.js';
 export { default as CatalogQualityAssessment } from './catalogQualityAssessment.model.js';
 export { default as CatalogQualityRun } from './catalogQualityRun.model.js';
 
