@@ -728,6 +728,15 @@ export const catalogQualityQuerySchema = Joi.object({
   ...pagination,
 });
 
+// ---------------- Catalog quality control plane ----------------
+export const catalogQualityQuerySchema = Joi.object({
+  search: Joi.string().trim().max(120).allow(''),
+  grade: Joi.string().valid('A', 'B', 'C', 'D', 'F'),
+  readiness: Joi.string().valid('ready', 'blocked'),
+  issueCode: Joi.string().pattern(/^[A-Z0-9_]{2,80}$/),
+  ...pagination,
+});
+
 // ---------------- Audit ----------------
 export const auditQuerySchema = Joi.object({
   entityType: Joi.string().max(60),
