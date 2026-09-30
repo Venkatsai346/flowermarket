@@ -39,9 +39,22 @@ const CartItemSchema = new Schema(
     titleSnapshot: { type: String, default: null, maxlength: 200 },
     imageUrlSnapshot: { type: String, default: null },
     unitSnapshot: { type: String, default: null },
+    unitQuantitySnapshot: { type: Number, default: 1, min: Number.EPSILON },
 
     lineTotal: { type: Number, default: 0, min: 0 }, // qty * sellingPrice
     isReturnable: { type: Boolean, default: true },
+    /** PII-free search query attribution, verified when the line is added. */
+    searchQueryId: { type: String, default: null, maxlength: 64 },
+    fulfillmentSnapshot: {
+      pincode: { type: String, default: null, maxlength: 12 },
+      warehouseId: { type: Types.ObjectId, ref: 'Hub', default: null },
+      warehouseName: { type: String, default: null, maxlength: 120 },
+      allocatableQty: { type: Number, default: 0, min: 0 },
+      networkAvailableQty: { type: Number, default: 0, min: 0 },
+      promiseMinAt: { type: Date, default: null },
+      promiseMaxAt: { type: Date, default: null },
+      checkedAt: { type: Date, default: null },
+    },
 
     addedAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },

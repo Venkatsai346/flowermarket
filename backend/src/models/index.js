@@ -22,12 +22,20 @@ export { default as ProductMaster } from './productMaster.model.js';
 export { default as ProductVariant } from './productVariant.model.js';
 export { default as ProductImage } from './productImage.model.js';
 export { default as ProductAttributeValue } from './productAttributeValue.model.js';
+export { default as ProductVariantAttributeValue } from './productVariantAttributeValue.model.js';
+export { default as ProductPackage } from './productPackage.model.js';
+export { default as ProductBundleComponent } from './productBundleComponent.model.js';
+export { default as ProductCompliance } from './productCompliance.model.js';
 export { default as TenantProduct } from './tenantProduct.model.js';
 export { default as PriceHistory } from './priceHistory.model.js';
 export { default as Inventory } from './inventory.model.js';
+export { default as WarehouseAllocationPolicy } from './warehouseAllocationPolicy.model.js';
 export { default as ProductChangeRequest } from './productChangeRequest.model.js';
 export { default as AuditLog } from './auditLog.model.js';
 export { default as CatalogEvent } from './catalogEvent.model.js';
+export { default as CatalogCommand } from './catalogCommand.model.js';
+export { default as CatalogQualityAssessment } from './catalogQualityAssessment.model.js';
+export { default as CatalogQualityRun } from './catalogQualityRun.model.js';
 
 // ---- Order lifecycle (Phase 3) ----
 export { default as Hub } from './hub.model.js';
@@ -58,6 +66,7 @@ export { default as FulfillmentTimeLog } from './fulfillmentTimeLog.model.js';
 
 // ---- Phase 4: admin dashboard ----
 export { default as InventoryAdjustment } from './inventoryAdjustment.model.js';
+export { default as InventoryTransfer } from './inventoryTransfer.model.js';
 export { default as AnalyticsDaily } from './analyticsDaily.model.js';
 
 // ---- Phase 4b: notifications & exports ----
@@ -78,6 +87,7 @@ export { default as VendorApplication } from './vendorApplication.model.js';
 export { default as PlatformDaily } from './platformDaily.model.js';
 export { default as Counter } from './counter.model.js';
 export { default as MediaAsset } from './mediaAsset.model.js';
+export { default as MediaProcessingJob } from './mediaProcessingJob.model.js';
 
 // ---- Phase 6.1: financial ledger (double-entry) ----
 export { default as LedgerAccount } from './ledgerAccount.model.js';
@@ -111,5 +121,7 @@ export { default as SearchQueryLog } from './searchQueryLog.model.js';
 // ---- Phase 7.4: reviews, compliance, infrastructure ----
 export { default as ProductReview } from './productReview.model.js';
 export { default as ScheduledJob } from './scheduledJob.model.js';
+export { default as CatalogBulkJob } from './catalogBulkJob.model.js';
+export { default as CatalogBulkJobRow } from './catalogBulkJobRow.model.js';
 export { default as FiscalPeriod } from './fiscalPeriod.model.js';
 export { default as StatutoryDeposit } from './statutoryDeposit.model.js';

@@ -104,6 +104,20 @@ const OrderSchema = new Schema(
     slotReservationId: { type: Types.ObjectId, ref: 'SlotReservation', default: null, index: true },
     slotSnapshot: { type: SlotSnapshotSchema, default: null },
     addressSnapshot: { type: AddressSnapshotSchema, default: null },
+    fulfillmentPlan: {
+      policyId: { type: Types.ObjectId, ref: 'WarehouseAllocationPolicy', default: null },
+      policyVersion: { type: Number, default: 1 },
+      strategy: { type: String, default: 'nearest_available' },
+      splitPolicy: { type: String, default: 'never' },
+      status: { type: String, enum: ['planned', 'committed', 'released', 'failed'], default: 'planned' },
+      primaryHubId: { type: Types.ObjectId, ref: 'Hub', default: null },
+      nodeCount: { type: Number, default: 0, min: 0 },
+      promisedAt: { type: Date, default: null },
+      promiseMinAt: { type: Date, default: null },
+      promiseMaxAt: { type: Date, default: null },
+      plannedAt: { type: Date, default: null },
+      committedAt: { type: Date, default: null },
+    },
 
     paymentMethod: {
       type: String,
@@ -148,6 +162,7 @@ const OrderSchema = new Schema(
 
 OrderSchema.index({ tenantId: 1, userId: 1, createdAt: -1 });
 OrderSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
+OrderSchema.index({ tenantId: 1, 'fulfillmentPlan.primaryHubId': 1, createdAt: -1 });
 OrderSchema.index({ tenantId: 1, orderNumber: 1 }, { unique: true });
 
 OrderSchema.plugin(auditPlugin);

@@ -456,6 +456,16 @@ export default function Checkout() {
               <button type="button" onClick={dropCoupon} className="underline">remove</button>
             </div>
           )}
+          {quote?.fulfillment?.hub && (
+            <div className="mb-3 rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-cyan-50 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Fulfillment promise</p>
+              <p className="mt-1 text-sm font-semibold text-slate-800">{quote.fulfillment.hub.name}</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Expected by {new Date(quote.fulfillment.promiseMaxAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                {quote.fulfillment.hub.distanceKm != null ? ` · ${Number(quote.fulfillment.hub.distanceKm).toFixed(1)} km away` : ''}
+              </p>
+            </div>
+          )}
           <dl className="space-y-1.5 border-t border-slate-100 pt-3 text-sm">
             <div className="flex justify-between text-slate-600">
               <dt>Subtotal</dt><dd><Money value={cart?.cart?.subtotal ?? cart?.subtotal} /></dd>

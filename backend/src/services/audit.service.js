@@ -19,11 +19,11 @@ class AuditService {
    * @param {object} [p.meta]
    * @param {import('express').Request} [p.req]  for ip + requestId
    */
-  async record({ action, entityType, entityId, tenantId = null, actorId = null, actorType = 'system', before = null, after = null, meta = null, req = null }) {
+  async record({ action, entityType, entityId, tenantId = null, actorId = null, actorType = 'system', before = null, after = null, meta = null, req = null, session = null }) {
     if (!action || !entityType || !entityId) {
       throw badRequest('action, entityType and entityId are required for audit', 'AUDIT_INVALID');
     }
-    return AuditLog.create({
+    const data = {
       action,
       entityType,
       entityId,
@@ -35,7 +35,10 @@ class AuditService {
       meta,
       ipAddress: req?.ip || null,
       requestId: req?.id || null,
-    });
+    };
+    if (!session) return AuditLog.create(data);
+    const [row] = await AuditLog.create([data], { session });
+    return row;
   }
 
   /**

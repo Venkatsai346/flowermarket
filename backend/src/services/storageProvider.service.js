@@ -18,6 +18,8 @@ import crypto from 'node:crypto';
 import {
   S3Client,
   PutObjectCommand,
+  GetObjectCommand,
+  CopyObjectCommand,
   HeadObjectCommand,
   DeleteObjectCommand,
 } from '@aws-sdk/client-s3';
@@ -38,6 +40,8 @@ export function sniffMagic(bytes) {
   if (b.toString('ascii', 0, 4) === 'GIF8') return 'gif';
   // WebP: RIFF....WEBP
   if (b.toString('ascii', 0, 4) === 'RIFF' && b.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  // WebM / Matroska EBML
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'webm';
   // AVIF / ISO-BMFF (mp4/mov): ....ftyp<brand>
   if (b.toString('ascii', 4, 8) === 'ftyp') {
     const brand = b.toString('ascii', 8, 12);
@@ -101,6 +105,21 @@ class LocalProvider {
     return { ok: true };
   }
 
+  async readBuffer(key, maxBytes) {
+    const stat = await fs.promises.stat(this.absolute(key));
+    if (stat.size > maxBytes) throw new Error(`Object exceeds processing limit (${stat.size} > ${maxBytes})`);
+    return fs.promises.readFile(this.absolute(key));
+  }
+
+  async putBuffer(key, buffer) {
+    return this.writeBuffer(key, buffer);
+  }
+
+  async makePublic() {
+    // Local storage is development-only and served by the authenticated app.
+    return true;
+  }
+
   async remove(key) {
     try {
       fs.unlinkSync(this.absolute(key));
@@ -127,8 +146,7 @@ class S3Provider {
       Key: key,
       ContentType: contentType,
       ContentLength: size, // S3 rejects uploads that exceed this
-      ACL: 'public-read',
-      CacheControl: 'public, max-age=31536000, immutable',
+      CacheControl: 'private, no-store',
     });
     const uploadUrl = await getSignedUrl(this.client, cmd, { expiresIn });
     return { uploadUrl, method: 'PUT', headers: { 'content-type': contentType }, via: 's3' };
@@ -151,6 +169,31 @@ class S3Provider {
     } catch (err) {
       return { ok: false, reason: err?.name === 'NotFound' ? 'missing' : err.message };
     }
+  }
+
+  async readBuffer(key, maxBytes) {
+    const result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    if (Number(result.ContentLength || 0) > maxBytes) throw new Error(`Object exceeds processing limit (${result.ContentLength} > ${maxBytes})`);
+    const bytes = await result.Body.transformToByteArray();
+    if (bytes.length > maxBytes) throw new Error(`Object exceeds processing limit (${bytes.length} > ${maxBytes})`);
+    return Buffer.from(bytes);
+  }
+
+  async putBuffer(key, buffer, { contentType = 'application/octet-stream' } = {}) {
+    await this.client.send(new PutObjectCommand({
+      Bucket: this.bucket, Key: key, Body: buffer, ContentType: contentType,
+      ContentLength: buffer.length, ACL: 'public-read', CacheControl: 'public, max-age=31536000, immutable',
+    }));
+    return buffer.length;
+  }
+
+  async makePublic(key, contentType) {
+    await this.client.send(new CopyObjectCommand({
+      Bucket: this.bucket, Key: key, CopySource: `${this.bucket}/${encodeURIComponent(key).replace(/%2F/g, '/')}`,
+      ACL: 'public-read', ContentType: contentType, CacheControl: 'public, max-age=31536000, immutable',
+      MetadataDirective: 'REPLACE',
+    }));
+    return true;
   }
 
   async remove(key) {

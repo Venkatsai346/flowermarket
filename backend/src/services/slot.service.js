@@ -119,13 +119,26 @@ class SlotService {
    * DEEP FIX: Upgraded to support date ranges (fromDate/toDate), arrays, or fallback to UTC 'days'.
    * This prevents the timezone trap and supports the frontend's `days: 3` request.
    */
-  async listAvailable({ tenantId, pincode, date, fromDate, toDate, days }) {
+  async listAvailable({ tenantId, pincode, date, fromDate, toDate, days, items = [] }) {
     let hub;
+    let allocation = null;
     try {
-      hub = await this.resolveHub({ tenantId, pincode });
+      if (items.length) {
+        const { default: warehouseAllocationService } = await import('./warehouseAllocation.service.js');
+        allocation = await warehouseAllocationService.plan({ tenantId, pincode, items });
+        hub = await Hub.findOne({ _id: allocation.primaryHubId, tenantId, isActive: true });
+      } else {
+        hub = await this.resolveHub({ tenantId, pincode });
+      }
     } catch (err) {
       if (err?.code === 'PINCODE_UNSERVICEABLE') {
-        return { serviceable: false, pincode: pincode || null, hub: null, slots: [] };
+        return { serviceable: false, allocatable: false, pincode: pincode || null, hub: null, slots: [] };
+      }
+      if (['BASKET_NOT_ALLOCATABLE', 'NO_FULFILLMENT_NODE'].includes(err?.code)) {
+        return {
+          serviceable: true, allocatable: false, pincode: pincode || null,
+          hub: null, slots: [], allocationIssue: { code: err.code, message: err.message, details: err.details || null },
+        };
       }
       throw err;
     }
@@ -181,8 +194,15 @@ class SlotService {
 
     return {
       serviceable: true,
+      allocatable: true,
       pincode: pincode || null,
       hub: { id: hub._id, name: hub.name },
+      fulfillment: allocation ? {
+        strategy: allocation.strategy,
+        nodeCount: allocation.nodeCount,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+      } : null,
       slots: result,
     };
   }

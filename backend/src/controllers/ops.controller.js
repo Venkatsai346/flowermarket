@@ -4,6 +4,8 @@ import returnsService from '../services/returns.service.js';
 import refundService from '../services/refund.service.js';
 import fulfillmentService from '../services/fulfillment.service.js';
 import slotForecastingService from '../services/slotForecasting.service.js';
+import warehouseAllocationService from '../services/warehouseAllocation.service.js';
+import warehouseTransferService from '../services/warehouseTransfer.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 
@@ -68,6 +70,51 @@ class OpsController {
       tenantId: req.tenantId, orderId: req.params.id, actorId: req.auth.userId, req,
     });
     res.status(200).json(success(order, { message: 'Delivery retry dispatched' }));
+  });
+
+  // ---------------- multi-warehouse allocation (ADMIN) ----------------
+  allocationPolicy = asyncHandler(async (req, res) => {
+    const policy = await warehouseAllocationService.getPolicy(req.tenantId);
+    res.status(200).json(success(policy, { message: 'Warehouse allocation policy fetched' }));
+  });
+
+  saveAllocationPolicy = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...payload } = req.body;
+    const policy = await warehouseAllocationService.savePolicy({
+      tenantId: req.tenantId, payload, expectedVersion, actorId: req.auth.userId,
+    });
+    res.status(200).json(success(policy, { message: 'Warehouse allocation policy saved' }));
+  });
+
+  warehouseAvailability = asyncHandler(async (req, res) => {
+    const result = await warehouseAllocationService.availability({
+      tenantId: req.tenantId, listingIds: [req.params.listingId],
+      pincode: req.query.pincode || null, preferredHubId: req.query.hubId || null,
+    });
+    res.status(200).json(success(result.byListing[String(req.params.listingId)] || {
+      networkAvailableQty: 0, nodes: [], best: null,
+    }, { message: 'Warehouse availability fetched' }));
+  });
+
+  listWarehouseTransfers = asyncHandler(async (req, res) => {
+    const result = await warehouseTransferService.list({ tenantId: req.tenantId, limit: req.query.limit });
+    res.json(ok(result));
+  });
+
+  warehouseTransfer = asyncHandler(async (req, res) => {
+    const result = await warehouseTransferService.get({ tenantId: req.tenantId, transferId: req.params.transferId });
+    res.json(ok(result));
+  });
+
+  transferStock = asyncHandler(async (req, res) => {
+    const result = await warehouseTransferService.initiate({
+      tenantId: req.tenantId, fromHubId: req.body.fromHubId, toHubId: req.body.toHubId,
+      items: req.body.items, actorId: req.auth.userId,
+      idempotencyKey: req.get('Idempotency-Key') || req.body.idempotencyKey || null, req,
+    });
+    res.status(result.idempotentReplay ? 200 : 201).json(created(result, {
+      message: result.idempotentReplay ? 'Warehouse transfer replayed' : 'Warehouse transfer completed',
+    }));
   });
 
   // ---------------- slot ops (ADMIN) ----------------

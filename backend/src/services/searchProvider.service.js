@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import SearchDocument from '../models/searchDocument.model.js';
 import config from '../config/index.js';
 import { textRelevance } from '../utils/queryUnderstanding.js';
+import OpenSearchProvider from './opensearchProvider.service.js';
 
 /**
  * SearchProvider — the retrieval abstraction (Phase 6.5 / S1).
@@ -15,7 +16,8 @@ import { textRelevance } from '../utils/queryUnderstanding.js';
  *                          have to operate before you have traffic is a
  *                          liability, not a feature.
  *   atlas      — Atlas Search: native fuzzy, synonyms, autocomplete, facets.
- *   opensearch — self-hosted, BM25 + function scoring.
+ *   opensearch — fuzzy/prefix lexical retrieval, exact facets and versioned
+ *                          aliases, followed by the same explainable scorer.
  *
  * ── The two-stage design, and why it is the right one here ──────────────────
  * Stage 1 RETRIEVES a bounded candidate set cheaply (indexed match, capped).
@@ -29,6 +31,20 @@ import { textRelevance } from '../utils/queryUnderstanding.js';
  */
 
 const CANDIDATE_CAP = 400;
+
+function applyAttributeFilters(match, attributes = {}) {
+  for (const [key, filter] of Object.entries(attributes)) {
+    const path = `attributes.${key}`;
+    if (filter && typeof filter === 'object' && !Array.isArray(filter)) {
+      match[path] = {
+        ...(filter.min != null ? { $gte: Number(filter.min) } : {}),
+        ...(filter.max != null ? { $lte: Number(filter.max) } : {}),
+      };
+    } else {
+      match[path] = { $in: Array.isArray(filter) ? filter : [filter] };
+    }
+  }
+}
 
 class MongoSearchProvider {
   get name() { return 'mongo'; }
@@ -51,6 +67,11 @@ class MongoSearchProvider {
     return { indexed: (res.upsertedCount || 0) + (res.modifiedCount || 0) + (res.matchedCount || 0) };
   }
 
+  async findByKeys(keys = []) {
+    if (!keys.length) return [];
+    return SearchDocument.find({ key: { $in: keys } }).lean();
+  }
+
   async remove(keys = []) {
     if (!keys.length) return { removed: 0 };
     const res = await SearchDocument.deleteMany({ key: { $in: keys } });
@@ -71,7 +92,10 @@ class MongoSearchProvider {
       isDeleted: { $ne: true },
     };
 
-    if (filters.categoryId) match.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.categoryIds?.length) match.categoryId = { $in: filters.categoryIds.map((id) => new mongoose.Types.ObjectId(String(id))) };
+    else if (filters.categoryId) match.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.brandId) match.brandId = new mongoose.Types.ObjectId(String(filters.brandId));
+    if (filters.productType) match.productType = filters.productType;
     if (filters.vendorId) match.vendorId = new mongoose.Types.ObjectId(String(filters.vendorId));
     if (filters.inStock) match.inStock = true;
     if (filters.minPrice != null || filters.maxPrice != null) {
@@ -81,6 +105,7 @@ class MongoSearchProvider {
       };
     }
     if (filters.colour) match['attributes.colour'] = filters.colour;
+    applyAttributeFilters(match, filters.attributes);
 
     const terms = parsed?.expanded?.length ? parsed.expanded : parsed?.tokens || [];
 
@@ -110,6 +135,21 @@ class MongoSearchProvider {
       status: 'active',
       isDeleted: { $ne: true },
     };
+    if (filters.categoryIds?.length) base.categoryId = { $in: filters.categoryIds.map((id) => new mongoose.Types.ObjectId(String(id))) };
+    else if (filters.categoryId) base.categoryId = new mongoose.Types.ObjectId(String(filters.categoryId));
+    if (filters.brandId) base.brandId = new mongoose.Types.ObjectId(String(filters.brandId));
+    if (filters.productType) base.productType = filters.productType;
+    if (filters.vendorId) base.vendorId = new mongoose.Types.ObjectId(String(filters.vendorId));
+    if (filters.inStock) base.inStock = true;
+    if (filters.minPrice != null || filters.maxPrice != null) {
+      base.pricePaise = {
+        ...(filters.minPrice != null ? { $gte: Math.round(filters.minPrice * 100) } : {}),
+        ...(filters.maxPrice != null ? { $lte: Math.round(filters.maxPrice * 100) } : {}),
+      };
+    }
+    if (filters.colour) base['attributes.colour'] = filters.colour;
+    applyAttributeFilters(base, filters.attributes);
+
     const terms = parsed?.expanded?.length ? parsed.expanded : parsed?.tokens || [];
     if (terms.length) {
       const safe = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
@@ -193,7 +233,7 @@ class MongoSearchProvider {
   }
 }
 
-/** Declared seams. Both throw loudly rather than silently degrading. */
+/** Atlas remains a declared seam and fails loudly rather than degrading. */
 class UnimplementedProvider {
   constructor(name) { this.providerName = name; }
   get name() { return this.providerName; }
@@ -208,8 +248,10 @@ class UnimplementedProvider {
 
 function build() {
   const p = config.search.provider;
-  if (p === 'atlas' || p === 'opensearch') return new UnimplementedProvider(p);
-  return new MongoSearchProvider();
+  const mongo = new MongoSearchProvider();
+  if (p === 'opensearch') return new OpenSearchProvider({ canonical: mongo });
+  if (p === 'atlas') return new UnimplementedProvider(p);
+  return mongo;
 }
 
 export const searchProvider = build();

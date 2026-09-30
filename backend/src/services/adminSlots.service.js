@@ -38,6 +38,11 @@ export class AdminSlotsService {
       areaId: payload.areaId || null,
       serviceablePincodes: payload.pincodes || [],
       defaultSlotCapacity: payload.defaultSlotCapacity || 25,
+      fulfillmentPriority: payload.fulfillmentPriority ?? 100,
+      handlingTimeMinutes: payload.handlingTimeMinutes ?? 30,
+      maxDeliveryRadiusKm: payload.maxDeliveryRadiusKm ?? null,
+      acceptsOverflow: payload.acceptsOverflow === true,
+      isFulfillmentEnabled: payload.isFulfillmentEnabled !== false,
       isActive: payload.isActive !== false,
       status: 'active',
     });
@@ -49,7 +54,11 @@ export class AdminSlotsService {
   async updateHub({ tenantId, hubId, payload, actorId = null, req = null }) {
     const hub = await Hub.findOne({ _id: hubId, tenantId });
     if (!hub) throw notFound('Hub not found', 'HUB_NOT_FOUND');
-    const allowed = ['name', 'address', 'coordinates', 'defaultSlotCapacity', 'zoneId'];
+    const allowed = [
+      'name', 'address', 'coordinates', 'defaultSlotCapacity', 'zoneId',
+      'fulfillmentPriority', 'handlingTimeMinutes', 'maxDeliveryRadiusKm',
+      'acceptsOverflow', 'isFulfillmentEnabled',
+    ];
     for (const k of allowed) if (k in payload) hub[k] = payload[k];
     await hub.save();
     await auditService.record({

@@ -103,6 +103,16 @@ export function createApiClient({
     retry = true,
     raw = false,
   } = {}) => {
+    // Generate once per logical mutation and preserve it through auth-refresh
+    // retries. Backends that implement command journals can then replay the
+    // committed response instead of duplicating a write after a lost response.
+    headers = { ...headers };
+    const unsafe = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(method).toUpperCase());
+    const hasIdempotencyKey = Object.keys(headers).some((key) => key.toLowerCase() === 'idempotency-key');
+    if (unsafe && !hasIdempotencyKey) {
+      headers['idempotency-key'] = globalThis.crypto?.randomUUID?.()
+        || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
     const url = `${baseURL}${path}${buildQuery(query)}`;
     const h = { ...extraHeaders(), ...headers };
     const token = getAccessToken();

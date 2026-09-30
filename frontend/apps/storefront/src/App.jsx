@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect } from 'react';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
 import { Route, Routes, useLocation } from 'react-router-dom';
-import { Flower2, ServerCrash } from 'lucide-react';
+import { Boxes, ServerCrash } from 'lucide-react';
 import { api, useShopAuth } from './api.js';
 import { useShop } from './store.js';
 import { applyTheme, applyDocumentMeta, resolveBrandTheme } from './theme.js';
@@ -30,6 +30,7 @@ const Wishlist = lazy(() => import('./pages/Wishlist.jsx'));
 const Browse = lazy(() => import('./pages/Browse.jsx'));
 const About = lazy(() => import('./pages/About.jsx'));
 const Brands = lazy(() => import('./pages/Brands.jsx'));
+const Brand = lazy(() => import('./pages/Brand.jsx'));
 const Categories = lazy(() => import('./pages/Categories.jsx'));
 
 /**
@@ -69,7 +70,7 @@ function BootScreen({ error }) {
   return (
     <main className="flex min-h-screen items-center justify-center">
       <span className="flex h-12 w-12 animate-pulse items-center justify-center rounded-2xl bg-slate-100">
-        <Flower2 className="h-6 w-6 text-slate-300" />
+        <Boxes className="h-6 w-6 text-slate-300" />
       </span>
     </main>
   );
@@ -79,7 +80,7 @@ function RouteFallback() {
   return (
     <div className="flex min-h-[40vh] items-center justify-center">
       <span className="flex h-10 w-10 animate-pulse items-center justify-center rounded-2xl" style={{ background: 'var(--brand-soft)' }}>
-        <Flower2 className="h-5 w-5" style={{ color: 'var(--brand)' }} />
+        <Boxes className="h-5 w-5" style={{ color: 'var(--brand)' }} />
       </span>
     </div>
   );
@@ -207,6 +208,7 @@ export default function App() {
             <Route path="/wishlist" element={<Wishlist />} />
             <Route path="/browse" element={<Browse />} />
             <Route path="/brands" element={<Brands />} />
+            <Route path="/brands/:id" element={<Brand />} />
             <Route path="/categories" element={<Categories />} />
             <Route path="/about" element={<About />} />
             <Route path="/addresses" element={<Addresses />} />

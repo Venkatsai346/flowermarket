@@ -10,14 +10,14 @@
 
 const MODEL_FILES = [
   'tenant.model.js', 'tenantAuthConfig.model.js', 'user.model.js', 'category.model.js', 'brand.model.js',
-  'productMaster.model.js', 'tenantProduct.model.js', 'inventory.model.js', 'address.model.js', 'hub.model.js',
+  'productMaster.model.js', 'tenantProduct.model.js', 'inventory.model.js', 'catalogCommand.model.js', 'catalogBulkJob.model.js', 'catalogBulkJobRow.model.js', 'catalogQualityRun.model.js', 'catalogQualityAssessment.model.js', 'mediaAsset.model.js', 'mediaProcessingJob.model.js', 'address.model.js', 'hub.model.js',
   'serviceablePincode.model.js', 'deliverySlot.model.js', 'slotReservation.model.js', 'cart.model.js', 'cartItem.model.js',
   'order.model.js', 'orderItem.model.js', 'orderStatusHistory.model.js', 'payment.model.js', 'paymentTransaction.model.js',
   'refundTransaction.model.js', 'wallet.model.js', 'walletTransaction.model.js', 'returnRequest.model.js', 'returnItem.model.js',
   'fulfillmentTask.model.js', 'deliveryAssignment.model.js', 'deliveryFeePolicy.model.js', 'taxPolicy.model.js',
   'discountPolicy.model.js', 'couponUsage.model.js', 'orderChargeBreakdown.model.js', 'tenantRefundPolicy.model.js',
   'fulfillmentTimeLog.model.js', 'auditLog.model.js', 'catalogEvent.model.js',
-  'inventoryAdjustment.model.js', 'analyticsDaily.model.js',
+  'inventoryAdjustment.model.js', 'inventoryTransfer.model.js', 'analyticsDaily.model.js',
   'device.model.js', 'notificationTemplate.model.js', 'notification.model.js', 'exportJob.model.js', 'exportArtifact.model.js',
   // ---- Phase 5 ----
   // subscription.model.js = CUSTOMER recurring orders; tenant plan billing is
@@ -35,7 +35,8 @@ const MODEL_FILES = [
   'payoutPolicy.model.js', 'vendorPayoutAccount.model.js', 'payoutLineItem.model.js',
   'payoutBatch.model.js', 'payoutStatusHistory.model.js', 'payoutAdjustment.model.js',
   // ---- observability ----
-  'systemHeartbeat.model.js',
+  'systemHeartbeat.model.js', 'searchInteraction.model.js', 'searchMerchandisingRule.model.js',
+  'warehouseAllocationPolicy.model.js',
   // ---- Phase 10: money audit backbone ----
   'domainEvent.model.js',
   // ---- Phase 11: tamper-evident audit chain + fiscal periods ----

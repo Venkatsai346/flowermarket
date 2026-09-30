@@ -1,10 +1,12 @@
 import searchService from '../services/search.service.js';
 import searchIndexer from '../services/searchIndexer.service.js';
 import searchProvider from '../services/searchProvider.service.js';
+import searchMerchandisingService from '../services/searchMerchandising.service.js';
 import auditService from '../services/audit.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
-import { AUDIT_ACTION } from '../constants/enums.js';
+import { AUDIT_ACTION, USER_ROLES } from '../constants/enums.js';
+import { forbidden } from '../utils/ApiError.js';
 
 class SearchController {
   // ---------------- public ----------------
@@ -17,9 +19,19 @@ class SearchController {
    * Click / add-to-cart beacon. Fire-and-forget from the client, and the only
    * way the platform ever learns whether a ranking change helped.
    */
+  shelves = asyncHandler(async (req, res) => {
+    const resolved = await searchMerchandisingService.resolve({
+      tenantId: req.tenantId, normalizedQuery: '', categoryId: req.query.categoryId || null,
+    });
+    res.status(200).json(success(resolved.shelves, { message: 'Curated shelves fetched' }));
+  });
+
   event = asyncHandler(async (req, res) => {
     const result = await searchService.recordEvent({
+      tenantId: req.tenantId,
+      sessionKey: req.get('x-session-id') || req.ip || null,
       queryId: req.body.queryId,
+      eventId: req.body.eventId,
       type: req.body.type,
       position: req.body.position,
       listingId: req.body.listingId,
@@ -51,14 +63,55 @@ class SearchController {
     res.status(201).json(created(doc, { message: 'Synonym added' }));
   });
 
+  merchandisingRules = asyncHandler(async (req, res) => {
+    const rows = await searchMerchandisingService.list({
+      tenantId: req.tenantId, status: req.query.status || null, type: req.query.type || null,
+    });
+    res.status(200).json(success(rows, { message: 'Merchandising rules fetched' }));
+  });
+
+  createMerchandisingRule = asyncHandler(async (req, res) => {
+    const row = await searchMerchandisingService.create({ tenantId: req.tenantId, payload: req.body, actorId: req.auth.userId });
+    await auditService.record({
+      action: AUDIT_ACTION.RANKING_CHANGE, entityType: 'search_merchandising_rule', entityId: row._id,
+      tenantId: req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: row.toJSON(), req,
+    });
+    res.status(201).json(created(row, { message: 'Merchandising rule created' }));
+  });
+
+  updateMerchandisingRule = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...payload } = req.body;
+    const row = await searchMerchandisingService.update({
+      tenantId: req.tenantId, id: req.params.id, payload, expectedVersion, actorId: req.auth.userId,
+    });
+    await auditService.record({
+      action: AUDIT_ACTION.RANKING_CHANGE, entityType: 'search_merchandising_rule', entityId: row._id,
+      tenantId: req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: row.toJSON(), req,
+    });
+    res.status(200).json(success(row, { message: 'Merchandising rule updated' }));
+  });
+
+  deleteMerchandisingRule = asyncHandler(async (req, res) => {
+    const result = await searchMerchandisingService.remove({ tenantId: req.tenantId, id: req.params.id });
+    await auditService.record({
+      action: AUDIT_ACTION.RANKING_CHANGE, entityType: 'search_merchandising_rule', entityId: req.params.id,
+      tenantId: req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: result, req,
+    });
+    res.status(200).json(success(result, { message: 'Merchandising rule deleted' }));
+  });
+
   reindex = asyncHandler(async (req, res) => {
+    const allTenants = req.body?.allTenants === true;
+    if (allTenants && req.auth.role !== USER_ROLES.SUPER_ADMIN) {
+      throw forbidden('Only a super admin can rebuild the global search index.', 'GLOBAL_REINDEX_FORBIDDEN');
+    }
     const result = await searchIndexer.reindexAll({
-      tenantId: req.body.allTenants ? null : req.tenantId,
+      tenantId: allTenants ? null : req.tenantId,
       after: req.body.after || null,
     });
     await auditService.record({
-      action: AUDIT_ACTION.SEARCH_REINDEX, entityType: 'search_index', entityId: req.tenantId,
-      tenantId: req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: result, req,
+      action: AUDIT_ACTION.SEARCH_REINDEX, entityType: 'search_index', entityId: req.tenantId || req.auth.userId,
+      tenantId: allTenants ? null : req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: result, req,
     }).catch(() => {});
     res.status(200).json(success(result, { message: 'Reindex complete' }));
   });

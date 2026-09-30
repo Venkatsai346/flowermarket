@@ -23,6 +23,10 @@ import ScheduledJob from '../models/scheduledJob.model.js';
 import SystemHeartbeat from '../models/systemHeartbeat.model.js';
 import Payment from '../models/payment.model.js';
 import RefundTransaction from '../models/refundTransaction.model.js';
+import CatalogBulkJob from '../models/catalogBulkJob.model.js';
+import CatalogQualityRun from '../models/catalogQualityRun.model.js';
+import MediaProcessingJob from '../models/mediaProcessingJob.model.js';
+import ProductImage from '../models/productImage.model.js';
 import catalogEventService from '../services/catalogEvent.service.js';
 import { PAYMENT_STATUS, PAYMENT_PROVIDER, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
 import { createRegistry } from './metrics.js';
@@ -42,6 +46,132 @@ export const httpDuration = registry.histogram(
   'http_request_duration_seconds',
   'HTTP request duration in seconds by method and route pattern.',
   ['method', 'route'],
+);
+
+// ---- Search provider (bounded operation labels; never index/query cardinality) ----
+export const searchProviderRequests = registry.counter(
+  'search_provider_requests_total',
+  'External search provider requests by operation and outcome.',
+  ['provider', 'operation', 'outcome'],
+);
+export const searchInteractionEvents = registry.counter(
+  'search_interaction_events_total',
+  'Search interaction acceptance and rejection outcomes by bounded event type and reason.',
+  ['type', 'outcome'],
+);
+export const warehouseAllocationRequests = registry.counter(
+  'warehouse_allocation_requests_total',
+  'Warehouse allocation planning outcomes by bounded strategy and outcome.',
+  ['strategy', 'outcome'],
+);
+export const warehouseAllocationNodes = registry.histogram(
+  'warehouse_allocation_candidate_nodes',
+  'Eligible fulfillment nodes evaluated per allocation.',
+  ['strategy'],
+  [0, 1, 2, 3, 5, 8, 12, 20, 50],
+);
+
+export const searchRollups = registry.counter(
+  'search_analytics_rollups_total',
+  'Search analytics rollup outcomes.',
+  ['outcome'],
+);
+
+export const searchProviderDuration = registry.histogram(
+  'search_provider_request_duration_seconds',
+  'External search provider request duration by operation.',
+  ['provider', 'operation'],
+  [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+);
+
+// ---- Catalog discovery (bounded labels; never tenant/query cardinality) ----
+export const catalogCommandRuns = registry.counter(
+  'catalog_command_runs_total',
+  'Catalog command outcomes by operation, execution mode, and replay status.',
+  ['operation', 'mode', 'outcome'],
+);
+export const catalogCommandDuration = registry.histogram(
+  'catalog_command_duration_seconds',
+  'Catalog command execution duration by operation and execution mode.',
+  ['operation', 'mode'],
+  [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+);
+
+export const catalogReadDuration = registry.histogram(
+  'catalog_read_duration_seconds',
+  'Authoritative grouped catalog read duration by source and outcome.',
+  ['source', 'outcome'],
+  [0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 2, 5],
+);
+export const catalogReadRequests = registry.counter(
+  'catalog_read_requests_total',
+  'Grouped catalog requests by source and outcome.',
+  ['source', 'outcome'],
+);
+export const catalogFamiliesReturned = registry.histogram(
+  'catalog_families_returned',
+  'Number of product families returned by one grouped catalog request.',
+  ['source'],
+  [0, 1, 6, 12, 24, 36, 60],
+);
+export const catalogQualityEvaluationDuration = registry.histogram(
+  'catalog_quality_evaluation_duration_seconds',
+  'Tenant catalog quality sweep duration by bounded outcome.',
+  ['outcome'],
+  [0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60],
+);
+export const catalogQualityEvaluations = registry.counter(
+  'catalog_quality_evaluations_total',
+  'Tenant catalog quality sweeps by bounded outcome.',
+  ['outcome'],
+);
+export const catalogQualityFamilies = registry.histogram(
+  'catalog_quality_families_evaluated',
+  'Product families evaluated by a completed quality sweep.',
+  [],
+  [0, 1, 10, 50, 100, 500, 1000, 5000, 10000, 50000],
+);
+export const catalogMediaReadDuration = registry.histogram(
+  'catalog_media_read_duration_seconds',
+  'Global media operations read duration by bounded operation and outcome.',
+  ['operation', 'outcome'],
+  [0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
+);
+export const catalogMediaMutations = registry.counter(
+  'catalog_media_mutations_total',
+  'Successful governed catalog media mutations by bounded operation.',
+  ['operation'],
+);
+const catalogBulkJobs = registry.gauge(
+  'catalog_bulk_jobs',
+  'Durable catalog bulk jobs by bounded status.',
+  ['status'],
+);
+const catalogBulkOldestQueuedAge = registry.gauge(
+  'catalog_bulk_oldest_queued_age_seconds',
+  'Age of the oldest queued catalog bulk job; zero when no job is queued.',
+);
+const catalogQualityRuns = registry.gauge(
+  'catalog_quality_runs',
+  'Durable catalog quality runs by bounded status.',
+  ['status'],
+);
+const catalogQualityOldestQueuedAge = registry.gauge(
+  'catalog_quality_oldest_queued_age_seconds',
+  'Age of the oldest queued catalog quality run; zero when none is queued.',
+);
+const mediaProcessingJobs = registry.gauge(
+  'media_processing_jobs',
+  'Durable media processing jobs by bounded status.',
+  ['status'],
+);
+const mediaProcessingOldestQueuedAge = registry.gauge(
+  'media_processing_oldest_queued_age_seconds',
+  'Age of the oldest queued media processing job; zero when none is queued.',
+);
+const catalogBrokenMedia = registry.gauge(
+  'catalog_broken_media_assets',
+  'Active governed product-image rows that failed repeated storage health checks.',
 );
 
 // ---- DB ----
@@ -174,6 +304,34 @@ export async function collectDynamic() {
       .lean();
     outboxOldestAge.set(oldest ? Math.max(0, (Date.now() - new Date(oldest.availableAt).getTime()) / 1000) : 0);
     outboxDlq.set(st.failed || 0);
+
+    // durable catalog imports
+    catalogBulkJobs.reset();
+    const bulkCounts = await CatalogBulkJob.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    for (const status of ['queued', 'running', 'cancel_requested', 'cancelled', 'completed', 'failed']) {
+      catalogBulkJobs.set({ status }, bulkCounts.find((row) => row._id === status)?.count || 0);
+    }
+    const oldestBulk = await CatalogBulkJob.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
+    catalogBulkOldestQueuedAge.set(oldestBulk ? Math.max(0, (Date.now() - new Date(oldestBulk.createdAt).getTime()) / 1000) : 0);
+
+    // durable catalog quality sweeps
+    catalogQualityRuns.reset();
+    const qualityCounts = await CatalogQualityRun.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    for (const status of ['queued', 'running', 'cancel_requested', 'cancelled', 'completed', 'failed']) {
+      catalogQualityRuns.set({ status }, qualityCounts.find((row) => row._id === status)?.count || 0);
+    }
+    const oldestQuality = await CatalogQualityRun.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
+    catalogQualityOldestQueuedAge.set(oldestQuality ? Math.max(0, (Date.now() - new Date(oldestQuality.createdAt).getTime()) / 1000) : 0);
+
+    // governed media ingestion
+    mediaProcessingJobs.reset();
+    const mediaCounts = await MediaProcessingJob.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    for (const status of ['queued', 'running', 'completed', 'failed']) {
+      mediaProcessingJobs.set({ status }, mediaCounts.find((row) => row._id === status)?.count || 0);
+    }
+    const oldestMedia = await MediaProcessingJob.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
+    mediaProcessingOldestQueuedAge.set(oldestMedia ? Math.max(0, (Date.now() - new Date(oldestMedia.createdAt).getTime()) / 1000) : 0);
+    catalogBrokenMedia.set(await ProductImage.countDocuments({ healthStatus: 'broken', status: 'active', isDeleted: { $ne: true } }));
 
     // worker liveness
     const hb = await SystemHeartbeat.findOne({ role: 'worker' }).lean();

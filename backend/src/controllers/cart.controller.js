@@ -46,6 +46,9 @@ class CartController {
     const result = await cartService.addItem({
       ...owner,
       tenantProductId: req.body.tenantProductId, qty: req.body.qty,
+      searchQueryId: req.body.searchQueryId || null,
+      searchSessionKey: req.get('x-session-id') || req.ip || null,
+      fulfillmentPincode: req.body.fulfillmentPincode || null,
     });
     res.status(200).json(success(result, { message: 'Item added to cart' }));
   });
@@ -55,6 +58,7 @@ class CartController {
     const result = await cartService.updateQty({
       ...owner,
       itemId: req.params.id, qty: req.body.qty,
+      fulfillmentPincode: req.body.fulfillmentPincode || null,
     });
     res.status(200).json(success(result, { message: 'Quantity updated' }));
   });
@@ -140,9 +144,14 @@ class CartController {
 
   // ---- slotted delivery browse + reserve (customer) ----
   listSlots = asyncHandler(async (req, res) => {
+    const owner = await this.identity(req, res, { persistGuest: false });
+    const { items } = (owner.userId || owner.guestKey)
+      ? await cartService.fetchCart({ ...owner, create: false })
+      : { items: [] };
     const result = await slotService.listAvailable({
       tenantId: req.tenantId,
       pincode: req.query.pincode,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
       date: req.query.date || null,
       fromDate: req.query.fromDate || null,
       toDate: req.query.toDate || null,

@@ -9,6 +9,7 @@ import cartService from './cart.service.js';
 import slotService from './slot.service.js';
 import paymentService from './payment.service.js';
 import inventoryService from './inventory.service.js';
+import warehouseAllocationService from './warehouseAllocation.service.js';
 import fulfillmentService from './fulfillment.service.js';
 import refundService from './refund.service.js';
 import pricingPolicyService from './pricingPolicy.service.js';
@@ -156,7 +157,13 @@ class OrderService {
     }
 
     const tenantId = order.tenantId;
-    const commitItems = items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty }));
+    const persistedItems = await OrderItem.find({ orderId: order._id, tenantId }).lean();
+    const commitItems = persistedItems.map((item) => ({
+      listingId: item.tenantProductId,
+      qty: item.qty,
+      warehouseId: item.fulfillmentAllocation?.warehouseId || null,
+      policySafetyStock: item.fulfillmentAllocation?.policySafetyStockAtPlan || 0,
+    }));
     const { committed, failed } = await inventoryService.commitForOrder({ tenantId, items: commitItems });
 
     if (failed.length > 0) {
@@ -168,6 +175,12 @@ class OrderService {
         components: this.fullOrderRefundComponents(order),
       });
       await slotService.release({ reservationId: hold._id, tenantId, reason: 'stock_unavailable' });
+      order.fulfillmentPlan.status = 'failed';
+      await order.save();
+      await OrderItem.updateMany(
+        { orderId: order._id },
+        { $set: { 'fulfillmentAllocation.status': 'failed' } },
+      );
       await this.markCancelled(order, {
         reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
         cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
@@ -182,9 +195,16 @@ class OrderService {
     }
     await slotService.confirm({ reservationId, tenantId, orderId: order._id });
     order.slotReservationId = reservationId;
+    order.fulfillmentPlan.status = 'committed';
+    order.fulfillmentPlan.committedAt = new Date();
+    await order.save();
+    await OrderItem.updateMany(
+      { orderId: order._id },
+      { $set: { 'fulfillmentAllocation.status': 'committed' } },
+    );
     await fulfillmentService.createTask({
       orderId: order._id, tenantId,
-      hubId: order.slotSnapshot?.hubId || null,
+      hubId: order.fulfillmentPlan?.primaryHubId || order.slotSnapshot?.hubId || null,
       itemsCount: order.itemsCount,
     });
 
@@ -276,7 +296,12 @@ class OrderService {
       const oi = await (await import('../models/orderItem.model.js')).default.find({ orderId: order._id }).lean();
       const listingMap = await Promise.all(oi.map(async (x) => {
         const cartItem = await CartItem.findOne({ cartId: order.cartId, tenantProductId: x.tenantProductId }).lean();
-        return cartItem || { tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty, priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title, lineTotal: x.lineTotal, isReturnable: x.isReturnable };
+        return cartItem || {
+          tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty,
+          priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title,
+          unitSnapshot: x.skuSnapshot?.unit, unitQuantitySnapshot: x.skuSnapshot?.unitQuantity || 1,
+          lineTotal: x.lineTotal, isReturnable: x.isReturnable,
+        };
       }));
       items.push(...listingMap.filter(Boolean));
     }
@@ -722,8 +747,17 @@ class OrderService {
     const items = await OrderItem.find({ orderId: order._id }).lean();
     await inventoryService.restoreForOrder({
       tenantId,
-      items: items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty })),
+      items: items.map((i) => ({
+        listingId: i.tenantProductId,
+        qty: i.qty,
+        warehouseId: i.fulfillmentAllocation?.warehouseId || null,
+      })),
     });
+    order.fulfillmentPlan.status = 'released';
+    await OrderItem.updateMany(
+      { orderId: order._id },
+      { $set: { 'fulfillmentAllocation.status': 'released' } },
+    );
 
     // 2. release the slot hold
     if (order.slotReservationId) {
@@ -901,6 +935,13 @@ class OrderService {
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
     const { charges, slotDoc } = await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
+    const allocation = await warehouseAllocationService.plan({
+      tenantId,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
+      pincode: address.pincode,
+      customerCoordinates: address.coordinates || null,
+      preferredHubId: slotDoc?.hubId || null,
+    });
 
     return {
       itemSubtotal: charges.itemSubtotal,
@@ -914,6 +955,14 @@ class OrderService {
       slotType: slotDoc?.windowType || 'normal',
       itemCount: items.reduce((a, i) => a + i.qty, 0),
       priceChanged: revalidated.changed,
+      fulfillment: {
+        hub: allocation.hub,
+        strategy: allocation.strategy,
+        allocatable: true,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+        nodeCount: allocation.nodeCount,
+      },
     };
   }
 
@@ -929,6 +978,14 @@ class OrderService {
     // resolve category per line for tax lookup (computeOrderCharges already
     // used the category; here we just mirror the breakdown onto the items)
     const lineByListing = new Map(charges.lineItems.map((l) => [String(l.tenantProductId), l]));
+    const allocation = await warehouseAllocationService.plan({
+      tenantId,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
+      pincode: address.pincode,
+      customerCoordinates: address.coordinates || null,
+      preferredHubId: slotDoc?.hubId || null,
+    });
+    const allocationByListing = new Map(allocation.allocations.map((item) => [String(item.listingId), item]));
 
     const totalAmount = charges.grandTotal;
     const order = await Order.create({
@@ -958,6 +1015,19 @@ class OrderService {
         hubId: slotDoc.hubId || null,
         windowType: slotDoc.windowType || 'normal',
       } : null,
+      fulfillmentPlan: {
+        policyId: allocation.policyId,
+        policyVersion: allocation.policyVersion,
+        strategy: allocation.strategy,
+        splitPolicy: allocation.splitPolicy,
+        status: 'planned',
+        primaryHubId: allocation.primaryHubId,
+        nodeCount: allocation.nodeCount,
+        promisedAt: allocation.promise.maxAt,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+        plannedAt: allocation.plannedAt,
+      },
       addressSnapshot: {
         addressId: address._id,
         name: address.name || null,
@@ -978,6 +1048,7 @@ class OrderService {
         const line = lineByListing.get(String(i.tenantProductId)) || {
           taxAmount: 0, discountAllocated: 0, taxPolicyId: null, hsnCode: null,
         };
+        const allocated = allocationByListing.get(String(i.tenantProductId));
         return {
           orderId: order._id,
           tenantId,
@@ -985,7 +1056,10 @@ class OrderService {
           productMasterId: i.productMasterId,
           variantId: i.variantId || null,
           vendorId: i.productMasterId ? (vendorByMaster.get(String(i.productMasterId)) || null) : null,
-          skuSnapshot: { skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null, unit: i.unitSnapshot || null },
+          skuSnapshot: {
+            skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null,
+            unit: i.unitSnapshot || null, unitQuantity: i.unitQuantitySnapshot || 1,
+          },
           priceAtOrder: { mrp: i.priceSnapshot?.mrp ?? null, sellingPrice: i.priceSnapshot?.sellingPrice ?? 0, currency: i.priceSnapshot?.currency || 'INR' },
           qty: i.qty,
           lineTotal: line.lineTotal ?? i.lineTotal ?? 0,
@@ -994,6 +1068,19 @@ class OrderService {
           taxPolicyId: line.taxPolicyId || null,
           hsnCode: line.hsnCode || null,
           isReturnable: i.isReturnable !== false,
+          fulfillmentAllocation: allocated ? {
+            warehouseId: allocated.warehouseId,
+            warehouseCode: allocated.warehouseCode,
+            quantity: allocated.quantity,
+            availableAtPlan: allocated.availableAtPlan,
+            safetyStockAtPlan: allocated.safetyStock,
+            policySafetyStockAtPlan: allocated.policySafetyStock,
+            distanceKm: allocated.distanceKm,
+            promiseMinAt: allocated.promiseMinAt,
+            promiseMaxAt: allocated.promiseMaxAt,
+            status: 'planned',
+          } : null,
+          searchQueryId: i.searchQueryId || null,
         };
       })
     );

@@ -1,108 +1,36 @@
 /**
- * LearningToRankService — search relevance optimization.
+ * Compatibility adapter for callers that still request an extra reranking pass.
  *
- * Collects user interaction signals (clicks, add-to-cart, purchases)
- * and uses them to rank search results. Products that users engage with
- * rank higher for relevant queries.
- *
- * This is a lightweight implementation — no ML model training needed.
- * Uses a scoring function that combines:
- *   - Text relevance (existing search score)
- *   - Popularity (click-through rate)
- *   - Freshness (recently updated)
- *   - Availability (in-stock preference)
- *   - Rating (customer reviews)
- *
- * For production ML-based LTR, integrate with:
- *   - LambdaMART (LightGBM)
- *   - TensorFlow Ranking
- *   - Elasticsearch LTR plugin
+ * The authoritative learning signals now live on SearchDocument and are
+ * materialized from the append-only interaction stream. This adapter must not
+ * read or mutate sampled SearchQueryLog arrays: doing so would make behaviour
+ * depend on sampling and on which API replica handled a beacon.
  */
-
-import SearchQueryLog from '../models/searchQueryLog.model.js';
-import TenantProduct from '../models/tenantProduct.model.js';
+import SearchDocument from '../models/searchDocument.model.js';
+import searchAnalyticsService from './searchAnalytics.service.js';
 
 class LearningToRankService {
-  /**
-   * Re-rank search results using engagement signals.
-   */
-  async rerank({ tenantId, query, results }) {
+  async rerank({ tenantId, results }) {
     if (!results?.length) return results;
-
-    // Get engagement signals for these products
-    const productIds = results.map((r) => r._id || r.id);
-
-    // Get click/purchase signals from query logs
-    const signals = await SearchQueryLog.aggregate([
-      {
-        $match: {
-          tenantId,
-          query: { $regex: query, $options: 'i' },
-          clickedProductIds: { $in: productIds },
-        },
-      },
-      { $unwind: '$clickedProductIds' },
-      { $match: { clickedProductIds: { $in: productIds } } },
-      { $group: { _id: '$clickedProductIds', clicks: { $sum: 1 } } },
-    ]);
-
-    const signalMap = new Map(signals.map((s) => [String(s._id), s.clicks]));
-
-    // Get product metadata for scoring
-    const products = await TenantProduct.find({ _id: { $in: productIds } })
-      .select('stockQty availability rating updatedAt')
-      .lean();
-    const productMap = new Map(products.map((p) => [String(p._id), p]));
-
-    // Score each result
-    const scored = results.map((result) => {
-      const id = String(result._id || result.id);
-      const product = productMap.get(id);
-      const clicks = signalMap.get(id) || 0;
-
-      let score = result._score || result.score || 0;
-
-      // Popularity boost (clicks)
-      score += Math.log1p(clicks) * 2;
-
-      // Availability boost
-      if (product?.stockQty > 0) score += 3;
-      if (product?.availability?.status === 'out_of_stock') score -= 10;
-
-      // Rating boost
-      if (product?.rating?.average > 0) {
-        score += product.rating.average * 0.5;
-      }
-
-      // Freshness boost (updated in last 7 days)
-      if (product?.updatedAt) {
-        const age = Date.now() - new Date(product.updatedAt).getTime();
-        if (age < 7 * 86400000) score += 1;
-      }
-
-      return { ...result, _rerankedScore: score };
-    });
-
-    // Sort by reranked score
-    scored.sort((a, b) => b._rerankedScore - a._rerankedScore);
-    return scored;
+    const listingIds = results.map((result) => result.listingId || result._id || result.id).filter(Boolean);
+    const signals = await SearchDocument.find({ tenantId, listingId: { $in: listingIds } })
+      .select('listingId soldCount30d clicks30d impressions30d returnRate30d inStock').lean();
+    const byListing = new Map(signals.map((row) => [String(row.listingId), row]));
+    return results.map((result) => {
+      const id = String(result.listingId || result._id || result.id);
+      const signal = byListing.get(id);
+      const impressions = signal?.impressions30d || 0;
+      const ctr = (signal?.clicks30d || 0) / Math.max(20, impressions);
+      const learnedBoost = Math.log1p(signal?.soldCount30d || 0) + (ctr * 2) - (signal?.returnRate30d || 0);
+      return { ...result, _rerankedScore: Number(result._score || result.score || 0) + learnedBoost };
+    }).sort((a, b) => b._rerankedScore - a._rerankedScore);
   }
 
-  /**
-   * Record a search interaction (click or purchase).
-   */
-  async recordInteraction({ tenantId, userId, query, productId, type }) {
-    // Update the most recent query log for this user/query
-    await SearchQueryLog.updateOne(
-      { tenantId, userId, query: { $regex: `^${query}$`, $options: 'i' } },
-      {
-        $push: {
-          clickedProductIds: productId,
-          interactions: { type, productId, timestamp: new Date() },
-        },
-      },
-      { sort: { createdAt: -1 } },
-    );
+  /** New callers must provide the same server-minted attribution as the public beacon. */
+  async recordInteraction({ tenantId, sessionKey, queryId, eventId, listingId, productId, type, position = null }) {
+    return searchAnalyticsService.recordEvent({
+      tenantId, sessionKey, queryId, eventId, listingId: listingId || productId, type, position,
+    });
   }
 }
 

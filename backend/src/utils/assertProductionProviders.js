@@ -16,7 +16,7 @@
  * fixes:
  *   • a DEV DOUBLE (console/mock/memory/local) — works, but must never face a
  *     customer;
- *   • a DECLARED SEAM (ses, apns, atlas, opensearch) — a name that exists in
+ *   • a DECLARED SEAM (ses, apns, atlas) — a name that exists in
  *     config and docs but has NO implementation, so it throws on first use.
  *     These are the dangerous ones: they pass any check that looks at names and
  *     fail every call that looks at behaviour. `OTP_PROVIDER=ses` used to boot
@@ -228,7 +228,7 @@ export function collectProductionViolations(cfg) {
     if (missing.length) v.push(`${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} required when STORAGE_PROVIDER=s3`);
   }
 
-  // ---- search: mongo is production-grade; atlas/opensearch are seams ----
+  // ---- search: Mongo and OpenSearch are implemented; Atlas remains a seam ----
   const search = String(cfg.search?.provider || 'mongo');
   if (isDeclaredNotImplemented('search', search)) {
     v.push(
@@ -236,7 +236,21 @@ export function collectProductionViolations(cfg) {
       + 'Use mongo (the ranked Mongo index), which is production-grade',
     );
   } else if (!IMPLEMENTED.search.has(search)) {
-    v.push(`SEARCH_PROVIDER=${search} has no implementation (known: mongo)`);
+    v.push(`SEARCH_PROVIDER=${search} has no implementation (known: mongo, opensearch)`);
+  } else if (search === 'opensearch') {
+    const os = cfg.search?.opensearch || {};
+    if (!os.endpoint) v.push('OPENSEARCH_ENDPOINT is required when SEARCH_PROVIDER=opensearch');
+    else {
+      try {
+        const endpoint = new URL(os.endpoint);
+        if (endpoint.protocol !== 'https:') v.push('OPENSEARCH_ENDPOINT must use HTTPS in production');
+        if (endpoint.username || endpoint.password) v.push('OPENSEARCH_ENDPOINT must not contain embedded credentials');
+      } catch {
+        v.push('OPENSEARCH_ENDPOINT must be a valid HTTPS URL');
+      }
+    }
+    if (!os.apiKey && !os.username) v.push('OPENSEARCH_API_KEY or OPENSEARCH_USERNAME is required in production');
+    if (os.username && !os.password) v.push('OPENSEARCH_PASSWORD is required when OPENSEARCH_USERNAME is configured');
   }
 
   if (secretLooksLikeDev(cfg.jwt?.accessSecret)) {

@@ -12,11 +12,35 @@ import Inventory from '../models/inventory.model.js';
 import InventoryAdjustment from '../models/inventoryAdjustment.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
 import ProductMaster from '../models/productMaster.model.js';
+import Hub from '../models/hub.model.js';
 import auditService from './audit.service.js';
+import inventoryService from './inventory.service.js';
+import warehouseAllocationService from './warehouseAllocation.service.js';
 import { serializeList } from '../utils/serialize.js';
 import { roundMoney } from '../utils/money.js';
 import { notFound, badRequest, conflict } from '../utils/ApiError.js';
 import { INVENTORY_ADJUSTMENT_TYPE, INVENTORY_HEALTH, ADMIN_DEFAULTS } from '../constants/enums.js';
+
+const aggregateByListing = (rows, policySafetyStock = 0) => {
+  const grouped = new Map();
+  for (const row of rows || []) {
+    const key = String(row.tenantProductId);
+    const current = grouped.get(key) || {
+      tenantProductId: row.tenantProductId, qtyOnHand: 0, qtyReserved: 0,
+      available: 0, nodeCount: 0, lastUpdatedAt: null,
+    };
+    current.qtyOnHand += Number(row.qtyOnHand || 0);
+    current.qtyReserved += Number(row.qtyReserved || 0);
+    if (row.isSellable !== false) {
+      current.available += Math.max(0, Number(row.qtyOnHand || 0) - Number(row.qtyReserved || 0)
+        - Number(row.safetyStock || 0) - Number(policySafetyStock || 0));
+    }
+    current.nodeCount += 1;
+    if (!current.lastUpdatedAt || row.lastUpdatedAt > current.lastUpdatedAt) current.lastUpdatedAt = row.lastUpdatedAt;
+    grouped.set(key, current);
+  }
+  return grouped;
+};
 
 const healthOf = (available, threshold) => {
   if (available <= 0) return INVENTORY_HEALTH.OUT_OF_STOCK;
@@ -35,10 +59,12 @@ export class AdminInventoryService {
     const priceByListing = new Map(listings.map((l) => [String(l._id), l.price?.sellingPrice || 0]));
 
     const threshold = ADMIN_DEFAULTS.LOW_STOCK_THRESHOLD;
+    const policy = await warehouseAllocationService.getPolicy(tenantId);
+    const grouped = aggregateByListing(rows, policy.reserveSafetyStock);
     let inStock = 0; let lowStock = 0; let outOfStock = 0;
     let reservedUnits = 0; let onHandValue = 0;
-    for (const r of rows) {
-      const avail = Math.max(0, r.qtyOnHand - r.qtyReserved);
+    for (const r of grouped.values()) {
+      const avail = r.available;
       const h = healthOf(avail, threshold);
       if (h === INVENTORY_HEALTH.IN_STOCK) inStock += 1;
       else if (h === INVENTORY_HEALTH.LOW_STOCK) lowStock += 1;
@@ -47,7 +73,8 @@ export class AdminInventoryService {
       onHandValue += r.qtyOnHand * (priceByListing.get(String(r.tenantProductId)) || 0);
     }
     return {
-      totalSku: rows.length,
+      totalSku: grouped.size,
+      fulfillmentNodes: new Set(rows.map((row) => String(row.warehouseId || 'default'))).size,
       inStock, lowStock, outOfStock,
       reservedUnits,
       onHandValue: roundMoney(onHandValue),
@@ -81,7 +108,8 @@ export class AdminInventoryService {
     const invs = listingIds.length
       ? await Inventory.find({ tenantId, tenantProductId: { $in: listingIds }, isDeleted: { $ne: true } }).lean()
       : [];
-    const invByListing = new Map(invs.map((i) => [String(i.tenantProductId), i]));
+    const policy = await warehouseAllocationService.getPolicy(tenantId);
+    const invByListing = aggregateByListing(invs, policy.reserveSafetyStock);
     const masterIdsSet = [...new Set(listings.map((l) => String(l.productMasterId)))];
     const masters = masterIdsSet.length
       ? await ProductMaster.find({ tenantId, _id: { $in: masterIdsSet } }).lean()
@@ -90,7 +118,7 @@ export class AdminInventoryService {
 
     const rows = listings.map((l) => {
       const inv = invByListing.get(String(l._id));
-      const available = Math.max(0, (inv?.qtyOnHand || 0) - (inv?.qtyReserved || 0));
+      const available = inv?.available || 0;
       const health = healthOf(available, threshold);
       const master = masterById.get(String(l.productMasterId)) || {};
       return {
@@ -103,6 +131,7 @@ export class AdminInventoryService {
         qtyOnHand: inv?.qtyOnHand ?? 0,
         qtyReserved: inv?.qtyReserved ?? 0,
         available,
+        fulfillmentNodeCount: inv?.nodeCount || 0,
         health,
         restockSuggestion: health === INVENTORY_HEALTH.OUT_OF_STOCK ? threshold : health === INVENTORY_HEALTH.LOW_STOCK ? (threshold - available + 5) : 0,
         lastUpdatedAt: inv?.lastUpdatedAt || l.updatedAt,
@@ -121,16 +150,32 @@ export class AdminInventoryService {
   async ledger({ tenantId, listingId }) {
     const listing = await TenantProduct.findOne({ _id: listingId, tenantId }).lean();
     if (!listing) throw notFound('Listing not found', 'LISTING_NOT_FOUND');
-    const inv = await Inventory.findOne({ tenantId, tenantProductId: listingId }).lean();
-    const adjustments = await InventoryAdjustment.find({ tenantId, tenantProductId: listingId })
-      .sort({ createdAt: -1 }).limit(200).lean();
+    const policy = await warehouseAllocationService.getPolicy(tenantId);
+    const [inventories, adjustments, hubs] = await Promise.all([
+      Inventory.find({ tenantId, tenantProductId: listingId }).lean(),
+      InventoryAdjustment.find({ tenantId, tenantProductId: listingId }).sort({ createdAt: -1 }).limit(200).lean(),
+      Hub.find({ tenantId }).select('name code').lean(),
+    ]);
+    const hubById = new Map(hubs.map((hub) => [String(hub._id), hub]));
+    const aggregate = [...aggregateByListing(inventories, policy.reserveSafetyStock).values()][0] || null;
     return {
       listing: { id: listing._id, skuSnapshot: listing.skuSnapshot || null },
-      inventory: inv ? {
-        qtyOnHand: inv.qtyOnHand, qtyReserved: inv.qtyReserved,
-        available: Math.max(0, inv.qtyOnHand - inv.qtyReserved),
-        version: inv.version, lastUpdatedAt: inv.lastUpdatedAt,
+      inventory: aggregate ? {
+        qtyOnHand: aggregate.qtyOnHand, qtyReserved: aggregate.qtyReserved,
+        available: aggregate.available, nodeCount: aggregate.nodeCount, lastUpdatedAt: aggregate.lastUpdatedAt,
       } : null,
+      nodes: inventories.map((row) => ({
+        id: row._id,
+        warehouseId: row.warehouseId || null,
+        warehouseName: row.warehouseId ? hubById.get(String(row.warehouseId))?.name || 'Unknown hub' : 'Legacy default pool',
+        warehouseCode: row.warehouseId ? hubById.get(String(row.warehouseId))?.code || '—' : 'DEFAULT',
+        qtyOnHand: row.qtyOnHand || 0, qtyReserved: row.qtyReserved || 0,
+        safetyStock: row.safetyStock || 0,
+        policySafetyStock: policy.reserveSafetyStock || 0,
+        available: Math.max(0, (row.qtyOnHand || 0) - (row.qtyReserved || 0)
+          - (row.safetyStock || 0) - (policy.reserveSafetyStock || 0)),
+        isSellable: row.isSellable !== false, version: row.version, lastUpdatedAt: row.lastUpdatedAt,
+      })),
       adjustments: serializeList(adjustments),
     };
   }
@@ -139,7 +184,7 @@ export class AdminInventoryService {
    * ATOMIC manual adjustment (admin dashboard).
    * @returns {{inventory, adjustment}}
    */
-  async adjust({ tenantId, listingId, type, qtyChange, reason, note = null, actorId = null, req = null }) {
+  async adjust({ tenantId, listingId, type, qtyChange, reason, note = null, warehouseId = null, actorId = null, req = null }) {
     if (!Object.values(INVENTORY_ADJUSTMENT_TYPE).includes(type)) {
       throw badRequest('Invalid adjustment type', 'INVALID_ADJUSTMENT_TYPE');
     }
@@ -150,7 +195,7 @@ export class AdminInventoryService {
 
     const listing = await TenantProduct.findOne({ _id: listingId, tenantId });
     if (!listing) throw notFound('Listing not found', 'LISTING_NOT_FOUND');
-    const row = await Inventory.findOne({ tenantId, tenantProductId: listingId });
+    const row = await Inventory.findOne({ tenantId, tenantProductId: listingId, warehouseId: warehouseId || null });
     if (!row) throw notFound('Inventory row not found', 'INVENTORY_NOT_FOUND');
 
     // ---- atomic update with non-negative guard + optimistic version lock ----
@@ -179,6 +224,7 @@ export class AdminInventoryService {
       tenantId,
       inventoryId: row._id,
       tenantProductId: listingId,
+      warehouseId: warehouseId || null,
       type,
       qtyChange,
       qtyBefore: updated.qtyOnHand - qtyChange,
@@ -189,11 +235,8 @@ export class AdminInventoryService {
       actorType: 'admin',
     });
 
-    // refresh denormalized listing stock snapshot (same as inventoryService does)
-    await TenantProduct.updateOne(
-      { _id: listingId },
-      { $set: { stockQty: updated.qtyOnHand, stockUpdatedAt: new Date() } }
-    );
+    // Refresh the network aggregate, never overwrite it with one node's stock.
+    await inventoryService.refreshListingStock(listing);
 
     await auditService.record({
       action: 'adjust', entityType: 'inventory', entityId: listingId,
