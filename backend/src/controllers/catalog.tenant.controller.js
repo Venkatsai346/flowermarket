@@ -4,11 +4,6 @@ import changeRequestService from '../services/changeRequest.service.js';
 import inventoryService from '../services/inventory.service.js';
 import bulkImportService from '../services/bulkImport.service.js';
 import catalogQualityService from '../services/catalogQuality.service.js';
-import {
-  catalogQualityEvaluationDuration,
-  catalogQualityEvaluations,
-  catalogQualityFamilies,
-} from '../observability/registry.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { badRequest } from '../utils/ApiError.js';
@@ -174,19 +169,34 @@ class CatalogTenantController {
 
   // ---------------- quality control plane ----------------
   evaluateQuality = asyncHandler(async (req, res) => {
-    const started = process.hrtime.bigint();
-    try {
-      const result = await catalogQualityService.evaluateTenant({ tenantId: req.tenantId });
-      catalogQualityEvaluationDuration.observe({ outcome: 'ok' }, Number(process.hrtime.bigint() - started) / 1e9);
-      catalogQualityEvaluations.inc({ outcome: 'ok' });
-      catalogQualityFamilies.observe({}, result.evaluated);
-      res.status(200).json(success(result, { message: 'Catalog quality evaluated' }));
-    } catch (error) {
-      const outcome = error?.code === 'QUALITY_SWEEP_TOO_LARGE' ? 'bounded' : 'error';
-      catalogQualityEvaluationDuration.observe({ outcome }, Number(process.hrtime.bigint() - started) / 1e9);
-      catalogQualityEvaluations.inc({ outcome });
-      throw error;
-    }
+    const run = await catalogQualityService.createRun({ tenantId: req.tenantId, actorId: req.auth.userId });
+    setImmediate(() => {
+      catalogQualityService.processAvailableRuns({ workerId: `api-quality-${process.pid}`, maxRuns: 1 })
+        // The durable lease makes API-process interruption safely reclaimable.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[catalog-quality] durable runner failed:', error));
+    });
+    res.status(202).json(success(run, { message: run.evaluated ? 'Quality evaluation already in progress' : 'Quality evaluation queued' }));
+  });
+
+  listQualityRuns = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.listRuns({ tenantId: req.tenantId, page: req.query.page, limit: req.query.limit });
+    res.status(200).json(success(result.items, { message: 'Quality evaluation history fetched', meta: result.meta }));
+  });
+
+  qualityRunDetail = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.getRun(req.params.runId, { tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Quality evaluation status fetched' }));
+  });
+
+  cancelQualityRun = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.cancelRun({ runId: req.params.runId, tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Quality evaluation cancellation requested' }));
+  });
+
+  retryQualityRun = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.retryRun({ runId: req.params.runId, tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Quality evaluation queued for retry' }));
   });
 
   qualitySummary = asyncHandler(async (req, res) => {

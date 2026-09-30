@@ -1,66 +1,108 @@
-# Catalog quality control plane
+# Catalog Quality Operations
 
 ## Purpose
 
-The quality projection is an explainable, tenant-scoped launch control plane. It does **not** mutate product, variant, image, listing, inventory, or search data. Operators remediate findings through the governed catalog workspaces and explicitly re-run evaluation.
+Catalog quality is a durable control plane, not a cosmetic completion percentage. It separates:
 
-Technical publishability and launch readiness are intentionally different:
+- **Technical publishability**: no blocker-class issue prevents a safe storefront offer.
+- **Launch readiness**: no blockers and a weighted score of at least 85.
 
-- **Publishable** means the current assessment has no blocker.
-- **Launch ready** means it has no blocker and scores at least 85/100.
-- **Refresh due** means the persisted evidence is over 24 hours old. Treat it as stale until re-evaluated.
+The evaluator is read-only with respect to source catalog data. It writes explainable tenant-scoped projections and never silently repairs products, listings, inventory, media, taxonomy, or search documents.
 
-## Dimensions and evidence
+## Durable execution
 
-The deterministic 100-point rubric covers canonical identity (15), taxonomy and required specifications (20), variants (15), governed media (20), content and SEO (10), tenant commerce/inventory readiness (15), and search projection freshness (5).
+`POST /catalog/tenant/quality/evaluate` creates (or returns) the tenant's single active `CatalogQualityRun` and returns `202`. API and worker processes use the same atomic Mongo claim path. A worker advances at most 100 product families per claim and then cooperatively releases the run, allowing fair scheduling across tenants.
 
-Each finding persists a stable code, severity, accountable domain owner, optional field path, explanation, and remediation instruction. A source fingerprint records the exact source versions/timestamps used by the evaluator. Assessments are tenant/master unique and never shared across tenants.
+Runs use:
 
-## API and authorization
+- a source cutoff so listings created after the run starts are evaluated on the next run;
+- an ascending product-master cursor;
+- 60-second leases and stale-lease reclamation;
+- five crash attempts before terminal failure;
+- a unique partial index enforcing one active run per tenant;
+- 90-day TTL retention for terminal run history;
+- tenant-scoped reads, cancellation, and retry.
 
-All endpoints require an authenticated tenant `admin` or `super_admin`. Vendor access is deliberately excluded from tenant-wide sweeps and evidence.
+Successful batches are idempotent projection upserts. The cursor only advances after the complete batch is persisted. A crash during a bulk upsert may repeat some projection writes, but the final state is deterministic and has no source-catalog side effects. Obsolete assessments are removed only after a fully completed run, so cancellation and failure never erase the last usable projection.
 
-- `POST /api/v1/catalog/tenant/quality/evaluate`
-- `GET /api/v1/catalog/tenant/quality/summary`
-- `GET /api/v1/catalog/tenant/quality/assessments`
-- `GET /api/v1/catalog/tenant/quality/assessments/:masterId`
+## State machine
 
-List queries support bounded `search`, `grade`, `readiness`, `issueCode`, `page`, and `limit` filters. The synchronous sweep rejects more than 50,000 tenant listings with `QUALITY_SWEEP_TOO_LARGE`; do not raise that guard. Large tenants require a resumable, queued evaluator with per-tenant concurrency control before rollout.
+`queued → running → queued` repeats once per bounded batch.
 
-## Production rollout
+Terminal transitions:
 
-1. Deploy code while keeping the UI evaluation action operationally restricted.
-2. Run migration `007_catalog_quality_projection.js` using the normal migration runner.
-3. Confirm the unique tenant/master index and the readiness, issue, and priority indexes exist.
-4. Run one evaluation for a small internal tenant and verify summary totals against tenant listing families.
-5. Inspect blocker samples and confirm no write timestamps changed on source catalog entities.
-6. Roll out tenant by tenant, watching latency and error metrics.
-7. Schedule evaluation only after a queued architecture exists; this release uses explicit operator-triggered evaluation.
+- `queued → cancelled`
+- `running → cancel_requested → cancelled`
+- `running → completed`
+- repeated expired leases: `running → failed`
+- after remediation: `failed → queued`
 
-Rollback can hide the UI/routes without deleting the projection. The collection is rebuildable. Preserve it during incident analysis because fingerprints and evaluated timestamps are useful evidence.
+Cancellation is cooperative. A running batch finishes its bounded database work before its expired lease is finalized as cancelled.
 
-## Observability and SLO gates
+## Evidence model
 
-Metrics use bounded labels only:
+Each assessment contains:
 
-- `fm_catalog_quality_evaluation_duration_seconds{outcome="ok|bounded|error"}`
-- `fm_catalog_quality_evaluations_total{outcome="ok|bounded|error"}`
+- weighted dimension evidence for identity, taxonomy/specifications, variants, media, content/SEO, commerce readiness, inventory integrity, compliance evidence, and search freshness;
+- separate `publishable` and `launchReady` decisions;
+- blocker, warning, and informational findings;
+- accountable owner and field location;
+- explicit remediation instructions;
+- deterministic issue fingerprint;
+- `firstDetectedAt` and `lastDetectedAt` lifecycle timestamps;
+- deterministic source fingerprint and evaluator version;
+- the quality-run ID that produced the projection.
+
+Issue first-detection timestamps survive reevaluation while the deterministic fingerprint remains present. Fingerprints include evaluator version to make rule changes explicit.
+
+## API
+
+- `POST /catalog/tenant/quality/evaluate`
+- `GET /catalog/tenant/quality/summary`
+- `GET /catalog/tenant/quality/runs`
+- `GET /catalog/tenant/quality/runs/:runId`
+- `POST /catalog/tenant/quality/runs/:runId/cancel`
+- `POST /catalog/tenant/quality/runs/:runId/retry`
+- `GET /catalog/tenant/quality/assessments`
+- `GET /catalog/tenant/quality/assessments/:masterId`
+
+All endpoints require tenant admin or super-admin authorization and derive tenant identity from authenticated middleware, never request payloads.
+
+## Observability and SLOs
+
+Metrics:
+
+- `fm_catalog_quality_runs{status}`
+- `fm_catalog_quality_oldest_queued_age_seconds`
+- `fm_catalog_quality_evaluation_duration_seconds{outcome}`
+- `fm_catalog_quality_evaluations_total{outcome}`
 - `fm_catalog_quality_families_evaluated`
 
-Suggested initial gates:
+Recommended objectives:
 
-- p95 sweep duration below 30 seconds for tenants under 10,000 listings.
-- Error ratio below 1% over 30 minutes (exclude the explicit `bounded` outcome).
-- No assessment older than 24 hours during an active launch window.
-- Projection family count equals the count of distinct non-deleted listed masters.
+- oldest queued age under 120 seconds;
+- no active run without a worker heartbeat;
+- failed runs below 1% of initiated runs;
+- nightly or event-driven refresh keeps stale assessments below 5%;
+- p95 bounded-batch duration under 10 seconds.
 
-Alert on sustained errors, unexpected bounded outcomes, or rapidly increasing stale assessments. Never include tenant IDs, master IDs, issue codes, or queries as metric labels.
+Alert when queued age exceeds five minutes, any failed run remains untriaged for 30 minutes, or worker heartbeat is stale while quality work is active.
 
-## Incident checks
+## Rollout
 
-1. Verify Mongo health and projection indexes.
-2. Compare tenant listing count with the 50,000 synchronous guard.
-3. Inspect outbox/search health when `SEARCH_DOCUMENT_DRIFT` or `SEARCH_DOCUMENT_STALE` rises.
-4. Confirm category required-attribute schemas are intentional before bulk remediation.
-5. Re-evaluate after repairs and verify the fingerprint and evaluated timestamp change.
-6. If evidence appears cross-tenant, disable quality routes immediately and preserve projection records for investigation.
+1. Deploy migration `010_durable_catalog_quality_runs.js` before enabling the UI action.
+2. Deploy API and worker from the same release so evaluator versions match.
+3. Confirm one worker heartbeat and quality queue gauges.
+4. Start with one representative tenant and verify completed run counts, blocker distributions, and assessment provenance.
+5. Expand tenant-by-tenant; do not run ad-hoc database cleanup while a run is active.
+
+Rollback is safe at the application layer: stop creating runs and stop worker claims. Existing assessments remain readable. Do not drop run/provenance indexes until all older application replicas are retired.
+
+## Incident response
+
+1. Inspect run status, heartbeat, cursor, attempts, and the latest bounded error.
+2. Confirm worker health and Mongo latency.
+3. If a source document violates evaluator assumptions, repair it through governed catalog workflows.
+4. Retry only the failed run; its cursor and completed projections are retained.
+5. Cancel only when the run should stop. Start a fresh full run after cancellation if a coherent current projection is required.
+6. Never mark a run completed manually: completion performs safe obsolete-projection reconciliation.

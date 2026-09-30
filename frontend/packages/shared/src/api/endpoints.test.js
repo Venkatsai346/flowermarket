@@ -182,6 +182,15 @@ test('catalog tenant and catalog admin helpers map correctly', async () => {
 
   api.catalogTenant.evaluateQuality();
   check(api, client.calls, ['POST', '/catalog/tenant/quality/evaluate']);
+  api.catalogTenant.qualityRuns({ limit: 5 });
+  const qualityRuns = check(api, client.calls, ['GET', '/catalog/tenant/quality/runs']);
+  assert.deepEqual(qualityRuns.opts.query, { limit: 5 });
+  api.catalogTenant.qualityRun('run_1');
+  check(api, client.calls, ['GET', '/catalog/tenant/quality/runs/run_1']);
+  api.catalogTenant.cancelQualityRun('run_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/quality/runs/run_1/cancel']);
+  api.catalogTenant.retryQualityRun('run_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/quality/runs/run_1/retry']);
 
   api.catalogTenant.qualityAssessments({ grade: 'A' });
   const qualityList = check(api, client.calls, ['GET', '/catalog/tenant/quality/assessments']);

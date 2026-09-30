@@ -12,7 +12,9 @@
  *     re-queue via POST /catalog/admin/events/retry-failed.
  *  2. CATALOG BULK JOBS — advances one bounded, durable row checkpoint batch
  *     per tick. Mongo leases make restarts and concurrent workers safe.
- *  3. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
+ *  3. CATALOG QUALITY — advances one durable, resumable 100-family sweep
+ *     checkpoint per tick with tenant-scoped leases and cancellation.
+ *  4. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
  *     nightly) at their scheduled hour. Single-flight across workers via an
  *     atomic nextRunAt advance (see workers/scheduler.js).
  *
@@ -32,6 +34,8 @@ import notificationService from './services/notification.service.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import heartbeatService from './services/heartbeat.service.js';
 import bulkImportService from './services/bulkImport.service.js';
+import catalogQualityService from './services/catalogQuality.service.js';
+import { catalogQualityEvaluationDuration, catalogQualityEvaluations, catalogQualityFamilies } from './observability/registry.js';
 import { seedJobs, tick as schedulerTick } from './workers/scheduler.js';
 
 const workerId = `worker-${process.pid}-${crypto.randomBytes(2).toString('hex')}`;
@@ -45,6 +49,7 @@ const counters = {
   leasesReclaimed: 0,
   jobsStarted: 0,
   bulkJobsAdvanced: 0,
+  qualityRunsAdvanced: 0,
 };
 
 async function main() {
@@ -103,6 +108,23 @@ async function main() {
       return [];
     });
     counters.bulkJobsAdvanced += bulkResults.length;
+    const qualityStarted = process.hrtime.bigint();
+    const qualityResults = await catalogQualityService.processAvailableRuns({ workerId, maxRuns: 1 }).catch((e) => {
+      catalogQualityEvaluationDuration.observe({ outcome: 'error' }, Number(process.hrtime.bigint() - qualityStarted) / 1e9);
+      catalogQualityEvaluations.inc({ outcome: 'error' });
+      // The run lease remains reclaimable after an unexpected batch failure.
+      // eslint-disable-next-line no-console
+      console.error('[worker] catalog quality advance failed:', e?.message);
+      return [];
+    });
+    if (qualityResults.length) {
+      catalogQualityEvaluationDuration.observe({ outcome: 'ok' }, Number(process.hrtime.bigint() - qualityStarted) / 1e9);
+      catalogQualityEvaluations.inc({ outcome: 'ok' });
+      counters.qualityRunsAdvanced += qualityResults.length;
+      for (const result of qualityResults) {
+        if (result?.status === 'completed') catalogQualityFamilies.observe({}, result.evaluated || 0);
+      }
+    }
     try {
       const started = await schedulerTick(workerId);
       counters.jobsStarted += started.length;

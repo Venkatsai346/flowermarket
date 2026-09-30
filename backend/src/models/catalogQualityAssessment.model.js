@@ -19,6 +19,9 @@ const IssueSchema = new Schema({
   label: { type: String, required: true, maxlength: 160 },
   message: { type: String, required: true, maxlength: 500 },
   action: { type: String, required: true, maxlength: 240 },
+  fingerprint: { type: String, required: true, maxlength: 64 },
+  firstDetectedAt: { type: Date, required: true },
+  lastDetectedAt: { type: Date, required: true },
 }, { _id: false });
 
 const CatalogQualityAssessmentSchema = new Schema({
@@ -46,6 +49,8 @@ const CatalogQualityAssessmentSchema = new Schema({
   blockerCount: { type: Number, default: 0, min: 0, index: true },
   warningCount: { type: Number, default: 0, min: 0 },
   sourceFingerprint: { type: String, required: true, maxlength: 64 },
+  evaluatorVersion: { type: String, required: true, maxlength: 40 },
+  qualityRunId: { type: Types.ObjectId, ref: 'CatalogQualityRun', default: null, index: true },
   evaluatedAt: { type: Date, required: true, default: Date.now, index: true },
 }, { collection: 'catalogqualityassessments', timestamps: true });
 
@@ -64,6 +69,10 @@ CatalogQualityAssessmentSchema.index(
 CatalogQualityAssessmentSchema.index(
   { tenantId: 1, blockerCount: -1, score: 1, productMasterId: 1 },
   { name: 'tenant_quality_priority_idx' },
+);
+CatalogQualityAssessmentSchema.index(
+  { tenantId: 1, qualityRunId: 1, productMasterId: 1 },
+  { name: 'tenant_quality_run_projection_idx' },
 );
 CatalogQualityAssessmentSchema.plugin(toJSONPlugin);
 

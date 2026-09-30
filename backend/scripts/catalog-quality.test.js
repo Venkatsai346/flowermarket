@@ -44,7 +44,9 @@ const searchDoc = { masterId, status: 'active', indexedAt: new Date('2026-09-29T
 
 const complete = catalogQualityService.evaluateOne({
   tenantId, master, category, brand, listings: [listing], variants: [variant], images: [image],
-  attributes: [], variantAttributes: [], searchDocs: [searchDoc], now,
+  attributes: [], variantAttributes: [], searchDocs: [searchDoc],
+  inventories: [{ _id: '66a000000000000000000008', tenantProductId: listing._id, qtyOnHand: 20, qtyReserved: 0, updatedAt: master.updatedAt }],
+  now,
 });
 assert.equal(complete.score, 100);
 assert.equal(complete.grade, 'A');

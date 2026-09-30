@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Gauge, RefreshCw, Search, ShieldAlert, Sparkles } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ArrowRight, CheckCircle2, ClipboardCheck, Gauge, RefreshCw, Search, ShieldAlert, Sparkles, Square, RotateCcw } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { api } from '../../api.js';
 import { useAction, useApi } from '../../lib/useApi.js';
@@ -72,7 +72,7 @@ function QualityDetail({ row, loading, onClose }) {
             {row.issues?.length ? <div className="space-y-3">{row.issues.map((item, index) => (
               <article key={`${item.code}-${index}`} className={cn('rounded-xl border p-4', severityTone[item.severity])}>
                 <div className="flex flex-wrap items-center gap-2"><span className="text-[10px] font-black uppercase tracking-wider">{item.severity}</span><span className="rounded bg-white/60 px-2 py-0.5 text-[10px] font-semibold uppercase">{item.owner}</span><code className="text-[10px] opacity-60">{item.code}</code></div>
-                <h4 className="mt-2 text-sm font-bold">{item.label}</h4><p className="mt-1 text-xs leading-5 opacity-90">{item.message}</p><p className="mt-2 text-xs font-semibold">Next: {item.action}</p>{item.field && <p className="mt-1 text-[10px] opacity-60">Field: {item.field}</p>}
+                <h4 className="mt-2 text-sm font-bold">{item.label}</h4><p className="mt-1 text-xs leading-5 opacity-90">{item.message}</p><p className="mt-2 text-xs font-semibold">Next: {item.action}</p><div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] opacity-60">{item.field && <span>Field: {item.field}</span>}{item.firstDetectedAt && <span>First seen: {new Date(item.firstDetectedAt).toLocaleDateString()}</span>}<span title={item.fingerprint}>Evidence: {item.fingerprint?.slice(0, 10)}</span></div>
               </article>
             ))}</div> : <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-6 text-center text-sm text-emerald-800">No quality findings. This family meets every evaluated rule.</div>}
           </section>
@@ -87,6 +87,7 @@ export default function QualityPanel() {
   const [filters, setFilters] = useState({ search: '', grade: '', readiness: '', issueCode: '', page: 1 });
   const [selected, setSelected] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [activeRun, setActiveRun] = useState(null);
   const { data: summary, loading: summaryLoading, refetch: refetchSummary } = useApi(() => api.catalogTenant.qualitySummary(), []);
   const query = useMemo(() => ({
     page: filters.page, limit: 20,
@@ -98,11 +99,49 @@ export default function QualityPanel() {
   const { data: rows, meta, loading, error, refetch } = useApi(() => api.catalogTenant.qualityAssessments(query), [query]);
   const { busy, run } = useAction();
 
+  useEffect(() => {
+    if (summary?.latestRun) setActiveRun(summary.latestRun);
+  }, [summary?.latestRun]);
+
+  useEffect(() => {
+    const runId = activeRun?.id;
+    if (!runId || !['queued', 'running', 'cancel_requested'].includes(activeRun.status)) return undefined;
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const response = await api.catalogTenant.qualityRun(runId);
+        if (!alive) return;
+        const next = response.data;
+        setActiveRun(next);
+        if (['completed', 'cancelled', 'failed'].includes(next.status)) await Promise.all([refetchSummary(), refetch()]);
+      } catch (e) {
+        if (alive) toast.error(errMsg(e));
+      }
+    };
+    const timer = setInterval(refresh, 2500);
+    return () => { alive = false; clearInterval(timer); };
+  }, [activeRun?.id, activeRun?.status, refetch, refetchSummary]);
+
   const evaluate = async () => {
     try {
       const response = await run(() => api.catalogTenant.evaluateQuality());
-      toast.success(`Evaluated ${response.data?.evaluated || 0} product families`);
-      await Promise.all([refetchSummary(), refetch()]);
+      setActiveRun(response.data);
+      toast.success(response.data?.status === 'queued' ? 'Durable quality evaluation queued' : 'Quality evaluation is already in progress');
+      await refetchSummary();
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const cancelEvaluation = async () => {
+    try {
+      const response = await run(() => api.catalogTenant.cancelQualityRun(activeRun.id));
+      setActiveRun(response.data);
+      toast.success(response.data?.status === 'cancelled' ? 'Evaluation cancelled' : 'Cancellation requested');
+    } catch (e) { toast.error(errMsg(e)); }
+  };
+  const retryEvaluation = async () => {
+    try {
+      const response = await run(() => api.catalogTenant.retryQualityRun(activeRun.id));
+      setActiveRun(response.data);
+      toast.success('Quality evaluation queued for retry');
     } catch (e) { toast.error(errMsg(e)); }
   };
   const openDetail = async (masterId) => {
@@ -113,15 +152,29 @@ export default function QualityPanel() {
   };
   const s = summary || {};
   const lastRun = s.lastEvaluatedAt ? new Date(s.lastEvaluatedAt).toLocaleString() : 'Never evaluated';
+  const runActive = ['queued', 'running', 'cancel_requested'].includes(activeRun?.status);
 
   return (
     <div className="space-y-5">
       <div className="overflow-hidden rounded-3xl bg-slate-950 p-6 text-white shadow-xl shadow-slate-200 sm:p-8">
         <div className="relative z-10 flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
           <div><div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-violet-200"><Sparkles className="h-3.5 w-3.5" />Catalog quality control plane</div><h2 className="max-w-2xl text-2xl font-black tracking-tight sm:text-3xl">Make every product family launch-worthy.</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">Explainable evidence across identity, taxonomy, variants, media, content, commerce and search freshness—without silently changing catalog data.</p><p className="mt-3 text-xs text-slate-400">Last complete evaluation: {lastRun}</p></div>
-          <Button variant="primary" icon={RefreshCw} loading={busy} onClick={evaluate}>Run complete evaluation</Button>
+          <div className="flex flex-wrap gap-2">
+            {runActive && <Button variant="secondary" icon={Square} loading={busy} onClick={cancelEvaluation}>Cancel run</Button>}
+            {activeRun?.status === 'failed' && <Button variant="secondary" icon={RotateCcw} loading={busy} onClick={retryEvaluation}>Retry run</Button>}
+            <Button variant="primary" icon={RefreshCw} loading={busy} disabled={runActive} onClick={evaluate}>{runActive ? 'Evaluation in progress' : 'Run complete evaluation'}</Button>
+          </div>
         </div>
       </div>
+
+      {activeRun && <div className={cn('rounded-2xl border p-4', activeRun.status === 'failed' ? 'border-rose-200 bg-rose-50' : runActive ? 'border-violet-200 bg-violet-50' : 'border-slate-200 bg-white')}>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className={cn('h-2.5 w-2.5 rounded-full', runActive ? 'animate-pulse bg-violet-600' : activeRun.status === 'completed' ? 'bg-emerald-500' : activeRun.status === 'failed' ? 'bg-rose-500' : 'bg-slate-400')} />
+          <div className="min-w-0 flex-1"><p className="text-sm font-bold capitalize text-slate-900">Evaluation {String(activeRun.status).replace('_', ' ')}</p><p className="mt-0.5 text-xs text-slate-600">{activeRun.evaluated || 0} families checkpointed across {activeRun.batches || 0} bounded batches. Completed projections remain visible while this run advances.</p></div>
+          {activeRun.lastHeartbeatAt && <span className="text-[10px] text-slate-500">Updated {new Date(activeRun.lastHeartbeatAt).toLocaleTimeString()}</span>}
+        </div>
+        {activeRun.errors?.length > 0 && <p className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs text-rose-800">{activeRun.errors.at(-1).message}</p>}
+      </div>}
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <ScoreCard label="Average score" value={summaryLoading ? '—' : `${s.averageScore || 0}%`} note={`${s.total || 0} assessed families`} icon={Gauge} tone="violet" />

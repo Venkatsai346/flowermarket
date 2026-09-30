@@ -760,6 +760,10 @@ export const qualityMasterParamSchema = Joi.object({
   masterId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
 });
 
+export const qualityRunParamSchema = Joi.object({
+  runId: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),
+});
+
 /** Nested master sub-resources: /masters/:id/variants/:variantId etc. */
 export const masterVariantParamSchema = Joi.object({
   id: Joi.string().pattern(/^[0-9a-fA-F]{24}$/).required(),

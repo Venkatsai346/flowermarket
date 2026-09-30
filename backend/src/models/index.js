@@ -33,6 +33,7 @@ export { default as ProductChangeRequest } from './productChangeRequest.model.js
 export { default as AuditLog } from './auditLog.model.js';
 export { default as CatalogEvent } from './catalogEvent.model.js';
 export { default as CatalogQualityAssessment } from './catalogQualityAssessment.model.js';
+export { default as CatalogQualityRun } from './catalogQualityRun.model.js';
 
 // ---- Order lifecycle (Phase 3) ----
 export { default as Hub } from './hub.model.js';

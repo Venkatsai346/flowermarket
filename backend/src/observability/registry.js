@@ -24,6 +24,7 @@ import SystemHeartbeat from '../models/systemHeartbeat.model.js';
 import Payment from '../models/payment.model.js';
 import RefundTransaction from '../models/refundTransaction.model.js';
 import CatalogBulkJob from '../models/catalogBulkJob.model.js';
+import CatalogQualityRun from '../models/catalogQualityRun.model.js';
 import catalogEventService from '../services/catalogEvent.service.js';
 import { PAYMENT_STATUS, PAYMENT_PROVIDER, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
 import { createRegistry } from './metrics.js';
@@ -99,6 +100,15 @@ const catalogBulkJobs = registry.gauge(
 const catalogBulkOldestQueuedAge = registry.gauge(
   'catalog_bulk_oldest_queued_age_seconds',
   'Age of the oldest queued catalog bulk job; zero when no job is queued.',
+);
+const catalogQualityRuns = registry.gauge(
+  'catalog_quality_runs',
+  'Durable catalog quality runs by bounded status.',
+  ['status'],
+);
+const catalogQualityOldestQueuedAge = registry.gauge(
+  'catalog_quality_oldest_queued_age_seconds',
+  'Age of the oldest queued catalog quality run; zero when none is queued.',
 );
 
 // ---- DB ----
@@ -240,6 +250,15 @@ export async function collectDynamic() {
     }
     const oldestBulk = await CatalogBulkJob.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
     catalogBulkOldestQueuedAge.set(oldestBulk ? Math.max(0, (Date.now() - new Date(oldestBulk.createdAt).getTime()) / 1000) : 0);
+
+    // durable catalog quality sweeps
+    catalogQualityRuns.reset();
+    const qualityCounts = await CatalogQualityRun.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    for (const status of ['queued', 'running', 'cancel_requested', 'cancelled', 'completed', 'failed']) {
+      catalogQualityRuns.set({ status }, qualityCounts.find((row) => row._id === status)?.count || 0);
+    }
+    const oldestQuality = await CatalogQualityRun.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
+    catalogQualityOldestQueuedAge.set(oldestQuality ? Math.max(0, (Date.now() - new Date(oldestQuality.createdAt).getTime()) / 1000) : 0);
 
     // worker liveness
     const hb = await SystemHeartbeat.findOne({ role: 'worker' }).lean();

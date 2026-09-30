@@ -21,6 +21,7 @@ import {
   versionOnlySchema,
   catalogQualityQuerySchema,
   qualityMasterParamSchema,
+  qualityRunParamSchema,
   bulkQuerySchema,
   bulkUploadSchema,
   bulkJobsQuerySchema,
@@ -80,6 +81,10 @@ router.post('/change-requests/:id/revise', validate(idParamSchema, 'params'), Ca
 const tenantQualityAdmin = authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN);
 router.post('/quality/evaluate', tenantQualityAdmin, CatalogTenantController.evaluateQuality);
 router.get('/quality/summary', tenantQualityAdmin, CatalogTenantController.qualitySummary);
+router.get('/quality/runs', tenantQualityAdmin, validate(bulkJobsQuerySchema, 'query'), CatalogTenantController.listQualityRuns);
+router.get('/quality/runs/:runId', tenantQualityAdmin, validate(qualityRunParamSchema, 'params'), CatalogTenantController.qualityRunDetail);
+router.post('/quality/runs/:runId/cancel', tenantQualityAdmin, validate(qualityRunParamSchema, 'params'), CatalogTenantController.cancelQualityRun);
+router.post('/quality/runs/:runId/retry', tenantQualityAdmin, validate(qualityRunParamSchema, 'params'), CatalogTenantController.retryQualityRun);
 router.get('/quality/assessments', tenantQualityAdmin, validate(catalogQualityQuerySchema, 'query'), CatalogTenantController.listQuality);
 router.get('/quality/assessments/:masterId', tenantQualityAdmin, validate(qualityMasterParamSchema, 'params'), CatalogTenantController.qualityDetail);
 
