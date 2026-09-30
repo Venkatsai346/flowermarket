@@ -43,6 +43,11 @@ const profileSchema = Joi.object({
   trafficPct: Joi.number().min(0).max(100),
 });
 
+const reindexSchema = Joi.object({
+  allTenants: Joi.boolean().default(false),
+  after: Joi.string().hex().length(24).allow(null),
+});
+
 const synonymSchema = Joi.object({
   terms: Joi.array().items(Joi.string().lowercase().max(60)).min(2).required(),
   type: Joi.string().valid('equivalent', 'oneway').default('equivalent'),
@@ -71,7 +76,7 @@ router.get('/profiles', storeAdmin, SearchController.profiles);
 router.post('/profiles', storeAdmin, validate(profileSchema), SearchController.saveProfile);
 router.get('/synonyms', storeAdmin, SearchController.synonyms);
 router.post('/synonyms', storeAdmin, validate(synonymSchema), SearchController.createSynonym);
-router.post('/reindex', storeAdmin, SearchController.reindex);
+router.post('/reindex', storeAdmin, validate(reindexSchema), SearchController.reindex);
 router.get('/health', storeAdmin, SearchController.health);
 router.get('/analytics', storeAdmin, SearchController.analytics);
 

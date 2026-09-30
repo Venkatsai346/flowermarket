@@ -371,10 +371,17 @@ class SearchIndexerService {
    * O(n²) on a large catalogue.
    */
   async reindexAll({ tenantId = null, batchSize = 200, maxBatches = 1000, after = null } = {}) {
-    const out = { scanned: 0, indexed: 0, batches: 0, lastId: after };
+    const out = { scanned: 0, indexed: 0, batches: 0, lastId: after, activatedIndex: null };
     let cursor = after;
+    let rebuildTarget = null;
+    let exhausted = false;
+    const zeroDowntime = !tenantId && !after
+      && typeof searchProvider.beginReindex === 'function'
+      && typeof searchProvider.completeReindex === 'function';
 
-    for (let b = 0; b < maxBatches; b += 1) {
+    if (zeroDowntime) ({ target: rebuildTarget } = await searchProvider.beginReindex());
+    try {
+      for (let b = 0; b < maxBatches; b += 1) {
       const q = {};
       if (tenantId) q.tenantId = tenantId;
       if (cursor) q._id = { $gt: cursor };
@@ -382,7 +389,7 @@ class SearchIndexerService {
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const listings = await TenantProduct.find(q).sort({ _id: 1 }).limit(batchSize).lean();
-      if (!listings.length) break;
+      if (!listings.length) { exhausted = true; break; }
 
       const masterIds = [...new Set(listings.map((l) => String(l.productMasterId)))];
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
@@ -408,15 +415,35 @@ class SearchIndexerService {
       }
       // Index pagination is deliberately sequential because each bounded batch advances the previous cursor.
       // eslint-disable-next-line no-await-in-loop
-      const res = await searchProvider.index(docs);
+      const res = await searchProvider.index(docs, rebuildTarget ? { target: rebuildTarget } : undefined);
 
       out.scanned += listings.length;
       out.indexed += res.indexed || 0;
       out.batches += 1;
       cursor = listings[listings.length - 1]._id;
       out.lastId = cursor;
+      }
+
+      if (rebuildTarget) {
+        if (!exhausted) {
+          await searchProvider.abortReindex(rebuildTarget);
+          out.incomplete = true;
+        } else {
+          const activation = await searchProvider.completeReindex(rebuildTarget);
+          out.activatedIndex = activation.activated;
+        }
+      }
+      return out;
+    } catch (error) {
+      if (
+        rebuildTarget
+        && error.code !== 'OPENSEARCH_CUTOVER_UNCERTAIN'
+        && typeof searchProvider.abortReindex === 'function'
+      ) {
+        await searchProvider.abortReindex(rebuildTarget);
+      }
+      throw error;
     }
-    return out;
   }
 
   /** Report (and optionally repair) documents the outbox never reached. */

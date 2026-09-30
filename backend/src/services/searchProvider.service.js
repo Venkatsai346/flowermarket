@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import SearchDocument from '../models/searchDocument.model.js';
 import config from '../config/index.js';
 import { textRelevance } from '../utils/queryUnderstanding.js';
+import OpenSearchProvider from './opensearchProvider.service.js';
 
 /**
  * SearchProvider — the retrieval abstraction (Phase 6.5 / S1).
@@ -15,7 +16,8 @@ import { textRelevance } from '../utils/queryUnderstanding.js';
  *                          have to operate before you have traffic is a
  *                          liability, not a feature.
  *   atlas      — Atlas Search: native fuzzy, synonyms, autocomplete, facets.
- *   opensearch — self-hosted, BM25 + function scoring.
+ *   opensearch — fuzzy/prefix lexical retrieval, exact facets and versioned
+ *                          aliases, followed by the same explainable scorer.
  *
  * ── The two-stage design, and why it is the right one here ──────────────────
  * Stage 1 RETRIEVES a bounded candidate set cheaply (indexed match, capped).
@@ -226,7 +228,7 @@ class MongoSearchProvider {
   }
 }
 
-/** Declared seams. Both throw loudly rather than silently degrading. */
+/** Atlas remains a declared seam and fails loudly rather than degrading. */
 class UnimplementedProvider {
   constructor(name) { this.providerName = name; }
   get name() { return this.providerName; }
@@ -241,8 +243,10 @@ class UnimplementedProvider {
 
 function build() {
   const p = config.search.provider;
-  if (p === 'atlas' || p === 'opensearch') return new UnimplementedProvider(p);
-  return new MongoSearchProvider();
+  const mongo = new MongoSearchProvider();
+  if (p === 'opensearch') return new OpenSearchProvider({ canonical: mongo });
+  if (p === 'atlas') return new UnimplementedProvider(p);
+  return mongo;
 }
 
 export const searchProvider = build();

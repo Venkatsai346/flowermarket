@@ -338,6 +338,18 @@ const config = {
     logSamplePct: Number(process.env.SEARCH_LOG_SAMPLE_PCT ?? 100),
     /** Serve /catalog from the ranked index. Off = the legacy regex path. */
     rankedCatalog: process.env.SEARCH_RANKED_CATALOG !== 'false',
+    opensearch: {
+      endpoint: process.env.OPENSEARCH_ENDPOINT || null,
+      indexPrefix: process.env.OPENSEARCH_INDEX_PREFIX || 'flowermarket-catalog',
+      username: process.env.OPENSEARCH_USERNAME || null,
+      password: process.env.OPENSEARCH_PASSWORD || null,
+      apiKey: process.env.OPENSEARCH_API_KEY || null,
+      requestTimeoutMs: Number(process.env.OPENSEARCH_REQUEST_TIMEOUT_MS) || 5000,
+      maxRetries: Number(process.env.OPENSEARCH_MAX_RETRIES) || 2,
+      candidateCap: Number(process.env.OPENSEARCH_CANDIDATE_CAP) || 1000,
+      shards: Number(process.env.OPENSEARCH_SHARDS) || 2,
+      replicas: Number(process.env.OPENSEARCH_REPLICAS) || 1,
+    },
   },
 
   // ---- Phase 6.4: subdomain & custom-domain routing ----

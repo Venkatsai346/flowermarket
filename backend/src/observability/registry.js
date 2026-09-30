@@ -48,6 +48,19 @@ export const httpDuration = registry.histogram(
   ['method', 'route'],
 );
 
+// ---- Search provider (bounded operation labels; never index/query cardinality) ----
+export const searchProviderRequests = registry.counter(
+  'search_provider_requests_total',
+  'External search provider requests by operation and outcome.',
+  ['provider', 'operation', 'outcome'],
+);
+export const searchProviderDuration = registry.histogram(
+  'search_provider_request_duration_seconds',
+  'External search provider request duration by operation.',
+  ['provider', 'operation'],
+  [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+);
+
 // ---- Catalog discovery (bounded labels; never tenant/query cardinality) ----
 export const catalogCommandRuns = registry.counter(
   'catalog_command_runs_total',

@@ -4,7 +4,8 @@ import searchProvider from '../services/searchProvider.service.js';
 import auditService from '../services/audit.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
-import { AUDIT_ACTION } from '../constants/enums.js';
+import { AUDIT_ACTION, USER_ROLES } from '../constants/enums.js';
+import { forbidden } from '../utils/ApiError.js';
 
 class SearchController {
   // ---------------- public ----------------
@@ -52,13 +53,17 @@ class SearchController {
   });
 
   reindex = asyncHandler(async (req, res) => {
+    const allTenants = req.body?.allTenants === true;
+    if (allTenants && req.auth.role !== USER_ROLES.SUPER_ADMIN) {
+      throw forbidden('Only a super admin can rebuild the global search index.', 'GLOBAL_REINDEX_FORBIDDEN');
+    }
     const result = await searchIndexer.reindexAll({
-      tenantId: req.body.allTenants ? null : req.tenantId,
+      tenantId: allTenants ? null : req.tenantId,
       after: req.body.after || null,
     });
     await auditService.record({
-      action: AUDIT_ACTION.SEARCH_REINDEX, entityType: 'search_index', entityId: req.tenantId,
-      tenantId: req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: result, req,
+      action: AUDIT_ACTION.SEARCH_REINDEX, entityType: 'search_index', entityId: req.tenantId || req.auth.userId,
+      tenantId: allTenants ? null : req.tenantId, actorId: req.auth.userId, actorType: 'admin', after: result, req,
     }).catch(() => {});
     res.status(200).json(success(result, { message: 'Reindex complete' }));
   });

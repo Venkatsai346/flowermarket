@@ -127,6 +127,17 @@ function main() {
   assert.ok(atlas.some((m) => /SEARCH_PROVIDER=atlas/.test(m) && /declared seam/.test(m)), atlas.join('; '));
   ok('SEARCH_PROVIDER=atlas is refused as an unimplemented seam');
 
+  const missingOpenSearch = collectProductionViolations({ ...live, search: { provider: 'opensearch', opensearch: {} } });
+  assert.ok(missingOpenSearch.some((m) => /OPENSEARCH_ENDPOINT/.test(m)), missingOpenSearch.join('; '));
+  ok('OpenSearch without a secure endpoint is refused');
+
+  const validOpenSearch = collectProductionViolations({
+    ...live,
+    search: { provider: 'opensearch', opensearch: { endpoint: 'https://search.example.com', apiKey: 'secret-key' } },
+  });
+  assert.deepEqual(validOpenSearch.filter((m) => /SEARCH|OPENSEARCH/.test(m)), []);
+  ok('fully configured HTTPS OpenSearch is accepted');
+
   assert.deepEqual(collectProductionViolations({ ...live, search: { provider: 'mongo' } }).filter((m) => /SEARCH/.test(m)), []);
   ok('mongo search is accepted — it is the real ranked index, not a mock');
 
