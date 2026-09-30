@@ -257,6 +257,8 @@ export default function Product() {
               ) : images[active]?.url ? (
                 <ProductImage
                   src={images[active].url}
+                  renditions={images[active].renditions}
+                  sizes="(min-width: 1024px) 52vw, 100vw"
                   alt={images[active].altText || product.title}
                   priority
                   className="h-full w-full object-contain"
@@ -280,7 +282,7 @@ export default function Product() {
                       <span className="grid h-full w-full place-items-center bg-slate-900 text-white"><Play className="h-5 w-5" /></span>
                     ) : ['document', 'model_3d'].includes(img.mediaType) ? (
                       <span className="grid h-full w-full place-items-center bg-slate-100 text-slate-500"><FileText className="h-5 w-5" /></span>
-                    ) : <ProductImage src={img.url} alt="" className="h-full w-full object-cover" />}
+                    ) : <ProductImage src={img.url} renditions={img.renditions} sizes="64px" alt="" className="h-full w-full object-cover" />}
                   </button>
                 ))}
               </div>

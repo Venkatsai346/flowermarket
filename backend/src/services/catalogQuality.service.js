@@ -96,6 +96,8 @@ class CatalogQualityService {
     const activeImages = images.filter((row) => row.status === 'active' && row.isDeleted !== true && row.mediaType === 'image');
     let media = 0;
     if (activeImages.length) media += 5; else add('MEDIA_IMAGE_MISSING', 'blocker', 'media', 'Product image missing', 'Customers cannot verify a product without real media.', 'Add a factual primary product image.');
+    const brokenImages = activeImages.filter((row) => row.healthStatus === 'broken');
+    if (brokenImages.length) add('MEDIA_ASSET_BROKEN', 'blocker', 'media', 'Governed media is unavailable', `${brokenImages.length} active images failed repeated storage health checks.`, 'Replace or restore the governed media asset before publishing.', 'images');
     if (activeImages.some((row) => row.isPrimary)) media += 4; else add('MEDIA_PRIMARY_MISSING', 'blocker', 'media', 'Primary image missing', 'No active image is designated as primary.', 'Choose the storefront primary image.', 'isPrimary');
     const withAlt = activeImages.filter((row) => truthyText(row.altText, 5)).length;
     if (activeImages.length && withAlt === activeImages.length) media += 3; else if (activeImages.length) add('MEDIA_ALT_TEXT_MISSING', 'warning', 'media', 'Alternative text incomplete', `${activeImages.length - withAlt} images have no useful alternative text.`, 'Describe the visible product for accessibility.', 'altText');
@@ -106,6 +108,11 @@ class CatalogQualityService {
     const variantsWithMedia = new Set(activeImages.filter((row) => row.variantId).map((row) => String(row.variantId)));
     if (!activeVariants.length || activeVariants.every((row) => variantsWithMedia.has(String(row._id))) || activeImages.some((row) => !row.variantId)) media += 4;
     else add('MEDIA_VARIANT_COVERAGE', 'warning', 'media', 'Variant imagery incomplete', 'Some variants have neither their own media nor a master-level fallback.', 'Add accurate images for each visually distinct variant.');
+    const ungovernedMedia = activeImages.filter((row) => !row.mediaAssetId && !['official', 'wikimedia', 'licensed'].includes(row.provenance?.sourceType));
+    if (ungovernedMedia.length) {
+      media = Math.max(0, media - 2);
+      add('MEDIA_PROVENANCE_UNVERIFIED', 'warning', 'media', 'Media provenance unverified', `${ungovernedMedia.length} active images have neither governed ingestion evidence nor a verified external source.`, 'Replace through the governed upload pipeline or record source, creator, license and attribution.', 'provenance');
+    }
     scores.media = media;
 
     // Content and SEO.
@@ -194,7 +201,7 @@ class CatalogQualityService {
       brand: brand ? [String(brand._id), brand.version, brand.updatedAt] : null,
       listings: stableRows(listings, (row) => [String(row._id), row.version, row.updatedAt]),
       variants: stableRows(variants, (row) => [String(row._id), row.updatedAt, row.status]),
-      images: stableRows(images, (row) => [String(row._id), row.updatedAt, row.status]),
+      images: stableRows(images, (row) => [String(row._id), row.updatedAt, row.status, row.mediaAssetId, row.checksumSha256, row.healthStatus, row.provenance?.sourceType]),
       attributes: stableRows([...attributes, ...variantAttributes], (row) => [String(row._id), row.updatedAt]),
       searchDocs: stableRows(searchDocs, (row) => [String(row._id), row.indexedAt, row.status]),
       compliances: stableRows(compliances, (row) => [String(row._id), row.updatedAt, row.status, row.validUntil]),

@@ -38,6 +38,8 @@ function familyStages({ search = '', issue = '', mediaType = 'image' } = {}) {
         missingAltCount: { $size: { $filter: { input: '$_media', as: 'asset', cond: { $lt: [{ $strLenCP: { $trim: { input: { $ifNull: ['$$asset.altText', ''] } } } }, 5] } } } },
         unmeasuredCount: { $size: { $filter: { input: '$_media', as: 'asset', cond: { $or: [{ $not: ['$$asset.width'] }, { $not: ['$$asset.height'] }] } } } },
         lowResolutionCount: { $size: { $filter: { input: '$_media', as: 'asset', cond: { $and: ['$$asset.width', '$$asset.height', { $or: [{ $lt: ['$$asset.width', 800] }, { $lt: ['$$asset.height', 800] }] }] } } } },
+        ungovernedCount: { $size: { $filter: { input: '$_media', as: 'asset', cond: { $and: [{ $eq: [{ $ifNull: ['$$asset.mediaAssetId', null] }, null] }, { $not: [{ $in: ['$$asset.provenance.sourceType', ['official', 'wikimedia', 'licensed']] }] }] } } } },
+        brokenCount: { $size: { $filter: { input: '$_media', as: 'asset', cond: { $eq: ['$$asset.healthStatus', 'broken'] } } } },
       },
     },
     {
@@ -73,15 +75,15 @@ function familyStages({ search = '', issue = '', mediaType = 'image' } = {}) {
     },
     {
       $set: {
-        blockerCount: { $add: [{ $cond: ['$noMedia', 1, 0] }, { $cond: ['$primaryMissing', 1, 0] }, { $cond: ['$primaryConflict', 1, 0] }, '$variantPrimaryMissingCount', '$variantPrimaryConflictCount'] },
-        warningCount: { $add: ['$missingAltCount', '$unmeasuredCount', '$lowResolutionCount', '$uncoveredVariantCount'] },
+        blockerCount: { $add: [{ $cond: ['$noMedia', 1, 0] }, { $cond: ['$primaryMissing', 1, 0] }, { $cond: ['$primaryConflict', 1, 0] }, '$variantPrimaryMissingCount', '$variantPrimaryConflictCount', '$brokenCount'] },
+        warningCount: { $add: ['$missingAltCount', '$unmeasuredCount', '$lowResolutionCount', '$uncoveredVariantCount', '$ungovernedCount'] },
         mediaScore: {
           $max: [0, {
             $subtract: [100, { $add: [
-              { $cond: ['$noMedia', 45, 0] }, { $cond: ['$primaryMissing', 20, 0] }, { $cond: ['$primaryConflict', 20, 0] },
+              { $cond: ['$noMedia', 45, 0] }, { $cond: ['$primaryMissing', 20, 0] }, { $cond: ['$primaryConflict', 20, 0] }, { $multiply: ['$brokenCount', 25] },
               { $multiply: ['$variantPrimaryMissingCount', 10] }, { $multiply: ['$variantPrimaryConflictCount', 10] },
               { $multiply: ['$missingAltCount', 5] }, { $multiply: ['$unmeasuredCount', 4] },
-              { $multiply: ['$lowResolutionCount', 4] }, { $multiply: ['$uncoveredVariantCount', 6] },
+              { $multiply: ['$lowResolutionCount', 4] }, { $multiply: ['$uncoveredVariantCount', 6] }, { $multiply: ['$ungovernedCount', 5] },
             ] }],
           }],
         },
@@ -89,11 +91,11 @@ function familyStages({ search = '', issue = '', mediaType = 'image' } = {}) {
     },
   ];
   const issueMatch = {
-    no_media: { noMedia: true },
+    broken: { brokenCount: { $gt: 0 } }, no_media: { noMedia: true },
     no_primary: { $or: [{ primaryMissing: true }, { variantPrimaryMissingCount: { $gt: 0 } }] },
     primary_conflict: { $or: [{ primaryConflict: true }, { variantPrimaryConflictCount: { $gt: 0 } }] },
     missing_alt: { missingAltCount: { $gt: 0 } }, dimensions: { $or: [{ unmeasuredCount: { $gt: 0 } }, { lowResolutionCount: { $gt: 0 } }] },
-    variant_coverage: { uncoveredVariantCount: { $gt: 0 } }, healthy: { blockerCount: 0, warningCount: 0 },
+    variant_coverage: { uncoveredVariantCount: { $gt: 0 } }, ungoverned: { ungovernedCount: { $gt: 0 } }, healthy: { blockerCount: 0, warningCount: 0 },
   }[issue];
   if (issueMatch) stages.push({ $match: issueMatch });
   return stages;
@@ -106,20 +108,20 @@ class CatalogMediaService {
       {
         $group: {
           _id: null,
-          families: { $sum: 1 }, assets: { $sum: '$mediaCount' }, noMedia: { $sum: { $cond: ['$noMedia', 1, 0] } },
+          families: { $sum: 1 }, assets: { $sum: '$mediaCount' }, broken: { $sum: '$brokenCount' }, noMedia: { $sum: { $cond: ['$noMedia', 1, 0] } },
           noPrimary: { $sum: { $add: [{ $cond: ['$primaryMissing', 1, 0] }, '$variantPrimaryMissingCount'] } },
           primaryConflicts: { $sum: { $add: [{ $cond: ['$primaryConflict', 1, 0] }, '$variantPrimaryConflictCount'] } },
           missingAlt: { $sum: '$missingAltCount' }, unmeasured: { $sum: '$unmeasuredCount' }, lowResolution: { $sum: '$lowResolutionCount' },
-          uncoveredVariants: { $sum: '$uncoveredVariantCount' }, healthyFamilies: { $sum: { $cond: [{ $and: [{ $eq: ['$blockerCount', 0] }, { $eq: ['$warningCount', 0] }] }, 1, 0] } },
+          ungoverned: { $sum: '$ungovernedCount' }, uncoveredVariants: { $sum: '$uncoveredVariantCount' }, healthyFamilies: { $sum: { $cond: [{ $and: [{ $eq: ['$blockerCount', 0] }, { $eq: ['$warningCount', 0] }] }, 1, 0] } },
           averageScore: { $avg: '$mediaScore' }, evaluatedAt: { $max: '$updatedAt' },
         },
       },
     ]).allowDiskUse(true);
     return {
-      families: result?.families || 0, assets: result?.assets || 0, noMedia: result?.noMedia || 0,
+      families: result?.families || 0, assets: result?.assets || 0, broken: result?.broken || 0, noMedia: result?.noMedia || 0,
       noPrimary: result?.noPrimary || 0, primaryConflicts: result?.primaryConflicts || 0,
       missingAlt: result?.missingAlt || 0, unmeasured: result?.unmeasured || 0, lowResolution: result?.lowResolution || 0,
-      uncoveredVariants: result?.uncoveredVariants || 0, healthyFamilies: result?.healthyFamilies || 0,
+      ungoverned: result?.ungoverned || 0, uncoveredVariants: result?.uncoveredVariants || 0, healthyFamilies: result?.healthyFamilies || 0,
       averageScore: Math.round(result?.averageScore || 0), freshnessHours: REFRESH_HOURS,
     };
   }

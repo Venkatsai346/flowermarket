@@ -13,7 +13,7 @@ export const presignSchema = Joi.object({
 export const mediaListQuerySchema = Joi.object({
   purpose: Joi.string().valid(...Object.values(MEDIA_PURPOSE)).optional(),
   type: Joi.string().valid('image', 'video').optional(),
-  status: Joi.string().valid('pending', 'ready', 'failed', 'deleted').optional(),
+  status: Joi.string().valid('pending', 'processing', 'ready', 'failed', 'deleted').optional(),
   page: Joi.number().integer().min(1).optional(),
   limit: Joi.number().integer().min(1).max(100).optional(),
 });

@@ -14,7 +14,9 @@
  *     per tick. Mongo leases make restarts and concurrent workers safe.
  *  3. CATALOG QUALITY — advances one durable, resumable 100-family sweep
  *     checkpoint per tick with tenant-scoped leases and cancellation.
- *  4. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
+ *  4. MEDIA PROCESSING — verifies signatures, extracts metadata and creates
+ *     immutable responsive AVIF/WebP renditions through durable leases.
+ *  5. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
  *     nightly) at their scheduled hour. Single-flight across workers via an
  *     atomic nextRunAt advance (see workers/scheduler.js).
  *
@@ -35,6 +37,7 @@ import searchIndexer from './services/searchIndexer.service.js';
 import heartbeatService from './services/heartbeat.service.js';
 import bulkImportService from './services/bulkImport.service.js';
 import catalogQualityService from './services/catalogQuality.service.js';
+import mediaProcessingService from './services/mediaProcessing.service.js';
 import { catalogQualityEvaluationDuration, catalogQualityEvaluations, catalogQualityFamilies } from './observability/registry.js';
 import { seedJobs, tick as schedulerTick } from './workers/scheduler.js';
 
@@ -50,6 +53,7 @@ const counters = {
   jobsStarted: 0,
   bulkJobsAdvanced: 0,
   qualityRunsAdvanced: 0,
+  mediaJobsProcessed: 0,
 };
 
 async function main() {
@@ -125,6 +129,16 @@ async function main() {
         if (result?.status === 'completed') catalogQualityFamilies.observe({}, result.evaluated || 0);
       }
     }
+    const mediaResults = await mediaProcessingService.processAvailable({ workerId, maxJobs: 1 }).catch((e) => {
+      // eslint-disable-next-line no-console
+      console.error('[worker] media processing failed:', e?.message);
+      return [];
+    });
+    counters.mediaJobsProcessed += mediaResults.length;
+    await mediaProcessingService.probeOne().catch((e) => {
+      // eslint-disable-next-line no-console
+      console.error('[worker] media health probe failed:', e?.message);
+    });
     try {
       const started = await schedulerTick(workerId);
       counters.jobsStarted += started.length;

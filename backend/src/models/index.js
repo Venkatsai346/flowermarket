@@ -84,6 +84,7 @@ export { default as VendorApplication } from './vendorApplication.model.js';
 export { default as PlatformDaily } from './platformDaily.model.js';
 export { default as Counter } from './counter.model.js';
 export { default as MediaAsset } from './mediaAsset.model.js';
+export { default as MediaProcessingJob } from './mediaProcessingJob.model.js';
 
 // ---- Phase 6.1: financial ledger (double-entry) ----
 export { default as LedgerAccount } from './ledgerAccount.model.js';

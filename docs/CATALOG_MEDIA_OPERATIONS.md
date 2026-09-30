@@ -30,6 +30,8 @@ Metadata and ordering writes require the product master's `expectedVersion`. A s
 
 ## Asset ingestion workflow
 
+The production security, durable-processing, rendition, duplicate and availability-monitoring contract is specified in `CATALOG_MEDIA_INGESTION.md`.
+
 1. Upload through the governed media upload pipeline. Do not attach arbitrary local paths or data URLs.
 2. Confirm the asset shows the exact product and, when scoped, the exact variant.
 3. Enter concise visual alternative text; do not repeat SEO keywords.

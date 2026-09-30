@@ -36,7 +36,7 @@ const listing = {
   stockQty: 20, sellingPolicy: { allowBackorder: false }, version: 2, updatedAt: master.updatedAt,
 };
 const image = {
-  _id: '66a000000000000000000007', productMasterId: masterId, variantId: null,
+  _id: '66a000000000000000000007', productMasterId: masterId, variantId: null, mediaAssetId: '66a000000000000000000009',
   status: 'active', mediaType: 'image', isPrimary: true, altText: 'Twelve red Indian roses in a wrapped bouquet',
   width: 1200, height: 1200, updatedAt: master.updatedAt,
 };

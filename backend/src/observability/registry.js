@@ -25,6 +25,8 @@ import Payment from '../models/payment.model.js';
 import RefundTransaction from '../models/refundTransaction.model.js';
 import CatalogBulkJob from '../models/catalogBulkJob.model.js';
 import CatalogQualityRun from '../models/catalogQualityRun.model.js';
+import MediaProcessingJob from '../models/mediaProcessingJob.model.js';
+import ProductImage from '../models/productImage.model.js';
 import catalogEventService from '../services/catalogEvent.service.js';
 import { PAYMENT_STATUS, PAYMENT_PROVIDER, REFUND_TRANSACTION_STATUS } from '../constants/enums.js';
 import { createRegistry } from './metrics.js';
@@ -109,6 +111,19 @@ const catalogQualityRuns = registry.gauge(
 const catalogQualityOldestQueuedAge = registry.gauge(
   'catalog_quality_oldest_queued_age_seconds',
   'Age of the oldest queued catalog quality run; zero when none is queued.',
+);
+const mediaProcessingJobs = registry.gauge(
+  'media_processing_jobs',
+  'Durable media processing jobs by bounded status.',
+  ['status'],
+);
+const mediaProcessingOldestQueuedAge = registry.gauge(
+  'media_processing_oldest_queued_age_seconds',
+  'Age of the oldest queued media processing job; zero when none is queued.',
+);
+const catalogBrokenMedia = registry.gauge(
+  'catalog_broken_media_assets',
+  'Active governed product-image rows that failed repeated storage health checks.',
 );
 
 // ---- DB ----
@@ -259,6 +274,16 @@ export async function collectDynamic() {
     }
     const oldestQuality = await CatalogQualityRun.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
     catalogQualityOldestQueuedAge.set(oldestQuality ? Math.max(0, (Date.now() - new Date(oldestQuality.createdAt).getTime()) / 1000) : 0);
+
+    // governed media ingestion
+    mediaProcessingJobs.reset();
+    const mediaCounts = await MediaProcessingJob.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+    for (const status of ['queued', 'running', 'completed', 'failed']) {
+      mediaProcessingJobs.set({ status }, mediaCounts.find((row) => row._id === status)?.count || 0);
+    }
+    const oldestMedia = await MediaProcessingJob.findOne({ status: 'queued' }).sort({ createdAt: 1 }).select('createdAt').lean();
+    mediaProcessingOldestQueuedAge.set(oldestMedia ? Math.max(0, (Date.now() - new Date(oldestMedia.createdAt).getTime()) / 1000) : 0);
+    catalogBrokenMedia.set(await ProductImage.countDocuments({ healthStatus: 'broken', status: 'active', isDeleted: { $ne: true } }));
 
     // worker liveness
     const hb = await SystemHeartbeat.findOne({ role: 'worker' }).lean();

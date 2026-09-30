@@ -12,6 +12,7 @@ export default function ProductImage({
   alt = '',
   className,
   sizes,
+  renditions = [],
   priority = false,
   width,
   height,
@@ -20,7 +21,13 @@ export default function ProductImage({
   const [failed, setFailed] = useState(false);
   useEffect(() => setFailed(false), [src]);
   if (!src || failed) return <ProductFallback className={className} compact={fallbackCompact} label={alt ? `Image unavailable for ${alt}` : 'Product image coming soon'} />;
-  return (
+  const srcSet = (format) => renditions
+    .filter((item) => item.format === format && item.url && item.width)
+    .sort((a, b) => a.width - b.width)
+    .map((item) => `${item.url} ${item.width}w`).join(', ');
+  const avif = srcSet('avif');
+  const webp = srcSet('webp');
+  const image = (
     <img
       src={src}
       alt={alt}
@@ -34,4 +41,6 @@ export default function ProductImage({
       className={className}
     />
   );
+  if (!avif && !webp) return image;
+  return <picture className="contents">{avif && <source type="image/avif" srcSet={avif} sizes={sizes} />}{webp && <source type="image/webp" srcSet={webp} sizes={sizes} />}{image}</picture>;
 }

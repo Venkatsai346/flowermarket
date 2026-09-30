@@ -10,7 +10,7 @@
 
 const MODEL_FILES = [
   'tenant.model.js', 'tenantAuthConfig.model.js', 'user.model.js', 'category.model.js', 'brand.model.js',
-  'productMaster.model.js', 'tenantProduct.model.js', 'inventory.model.js', 'catalogBulkJob.model.js', 'catalogBulkJobRow.model.js', 'catalogQualityRun.model.js', 'catalogQualityAssessment.model.js', 'address.model.js', 'hub.model.js',
+  'productMaster.model.js', 'tenantProduct.model.js', 'inventory.model.js', 'catalogBulkJob.model.js', 'catalogBulkJobRow.model.js', 'catalogQualityRun.model.js', 'catalogQualityAssessment.model.js', 'mediaAsset.model.js', 'mediaProcessingJob.model.js', 'address.model.js', 'hub.model.js',
   'serviceablePincode.model.js', 'deliverySlot.model.js', 'slotReservation.model.js', 'cart.model.js', 'cartItem.model.js',
   'order.model.js', 'orderItem.model.js', 'orderStatusHistory.model.js', 'payment.model.js', 'paymentTransaction.model.js',
   'refundTransaction.model.js', 'wallet.model.js', 'walletTransaction.model.js', 'returnRequest.model.js', 'returnItem.model.js',

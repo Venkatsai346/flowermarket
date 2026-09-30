@@ -8,13 +8,17 @@
 import path from 'node:path';
 import crypto from 'node:crypto';
 import MediaAsset from '../models/mediaAsset.model.js';
+import ProductImage from '../models/productImage.model.js';
+import MediaProcessingJob from '../models/mediaProcessingJob.model.js';
 import config from '../config/index.js';
 import { createStorageProvider } from './storageProvider.service.js';
+import mediaProcessingService from './mediaProcessing.service.js';
 import { serializeList } from '../utils/serialize.js';
 import {
   badRequest,
   notFound,
   forbidden,
+  conflict,
 } from '../utils/ApiError.js';
 import { MEDIA_TYPE, MEDIA_STATUS, MEDIA_PURPOSE } from '../constants/enums.js';
 
@@ -85,7 +89,7 @@ class MediaService {
     const quota = config.storage.limits.tenantQuotaBytes;
     if (!quota) return { used: 0, quota: 0 };
     const [agg] = await MediaAsset.aggregate([
-      { $match: { tenantId, status: { $in: [MEDIA_STATUS.PENDING, MEDIA_STATUS.READY] } } },
+      { $match: { tenantId, status: { $in: [MEDIA_STATUS.PENDING, MEDIA_STATUS.PROCESSING, MEDIA_STATUS.READY] } } },
       { $group: { _id: null, bytes: { $sum: '$sizeBytes' } } },
     ]);
     const used = agg?.bytes || 0;
@@ -141,7 +145,7 @@ class MediaService {
   async confirm({ assetId, tenantId }) {
     const asset = await MediaAsset.findOne({ _id: assetId, tenantId });
     if (!asset) throw notFound('Media asset not found', 'MEDIA_NOT_FOUND');
-    if (asset.status === MEDIA_STATUS.READY) return asset;
+    if ([MEDIA_STATUS.READY, MEDIA_STATUS.PROCESSING].includes(asset.status)) return asset;
     if (asset.status === MEDIA_STATUS.DELETED) throw notFound('Media asset not found', 'MEDIA_NOT_FOUND');
 
     const result = await provider.verify({
@@ -157,8 +161,22 @@ class MediaService {
       throw badRequest(`Upload verification failed: ${result.reason}`, 'MEDIA_VERIFY_FAILED');
     }
 
-    asset.status = MEDIA_STATUS.READY;
+    asset.status = MEDIA_STATUS.PROCESSING;
+    asset.meta = { ...(asset.meta || {}), processingError: null };
     await asset.save();
+    try {
+      await mediaProcessingService.enqueue({ assetId: asset._id, tenantId: asset.tenantId });
+    } catch (error) {
+      asset.status = MEDIA_STATUS.PENDING;
+      await asset.save();
+      throw error;
+    }
+    if (!config.isProd) setImmediate(() => {
+      mediaProcessingService.processAvailable({ workerId: `api-media-${process.pid}`, maxJobs: 1 })
+        // Durable leases allow a worker to reclaim processing after interruption.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[media] processing kick failed:', error));
+    });
     return asset;
   }
 
@@ -187,11 +205,18 @@ class MediaService {
   async remove({ assetId, tenantId, actorId }) {
     const asset = await MediaAsset.findOne({ _id: assetId, tenantId });
     if (!asset) throw notFound('Media asset not found', 'MEDIA_NOT_FOUND');
+    const attached = await ProductImage.exists({ mediaAssetId: asset._id, status: 'active', isDeleted: { $ne: true } });
+    if (attached) throw conflict('Retire the catalog image before deleting its governed media asset', 'MEDIA_ASSET_IN_USE');
     asset.status = MEDIA_STATUS.DELETED;
     asset.deletedAt = new Date();
     asset.meta = { ...(asset.meta || {}), deletedBy: String(actorId) };
     await asset.save();
-    provider.remove(asset.key).catch(() => {});
+    const finishedAt = new Date();
+    await MediaProcessingJob.updateOne(
+      { assetId: asset._id, status: { $in: ['queued', 'running'] } },
+      { $set: { status: 'failed', errorCode: 'MEDIA_ASSET_DELETED', errorMessage: 'Asset deleted before processing completed', finishedAt, expiresAt: new Date(finishedAt.getTime() + 30 * 24 * 60 * 60 * 1000), claimedBy: null, leaseExpiresAt: null } },
+    );
+    Promise.allSettled([asset.key, ...(asset.renditions || []).map((row) => row.key)].map((key) => provider.remove(key))).catch(() => {});
     return { deleted: true, id: asset.id };
   }
 

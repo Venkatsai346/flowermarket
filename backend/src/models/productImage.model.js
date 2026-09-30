@@ -19,12 +19,31 @@ import { ENTITY_STATUS } from '../constants/enums.js';
 
 const { Schema, Types } = mongoose;
 
+const ProductRenditionSchema = new Schema({
+  format: { type: String, enum: ['webp', 'avif'], required: true },
+  width: { type: Number, required: true, min: 1 },
+  height: { type: Number, required: true, min: 1 },
+  sizeBytes: { type: Number, required: true, min: 1 },
+  url: { type: String, required: true },
+}, { _id: false });
+
 const ProductImageSchema = new Schema(
   {
     productMasterId: { type: Types.ObjectId, ref: 'ProductMaster', required: true, index: true },
     // Nullable scope: null = master gallery, set = this variant's gallery.
     variantId: { type: Types.ObjectId, ref: 'ProductVariant', default: null, index: true },
     url: { type: String, required: true, trim: true },
+    mediaAssetId: { type: Types.ObjectId, ref: 'MediaAsset', default: null, index: true },
+    checksumSha256: { type: String, default: null, maxlength: 64 },
+    healthStatus: { type: String, enum: ['unknown', 'healthy', 'broken'], default: 'unknown' },
+    renditions: { type: [ProductRenditionSchema], default: [], validate: (value) => value.length <= 12 },
+    provenance: {
+      sourceType: { type: String, enum: ['upload', 'official', 'wikimedia', 'licensed', 'legacy'], default: 'legacy' },
+      sourceUrl: { type: String, default: null, maxlength: 2000 },
+      creator: { type: String, default: null, maxlength: 300 },
+      license: { type: String, default: null, maxlength: 200 },
+      attribution: { type: String, default: null, maxlength: 1000 },
+    },
     altText: { type: String, default: null, maxlength: 300 },
     mediaType: { type: String, enum: ['image', 'video', 'model_3d', 'document'], default: 'image' },
     role: { type: String, enum: ['gallery', 'thumbnail', 'swatch', 'lifestyle', 'size_chart', 'manual'], default: 'gallery' },
@@ -50,6 +69,8 @@ const ProductImageSchema = new Schema(
 );
 
 ProductImageSchema.index({ productMasterId: 1, isPrimary: 1, status: 1 });
+ProductImageSchema.index({ mediaAssetId: 1, status: 1, isDeleted: 1 }, { name: 'product_image_media_asset_idx' });
+ProductImageSchema.index({ healthStatus: 1, status: 1, isDeleted: 1 }, { name: 'product_image_health_idx' });
 // Variant-gallery reads: all active images of one variant, primary first.
 ProductImageSchema.index({ productMasterId: 1, variantId: 1, status: 1, isPrimary: -1, sortOrder: 1 });
 ProductImageSchema.index(

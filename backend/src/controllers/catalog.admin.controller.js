@@ -213,7 +213,7 @@ class CatalogAdminController {
     const { expectedVersion, ...payload } = req.body;
     const image = await productMasterService.addVariantImage({
       masterId: req.params.id, variantId: req.params.variantId, payload, expectedVersion,
-      actorId: req.auth.userId, req,
+      actorId: req.auth.userId, tenantId: req.tenantId, req,
     });
     bustCatalogCache();
     catalogMediaMutations.inc({ operation: 'add' });
@@ -223,7 +223,7 @@ class CatalogAdminController {
   addImage = asyncHandler(async (req, res) => {
     const { expectedVersion, ...payload } = req.body;
     const image = await productMasterService.addImage({
-      id: req.params.id, payload, expectedVersion, actorId: req.auth.userId, req,
+      id: req.params.id, payload, expectedVersion, actorId: req.auth.userId, tenantId: req.tenantId, req,
     });
     bustCatalogCache();
     catalogMediaMutations.inc({ operation: 'add' });

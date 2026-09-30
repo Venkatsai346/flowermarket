@@ -946,8 +946,9 @@ export const MEDIA_TYPE = Object.freeze({
 });
 
 export const MEDIA_STATUS = Object.freeze({
-  PENDING: 'pending', // presigned, not yet uploaded/confirmed
-  READY: 'ready',     // uploaded + verified, URL usable
+  PENDING: 'pending',       // presigned, not yet uploaded/confirmed
+  PROCESSING: 'processing', // verified object awaiting governed inspection/renditions
+  READY: 'ready',           // inspected and safe for catalog attachment
   FAILED: 'failed',   // verification failed (size/type mismatch)
   DELETED: 'deleted', // soft-deleted
 });

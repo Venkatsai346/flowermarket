@@ -1,6 +1,7 @@
 import ProductMaster from '../models/productMaster.model.js';
 import ProductVariant from '../models/productVariant.model.js';
 import ProductImage from '../models/productImage.model.js';
+import MediaAsset from '../models/mediaAsset.model.js';
 import ProductAttributeValue from '../models/productAttributeValue.model.js';
 import ProductChangeRequest from '../models/productChangeRequest.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
@@ -24,6 +25,7 @@ import {
   PRODUCT_MASTER_STATUS,
   TENANT_LISTING_STATUS,
   ENTITY_STATUS,
+  MEDIA_STATUS,
 } from '../constants/enums.js';
 import {
   assertChangeRequestPlan,
@@ -41,7 +43,7 @@ const GLOBAL_FIELDS = [
 
 const MEDIA_FIELDS = [
   'url', 'altText', 'mediaType', 'role', 'mimeType', 'width', 'height',
-  'fileSize', 'focalPoint', 'isPrimary', 'sortOrder',
+  'fileSize', 'focalPoint', 'isPrimary', 'sortOrder', 'mediaAssetId', 'checksumSha256', 'healthStatus', 'renditions', 'provenance',
 ];
 
 /**
@@ -708,11 +710,23 @@ class ProductMasterService {
    * `payload.variantId` (optional) scopes the row; `isPrimary` clears only
    * within the same scope, so a variant primary never demotes the master one.
    */
-  async addImage({ id, payload, expectedVersion, actorId = null, viaRequest = false, req = null }) {
+  async addImage({ id, payload, expectedVersion, actorId = null, tenantId = null, viaRequest = false, req = null }) {
     const master = await ProductMaster.findById(id);
     if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    let governed = {};
+    if (payload?.mediaAssetId) {
+      const asset = await MediaAsset.findOne({ _id: payload.mediaAssetId, ...(tenantId ? { tenantId } : {}), status: MEDIA_STATUS.READY }).lean();
+      if (!asset) throw badRequest('Media asset is not ready or does not belong to this tenant', 'MEDIA_ASSET_NOT_READY');
+      governed = {
+        url: asset.url, mediaAssetId: asset._id, mimeType: asset.detectedMimeType || asset.mimeType,
+        width: asset.width, height: asset.height, fileSize: asset.sizeBytes,
+        checksumSha256: asset.checksumSha256, healthStatus: asset.health?.status || 'healthy', renditions: asset.renditions,
+        provenance: asset.provenance,
+      };
+    }
+    const effectivePayload = { ...payload, ...governed };
     if (!viaRequest) await updateWithVersion(master, expectedVersion, { updatedAt: new Date(), updatedBy: actorId });
-    const variantId = payload?.variantId || null;
+    const variantId = effectivePayload?.variantId || null;
     if (variantId) {
       const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: master.id });
       if (!variant) throw badRequest('Variant does not belong to this master', 'VARIANT_MISMATCH');
@@ -725,10 +739,10 @@ class ProductMasterService {
     const image = await ProductImage.create({
       productMasterId: master.id,
       variantId,
-      ...pick(payload, MEDIA_FIELDS),
-      altText: payload.altText || null,
+      ...pick(effectivePayload, MEDIA_FIELDS),
+      altText: effectivePayload.altText || null,
       isPrimary: shouldPrimary,
-      sortOrder: payload.sortOrder ?? 0,
+      sortOrder: effectivePayload.sortOrder ?? 0,
       status: ENTITY_STATUS.ACTIVE,
       uploadedBy: actorId,
     });
@@ -751,12 +765,13 @@ class ProductMasterService {
   }
 
   /** Convenience: attach an image to one variant's gallery (validates scope). */
-  async addVariantImage({ masterId, variantId, payload, expectedVersion, actorId = null, req = null }) {
+  async addVariantImage({ masterId, variantId, payload, expectedVersion, actorId = null, tenantId = null, req = null }) {
     return this.addImage({
       id: masterId,
       payload: { ...payload, variantId },
       expectedVersion,
       actorId,
+      tenantId,
       req,
     });
   }

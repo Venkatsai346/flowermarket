@@ -134,6 +134,7 @@ const masterAttributesInput = Joi.array().items(
 
 const mediaFields = {
   url: Joi.string().uri({ allowRelative: true }).required(),
+  mediaAssetId: optionalObjectId,
   altText: Joi.string().max(300),
   mediaType: Joi.string().valid('image', 'video', 'model_3d', 'document').default('image'),
   role: Joi.string().valid('gallery', 'thumbnail', 'swatch', 'lifestyle', 'size_chart', 'manual').default('gallery'),
@@ -385,7 +386,7 @@ export const imagePrimarySchema = versionOnlySchema;
 
 export const mediaOperationsQuerySchema = Joi.object({
   search: Joi.string().trim().max(120).allow(''),
-  issue: Joi.string().valid('no_media', 'no_primary', 'primary_conflict', 'missing_alt', 'dimensions', 'variant_coverage', 'healthy'),
+  issue: Joi.string().valid('broken', 'no_media', 'no_primary', 'primary_conflict', 'missing_alt', 'dimensions', 'variant_coverage', 'ungoverned', 'healthy'),
   sort: Joi.string().valid('priority', 'newest').default('priority'),
   ...pagination,
 });
