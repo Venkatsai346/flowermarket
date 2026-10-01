@@ -3,9 +3,11 @@ import tenantProductService from '../services/tenantProduct.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import inventoryService from '../services/inventory.service.js';
 import bulkImportService from '../services/bulkImport.service.js';
+import catalogQualityService from '../services/catalogQuality.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { badRequest } from '../utils/ApiError.js';
+import { catalogIdempotencyKey } from '../services/catalogCommand.service.js';
 
 /**
  * CatalogTenantController — tenant-portal endpoints.
@@ -22,9 +24,26 @@ class CatalogTenantController {
   });
 
   // ---------------- listings ----------------
+  /**
+   * Read-only discovery of ACTIVE global masters for listing creation.
+   * Tenant admins cannot call /catalog/admin/masters (correctly SUPER_ADMIN
+   * only), so the console needs this tenant-authorized registry search. A
+   * compliance-pending master may be staged as a draft; activation remains
+   * guarded by catalogStructureService.assertPublishable().
+   */
+  listAvailableMasters = asyncHandler(async (req, res) => {
+    const result = await productMasterService.listMasters({
+      query: { ...req.query, status: 'active' },
+    });
+    res.status(200).json(success(result.items, {
+      message: 'Available product masters fetched', meta: result.meta,
+    }));
+  });
+
   createListing = asyncHandler(async (req, res) => {
     const listing = await tenantProductService.createListing({
       tenantId: req.tenantId, payload: req.body, actorId: req.auth.userId, req,
+      idempotencyKey: catalogIdempotencyKey(req),
     });
     res.status(201).json(created(listing, { message: 'Listing created' }));
   });
@@ -62,11 +81,20 @@ class CatalogTenantController {
     res.status(200).json(success(detail, { message: 'Listing fetched' }));
   });
 
+  updateOffer = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...patch } = req.body;
+    const listing = await tenantProductService.updateOffer({
+      tenantId: req.tenantId, listingId: req.params.id, patch, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(listing, { message: 'Listing offer updated' }));
+  });
+
   updatePrice = asyncHandler(async (req, res) => {
     const { price, reason, expectedVersion } = req.body;
     const listing = await tenantProductService.updatePrice({
       tenantId: req.tenantId, listingId: req.params.id, price, reason, expectedVersion,
-      actorId: req.auth.userId, req,
+      actorId: req.auth.userId, req, idempotencyKey: catalogIdempotencyKey(req),
     });
     res.status(200).json(success(listing, { message: 'Price updated' }));
   });
@@ -141,6 +169,53 @@ class CatalogTenantController {
     res.status(200).json(success(cr, { message: 'Change request revised' }));
   });
 
+  // ---------------- quality control plane ----------------
+  evaluateQuality = asyncHandler(async (req, res) => {
+    const run = await catalogQualityService.createRun({ tenantId: req.tenantId, actorId: req.auth.userId });
+    setImmediate(() => {
+      catalogQualityService.processAvailableRuns({ workerId: `api-quality-${process.pid}`, maxRuns: 1 })
+        // The durable lease makes API-process interruption safely reclaimable.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[catalog-quality] durable runner failed:', error));
+    });
+    res.status(202).json(success(run, { message: run.evaluated ? 'Quality evaluation already in progress' : 'Quality evaluation queued' }));
+  });
+
+  listQualityRuns = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.listRuns({ tenantId: req.tenantId, page: req.query.page, limit: req.query.limit });
+    res.status(200).json(success(result.items, { message: 'Quality evaluation history fetched', meta: result.meta }));
+  });
+
+  qualityRunDetail = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.getRun(req.params.runId, { tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Quality evaluation status fetched' }));
+  });
+
+  cancelQualityRun = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.cancelRun({ runId: req.params.runId, tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Quality evaluation cancellation requested' }));
+  });
+
+  retryQualityRun = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.retryRun({ runId: req.params.runId, tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Quality evaluation queued for retry' }));
+  });
+
+  qualitySummary = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.summary({ tenantId: req.tenantId });
+    res.status(200).json(success(result, { message: 'Catalog quality summary fetched' }));
+  });
+
+  listQuality = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.list({ tenantId: req.tenantId, query: req.query });
+    res.status(200).json(success(result.items, { message: 'Catalog quality assessments fetched', meta: result.meta }));
+  });
+
+  qualityDetail = asyncHandler(async (req, res) => {
+    const result = await catalogQualityService.detail({ tenantId: req.tenantId, masterId: req.params.masterId });
+    res.status(200).json(success(result, { message: 'Catalog quality assessment fetched' }));
+  });
+
   // ---------------- bulk ----------------
   bulkUpload = asyncHandler(async (req, res) => {
     const kind = req.params.kind; // 'price' | 'stock'
@@ -154,28 +229,52 @@ class CatalogTenantController {
     if (rows.length > bulkImportService.BULK_MAX_ROWS) {
       throw badRequest(`Too many rows: max ${bulkImportService.BULK_MAX_ROWS} per upload`, 'CSV_TOO_LARGE');
     }
-    const job = bulkImportService.createJob({ kind, rows, tenantId: req.tenantId, actorId: req.auth.userId });
-    const dryRun = req.query.dryRun === 'true';
-    // Process in background; client polls GET /bulk/:jobId. An unexpected
-    // crash in the runner must be VISIBLE (job failed + logged) — the old
-    // .catch(() => {}) left jobs stuck in "running" forever.
-    bulkImportService.runJob(job, { dryRun }).catch((err) => {
-      job.status = 'failed';
-      job.finishedAt = new Date();
-      job.errors.push({ row: 0, message: err?.message || String(err) });
-      console.error('[bulk-import] job crashed:', err);
+    const dryRun = req.query.dryRun === true || req.query.dryRun === 'true';
+    const job = await bulkImportService.createJob({
+      kind, rows, tenantId: req.tenantId, actorId: req.auth.userId, dryRun,
     });
-    res.status(202).json(success({ jobId: job.id, status: 'queued', dryRun }, { message: 'Bulk job queued' }));
+    // Kick the durable queue for single-process development. Production workers
+    // race on the same atomic lease, so this is safe across API/worker replicas.
+    setImmediate(() => {
+      bulkImportService.processAvailable({ workerId: `api-${process.pid}`, maxJobs: 1 })
+        // Operational crash visibility; the durable lease remains reclaimable.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[bulk-import] durable runner failed:', error));
+    });
+    res.status(202).json(success({ jobId: job.id, status: job.status, dryRun }, { message: 'Durable bulk job queued' }));
   });
 
   getBulkJob = asyncHandler(async (req, res) => {
-    const job = bulkImportService.getJob(req.params.jobId);
+    const job = await bulkImportService.getJob(req.params.jobId, { tenantId: req.tenantId });
     res.status(200).json(success(job, { message: 'Bulk job status' }));
   });
 
   listBulkJobs = asyncHandler(async (req, res) => {
-    const jobs = bulkImportService.listJobs({ tenantId: req.tenantId });
-    res.status(200).json(success(jobs, { message: 'Bulk jobs' }));
+    const result = await bulkImportService.listJobs({ tenantId: req.tenantId, page: req.query.page, limit: req.query.limit });
+    res.status(200).json(success(result.items, { message: 'Bulk jobs', meta: result.meta }));
+  });
+
+  listBulkFailures = asyncHandler(async (req, res) => {
+    const result = await bulkImportService.listFailures({
+      jobId: req.params.jobId, tenantId: req.tenantId, page: req.query.page, limit: req.query.limit,
+    });
+    res.status(200).json(success(result.items, { message: 'Bulk job failures', meta: result.meta }));
+  });
+
+  cancelBulkJob = asyncHandler(async (req, res) => {
+    const job = await bulkImportService.cancelJob({ jobId: req.params.jobId, tenantId: req.tenantId });
+    res.status(200).json(success(job, { message: 'Bulk job cancellation accepted' }));
+  });
+
+  retryBulkFailures = asyncHandler(async (req, res) => {
+    const job = await bulkImportService.retryFailures({ jobId: req.params.jobId, tenantId: req.tenantId });
+    setImmediate(() => {
+      bulkImportService.processAvailable({ workerId: `api-${process.pid}`, maxJobs: 1 })
+        // Operational crash visibility; the durable lease remains reclaimable.
+        // eslint-disable-next-line no-console
+        .catch((error) => console.error('[bulk-import] durable retry failed:', error));
+    });
+    res.status(202).json(success(job, { message: 'Failed rows re-queued' }));
   });
 
   downloadTemplate = asyncHandler(async (req, res) => {

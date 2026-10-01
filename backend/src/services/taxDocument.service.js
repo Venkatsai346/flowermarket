@@ -56,7 +56,12 @@ import { renderInvoicePdf } from '../utils/invoicePdf.js';
  * a movement the ledger has, not a second movement.
  */
 
-const UOM_MAP = { piece: 'PCS', kg: 'KGS', gram: 'GMS', litre: 'LTR', bunch: 'BUN', box: 'BOX', pack: 'PAC' };
+const UOM_MAP = {
+  piece: 'PCS', unit: 'UNT', kilogram: 'KGS', kg: 'KGS', gram: 'GMS', g: 'GMS', milligram: 'MGS', mg: 'MGS',
+  litre: 'LTR', l: 'LTR', millilitre: 'MLT', ml: 'MLT', metre: 'MTR', m: 'MTR', centimetre: 'CMS', cm: 'CMS',
+  bunch: 'BUN', box: 'BOX', pack: 'PAC', pot: 'POT', pair: 'PRS', set: 'SET', dozen: 'DOZ', roll: 'ROL',
+  sheet: 'SHY', bottle: 'BTL', can: 'CAN', bag: 'BAG', carton: 'CTN', service: 'OTH', download: 'OTH',
+};
 
 /** Indian-format words for the amount line ("Rupees One Thousand Only"). */
 function amountInWords(paise) {
@@ -359,13 +364,14 @@ class TaxDocumentService {
         knownTaxPaise: chargedTaxPaise,
       });
 
+      const unitQuantity = Number(item.skuSnapshot?.unitQuantity) || 1;
       lines.push({
         orderItemId: item._id,
         description: item.skuSnapshot?.title || 'Item',
         hsnCode: item.hsnCode || rate.hsnCode || null,
-        qty: item.qty,
-        uom: UOM_MAP[unitByMaster.get(String(item.productMasterId))] || 'PCS',
-        unitPricePaise: toPaise(item.priceAtOrder?.sellingPrice || 0),
+        qty: Number((item.qty * unitQuantity).toFixed(6)),
+        uom: UOM_MAP[item.skuSnapshot?.unit || unitByMaster.get(String(item.productMasterId))] || 'OTH',
+        unitPricePaise: Math.round(toPaise(item.priceAtOrder?.sellingPrice || 0) / unitQuantity),
         grossPaise,
         discountPaise,
         taxableValuePaise: computed.taxableValuePaise,

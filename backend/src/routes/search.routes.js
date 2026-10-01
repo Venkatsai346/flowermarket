@@ -11,10 +11,13 @@ const router = Router();
 const suggestQuery = Joi.object({ q: Joi.string().min(1).max(80).required() });
 
 const eventSchema = Joi.object({
-  queryId: Joi.string().max(64).required(),
-  type: Joi.string().valid(...Object.values(SEARCH_EVENT_TYPE)).required(),
-  position: Joi.number().integer().min(0).max(500),
-  listingId: Joi.string().hex().length(24),
+  queryId: Joi.string().uuid().required(),
+  eventId: Joi.string().uuid().required(),
+  type: Joi.string().valid(
+    SEARCH_EVENT_TYPE.IMPRESSION, SEARCH_EVENT_TYPE.CLICK, SEARCH_EVENT_TYPE.ADD_TO_CART,
+  ).required(),
+  position: Joi.number().integer().min(0).max(5000),
+  listingId: Joi.string().hex().length(24).required(),
 });
 
 const weightKeys = Object.values(RANKING_SIGNAL);
@@ -43,6 +46,46 @@ const profileSchema = Joi.object({
   trafficPct: Joi.number().min(0).max(100),
 });
 
+const ruleTypes = ['pin', 'boost', 'bury', 'redirect', 'substitute', 'shelf'];
+const rulePayload = {
+  code: Joi.string().lowercase().pattern(/^[a-z0-9][a-z0-9_-]*$/).max(60).required(),
+  name: Joi.string().max(120).required(),
+  description: Joi.string().max(500).allow(null, ''),
+  type: Joi.string().valid(...ruleTypes).required(),
+  status: Joi.string().valid('draft', 'active', 'paused'),
+  priority: Joi.number().integer().min(-10000).max(10000),
+  scope: Joi.object({
+    query: Joi.string().lowercase().max(200).allow(null, ''),
+    match: Joi.string().valid('exact', 'prefix', 'contains', 'all'),
+    categoryId: Joi.string().hex().length(24).allow(null),
+  }),
+  target: Joi.object({
+    listingIds: Joi.array().items(Joi.string().hex().length(24)).max(100),
+    masterIds: Joi.array().items(Joi.string().hex().length(24)).max(100),
+    redirectPath: Joi.string().pattern(/^\/(?!\/)/).max(500).allow(null, ''),
+    substituteListingIds: Joi.array().items(Joi.string().hex().length(24)).max(20),
+    shelfTitle: Joi.string().max(120).allow(null, ''),
+  }),
+  boost: Joi.number().min(0).max(10),
+  startsAt: Joi.date().iso().allow(null),
+  endsAt: Joi.date().iso().allow(null),
+  timezone: Joi.string().max(60),
+};
+const createRuleSchema = Joi.object(rulePayload);
+const updateRuleSchema = Joi.object({
+  ...Object.fromEntries(Object.entries(rulePayload).map(([key, schema]) => [key, schema.optional()])),
+  expectedVersion: Joi.number().integer().min(1).required(),
+});
+const ruleListQuery = Joi.object({
+  status: Joi.string().valid('draft', 'active', 'paused'),
+  type: Joi.string().valid(...ruleTypes),
+});
+
+const reindexSchema = Joi.object({
+  allTenants: Joi.boolean().default(false),
+  after: Joi.string().hex().length(24).allow(null),
+});
+
 const synonymSchema = Joi.object({
   terms: Joi.array().items(Joi.string().lowercase().max(60)).min(2).required(),
   type: Joi.string().valid('equivalent', 'oneway').default('equivalent'),
@@ -62,6 +105,7 @@ const synonymSchema = Joi.object({
  * store's relevance, which is a business decision, unlike GST rates.
  */
 router.get('/suggest', validate(suggestQuery, 'query'), SearchController.suggest);
+router.get('/shelves', validate(Joi.object({ categoryId: Joi.string().hex().length(24) }), 'query'), SearchController.shelves);
 router.post('/events', validate(eventSchema), SearchController.event);
 
 router.use(authenticate);
@@ -71,7 +115,11 @@ router.get('/profiles', storeAdmin, SearchController.profiles);
 router.post('/profiles', storeAdmin, validate(profileSchema), SearchController.saveProfile);
 router.get('/synonyms', storeAdmin, SearchController.synonyms);
 router.post('/synonyms', storeAdmin, validate(synonymSchema), SearchController.createSynonym);
-router.post('/reindex', storeAdmin, SearchController.reindex);
+router.get('/merchandising-rules', storeAdmin, validate(ruleListQuery, 'query'), SearchController.merchandisingRules);
+router.post('/merchandising-rules', storeAdmin, validate(createRuleSchema), SearchController.createMerchandisingRule);
+router.patch('/merchandising-rules/:id', storeAdmin, validate(updateRuleSchema), SearchController.updateMerchandisingRule);
+router.delete('/merchandising-rules/:id', storeAdmin, SearchController.deleteMerchandisingRule);
+router.post('/reindex', storeAdmin, validate(reindexSchema), SearchController.reindex);
 router.get('/health', storeAdmin, SearchController.health);
 router.get('/analytics', storeAdmin, SearchController.analytics);
 

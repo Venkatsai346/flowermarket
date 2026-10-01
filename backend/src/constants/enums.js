@@ -116,6 +116,10 @@ export const GEO_SOURCE = Object.freeze({
 });
 
 // ---------------- Products ----------------
+// Suggested merchandising classes. `ProductMaster.type` deliberately accepts
+// any normalized slug as well: a universal catalog must not need a deployment
+// every time a merchant introduces a new vertical. These are presets, not a
+// closed ontology; Category remains the authoritative navigational taxonomy.
 export const PRODUCT_TYPE = Object.freeze({
   FRESH_FLOWER: 'fresh_flower',
   DRIED_FLOWER: 'dried_flower',
@@ -127,7 +131,31 @@ export const PRODUCT_TYPE = Object.freeze({
   GARDENING_TOOL: 'gardening_tool',
   FLORAL_ACCESSORY: 'floral_accessory',
   GIFT: 'gift',
+  APPAREL: 'apparel',
+  FOOTWEAR: 'footwear',
+  BEAUTY: 'beauty',
+  GROCERY: 'grocery',
+  ELECTRONICS: 'electronics',
+  HOME: 'home',
+  FURNITURE: 'furniture',
+  BOOK: 'book',
+  TOY: 'toy',
+  JEWELLERY: 'jewellery',
+  AUTOMOTIVE: 'automotive',
+  PET_SUPPLY: 'pet_supply',
+  SPORTS: 'sports',
+  DIGITAL_GOOD: 'digital_good',
+  SERVICE: 'service',
+  BUNDLE: 'bundle',
   OTHER: 'other',
+});
+
+/** Fulfilment semantics, orthogonal to merchandising `type`. */
+export const PRODUCT_KIND = Object.freeze({
+  PHYSICAL: 'physical',
+  DIGITAL: 'digital',
+  SERVICE: 'service',
+  BUNDLE: 'bundle',
 });
 
 export const PRODUCT_STATUS = Object.freeze(ENTITY_STATUS);
@@ -155,8 +183,24 @@ export const SELLING_UNIT = Object.freeze({
   BUCKET: 'bucket',
   KILOGRAM: 'kilogram',
   GRAM: 'gram',
+  MILLIGRAM: 'milligram',
+  LITRE: 'litre',
+  MILLILITRE: 'millilitre',
+  METRE: 'metre',
+  CENTIMETRE: 'centimetre',
   PACK: 'pack',
-  POT: 'pot', // plants
+  POT: 'pot',
+  PAIR: 'pair',
+  SET: 'set',
+  DOZEN: 'dozen',
+  ROLL: 'roll',
+  SHEET: 'sheet',
+  BOTTLE: 'bottle',
+  CAN: 'can',
+  BAG: 'bag',
+  CARTON: 'carton',
+  SERVICE: 'service',
+  DOWNLOAD: 'download',
 });
 
 export const PRICE_CURRENCY = Object.freeze({
@@ -297,6 +341,16 @@ export const PAYMENT_TRANSACTION_STATUS = Object.freeze({
 });
 
 // ---- Slot reservation ----
+export const INVENTORY_RESERVATION_STATUS = Object.freeze({
+  ALLOCATING: 'allocating',
+  ACTIVE: 'active',
+  CONFIRMED: 'confirmed',
+  RELEASING: 'releasing',
+  RELEASED: 'released',
+  EXPIRED: 'expired',
+  FAILED: 'failed',
+});
+
 export const SLOT_RESERVATION_STATUS = Object.freeze({
   HELD: 'held', // checkout started, capacity locked (TTL-limited)
   CONFIRMED: 'confirmed', // payment succeeded, order confirmed
@@ -553,7 +607,10 @@ export const ATTRIBUTE_FIELD_TYPE = Object.freeze({
   NUMBER: 'number',
   BOOLEAN: 'boolean',
   SELECT: 'select',
+  MULTI_SELECT: 'multi_select',
+  TEXT: 'text',
   DATE: 'date',
+  JSON: 'json',
 });
 
 // ---- Product variants (weight / pack-size / stem-count / color ...) ----
@@ -564,6 +621,18 @@ export const VARIANT_TYPE = Object.freeze({
   COLOR: 'color',
   SIZE: 'size',
   FLAVOR: 'flavor',
+  MATERIAL: 'material',
+  STYLE: 'style',
+  PATTERN: 'pattern',
+  CAPACITY: 'capacity',
+  LENGTH: 'length',
+  WIDTH: 'width',
+  STORAGE: 'storage',
+  MEMORY: 'memory',
+  MODEL: 'model',
+  FORMAT: 'format',
+  LICENSE: 'license',
+  DURATION: 'duration',
   OTHER: 'other',
 });
 
@@ -887,8 +956,9 @@ export const MEDIA_TYPE = Object.freeze({
 });
 
 export const MEDIA_STATUS = Object.freeze({
-  PENDING: 'pending', // presigned, not yet uploaded/confirmed
-  READY: 'ready',     // uploaded + verified, URL usable
+  PENDING: 'pending',       // presigned, not yet uploaded/confirmed
+  PROCESSING: 'processing', // verified object awaiting governed inspection/renditions
+  READY: 'ready',           // inspected and safe for catalog attachment
   FAILED: 'failed',   // verification failed (size/type mismatch)
   DELETED: 'deleted', // soft-deleted
 });
@@ -1210,9 +1280,32 @@ export const RANKING_SIGNAL = Object.freeze({
 });
 
 export const SEARCH_EVENT_TYPE = Object.freeze({
+  IMPRESSION: 'impression',
   CLICK: 'click',
   ADD_TO_CART: 'add_to_cart',
-  ORDER: 'order',
+  PURCHASE: 'purchase',
+});
+
+// ============================================================
+// MULTI-WAREHOUSE FULFILLMENT
+// ============================================================
+
+export const WAREHOUSE_ALLOCATION_STRATEGY = Object.freeze({
+  SERVICE_HUB: 'service_hub',
+  NEAREST_AVAILABLE: 'nearest_available',
+  PRIORITY_THEN_DISTANCE: 'priority_then_distance',
+});
+
+export const FULFILLMENT_SPLIT_POLICY = Object.freeze({
+  NEVER: 'never',
+  ALLOW: 'allow',
+});
+
+export const FULFILLMENT_PLAN_STATUS = Object.freeze({
+  PLANNED: 'planned',
+  COMMITTED: 'committed',
+  RELEASED: 'released',
+  FAILED: 'failed',
 });
 
 /** Product review moderation status. */

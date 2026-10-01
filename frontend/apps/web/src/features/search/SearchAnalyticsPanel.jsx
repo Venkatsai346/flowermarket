@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { CalendarRange, RefreshCw, SearchX } from 'lucide-react';
+import { CalendarRange, MousePointerClick, RefreshCw, SearchX, ShoppingBag, ShoppingCart } from 'lucide-react';
 import { dayRange } from '@flower-market/shared';
 import { api } from '../../api.js';
 import { useApi } from '../../lib/useApi.js';
@@ -26,7 +26,9 @@ export default function SearchAnalyticsPanel() {
   const topQueries = analytics.topQueries || [];
   const zeroResultQueries = analytics.zeroResultQueries || [];
   const experiments = analytics.experiments || [];
+  const products = analytics.products || [];
   const latency = analytics.latency || {};
+  const totals = analytics.totals || {};
   const maxSearches = Math.max(1, ...topQueries.map((t) => Number(t.searches) || 0));
 
   const chartData = experiments.map((e) => ({
@@ -34,6 +36,7 @@ export default function SearchAnalyticsPanel() {
     Searches: Number(e.searches) || 0,
     CTR: Number((Number(e.clickThroughRate) || 0) * 100),
     Cart: Number((Number(e.addToCartRate) || 0) * 100),
+    Purchase: Number((Number(e.purchaseRate) || 0) * 100),
     Zero: Number((Number(e.zeroResultRate) || 0) * 100),
   }));
 
@@ -58,6 +61,14 @@ export default function SearchAnalyticsPanel() {
         </div>
       </div>
 
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <Stat label="Impressions" value={totals.impressions || 0} icon={CalendarRange} tone="sky" />
+        <Stat label="Clicks" value={totals.clicks || 0} sub={`${totals.impressions ? ((totals.clicks / totals.impressions) * 100).toFixed(1) : 0}% CTR`} icon={MousePointerClick} tone="violet" />
+        <Stat label="Added to cart" value={totals.carts || 0} icon={ShoppingCart} tone="amber" />
+        <Stat label="Purchases" value={totals.purchases || 0} icon={ShoppingBag} tone="emerald" />
+        <Stat label="Attributed revenue" value={`₹${Number(totals.revenue || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`} icon={ShoppingBag} tone="emerald" />
+      </div>
+
       <div className="mt-5 grid gap-5 lg:grid-cols-2">
         <div className="rounded-xl border border-slate-200 p-4">
           <p className="mb-3 text-sm font-semibold text-slate-800">Top queries</p>
@@ -66,7 +77,7 @@ export default function SearchAnalyticsPanel() {
               <div key={t.query}>
                 <div className="mb-1 flex items-center justify-between gap-2 text-xs">
                   <span className="truncate font-medium text-slate-700">{t.query}</span>
-                  <span className="shrink-0 text-slate-500">{t.searches} searches · {ctrTooltip(t.ctr)}% CTR</span>
+                  <span className="shrink-0 text-slate-500">{t.searches} searches · {ctrTooltip(t.ctr)}% CTR · {t.purchases || 0} orders · ₹{Number(t.revenue || 0).toLocaleString('en-IN')}</span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
                   <div className="h-full rounded-full bg-rose-500" style={{ width: `${Math.round((t.searches / maxSearches) * 100)}%` }} />
@@ -89,6 +100,7 @@ export default function SearchAnalyticsPanel() {
                 <Legend wrapperStyle={{ fontSize: 11 }} />
                 <Bar dataKey="CTR" fill="#e11d48" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="Cart" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="Purchase" fill="#10b981" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="Zero" fill="#f59e0b" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -99,6 +111,25 @@ export default function SearchAnalyticsPanel() {
       </div>
 
       <div className="mt-5">
+        <p className="mb-2 text-sm font-semibold text-slate-800">Product performance</p>
+        <Table
+          loading={loading && !data}
+          data={products}
+          rowKey="listingId"
+          empty={<EmptyState icon={ShoppingBag} title="No attributed products" message="Product funnel activity will appear after shoppers interact with search results." />}
+          columns={[
+            { key: 'title', header: 'Product' },
+            { key: 'impressions', header: 'Views', align: 'right' },
+            { key: 'clicks', header: 'Clicks', align: 'right' },
+            { key: 'carts', header: 'Carts', align: 'right' },
+            { key: 'purchases', header: 'Orders', align: 'right' },
+            { key: 'revenue', header: 'Revenue', align: 'right', render: (row) => `₹${Number(row.revenue || 0).toLocaleString('en-IN')}` },
+          ]}
+        />
+      </div>
+
+      <div className="mt-5">
+        <p className="mb-2 text-sm font-semibold text-slate-800">Zero-result opportunities</p>
         <Table
           loading={loading && !data}
           data={zeroResultQueries}

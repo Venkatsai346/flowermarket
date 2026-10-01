@@ -1,5 +1,6 @@
 import Brand from '../models/brand.model.js';
-import { notFound } from '../utils/ApiError.js';
+import ProductMaster from '../models/productMaster.model.js';
+import { notFound, conflict } from '../utils/ApiError.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { serializeList } from '../utils/serialize.js';
 import auditService from './audit.service.js';
@@ -59,6 +60,10 @@ class BrandService {
       action: 'verify', entityType: 'brand', entityId: brand.id,
       actorId, actorType: 'admin', before, after: { verified }, meta: { note }, req,
     });
+    await catalogEventService.publish({
+      eventType: 'brand_updated', entityType: 'brand', entityId: brand.id,
+      payload: { id: brand.id, name: brand.name, status: brand.status, verified },
+    });
     return brand;
   }
 
@@ -91,6 +96,16 @@ class BrandService {
    */
   async remove({ id, actorId = null, req = null }) {
     const brand = await this.getById(id);
+    const referenced = await ProductMaster.exists({
+      brandId: id,
+      status: { $in: ['active', 'pending_review'] },
+    });
+    if (referenced) {
+      throw conflict(
+        'Cannot delete a brand used by active or pending products. Reassign those products first.',
+        'BRAND_IN_USE',
+      );
+    }
     await brand.softDelete({ by: actorId });
     await auditService.record({
       action: 'delete', entityType: 'brand', entityId: brand.id,

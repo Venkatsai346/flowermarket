@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
 import Payment from '../models/payment.model.js';
@@ -9,6 +10,8 @@ import cartService from './cart.service.js';
 import slotService from './slot.service.js';
 import paymentService from './payment.service.js';
 import inventoryService from './inventory.service.js';
+import inventoryReservationService from './inventoryReservation.service.js';
+import warehouseAllocationService from './warehouseAllocation.service.js';
 import fulfillmentService from './fulfillment.service.js';
 import refundService from './refund.service.js';
 import pricingPolicyService from './pricingPolicy.service.js';
@@ -60,6 +63,13 @@ class OrderService {
    * The main checkout saga entry point.
    */
   async checkout({ tenantId, userId, slotReservationId, addressId, paymentMethod = 'upi', idempotencyKey = null, confirmPriceChanges = false, source = 'app', req = null }) {
+    const checkoutKey = String(idempotencyKey || `slot:${slotReservationId}`).trim();
+    const checkoutFingerprint = createHash('sha256').update(JSON.stringify({
+      slotReservationId: String(slotReservationId), addressId: String(addressId), paymentMethod, source,
+    })).digest('hex');
+    const replay = await Order.findOne({ tenantId, userId, checkoutIdempotencyKey: checkoutKey });
+    if (replay) return this.replayCheckout({ order: replay, fingerprint: checkoutFingerprint, userId });
+
     // ---- 1. cart revalidation (stale-cart problem) ----
     const revalidated = await cartService.revalidate({ tenantId, userId });
     if (revalidated.itemCount === 0) throw badRequest('Cart is empty', 'CART_EMPTY');
@@ -102,14 +112,45 @@ class OrderService {
       });
     }
 
-    const order = await this.createOrderDoc({
-      tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
-      precomputed,
-    });
+    let order;
+    try {
+      order = await this.createOrderDoc({
+        tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
+        precomputed, checkoutKey, checkoutFingerprint,
+      });
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      const winner = await Order.findOne({ tenantId, userId, checkoutIdempotencyKey: checkoutKey });
+      if (!winner) throw error;
+      return this.replayCheckout({ order: winner, fingerprint: checkoutFingerprint, userId });
+    }
 
-    // ---- 5. charge (idempotent) ----
-    const key = idempotencyKey || paymentService.newIdempotencyKey();
-    await this.transition(order, ORDER_STATUS.PAYMENT_PENDING, { actorType: AUDIT_ACTOR_TYPE.SYSTEM, note: 'charge initiated', req });
+    // ---- 4b. reserve exact-node stock BEFORE initiating payment. ----
+    try {
+      const held = await inventoryReservationService.reserveOrder({
+        tenantId, orderId: order._id, userId, idempotencyKey: checkoutKey,
+        holdExpiresAt: hold.expiresAt, actorId: userId, req,
+      });
+      order.fulfillmentPlan.reservationStatus = 'active';
+      order.fulfillmentPlan.reservationExpiresAt = held.reservations.reduce((min, row) =>
+        (!min || row.expiresAt < min ? row.expiresAt : min), null);
+      await order.save();
+      await OrderItem.updateMany({ orderId: order._id }, { $set: { 'fulfillmentAllocation.status': 'reserved' } });
+    } catch (error) {
+      order.fulfillmentPlan.status = 'failed';
+      order.fulfillmentPlan.reservationStatus = 'failed';
+      await order.save();
+      await slotService.release({ reservationId: hold._id, tenantId, reason: 'inventory_reservation_failed' }).catch(() => {});
+      await this.markCancelled(order, {
+        reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
+        cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
+      });
+      throw error;
+    }
+
+    // ---- 5. charge (idempotent; the same key protects order, stock and payment). ----
+    const key = checkoutKey;
+    await this.transition(order, ORDER_STATUS.PAYMENT_PENDING, { actorType: AUDIT_ACTOR_TYPE.SYSTEM, note: 'inventory reserved, charge initiated', req });
 
     const { payment, chargeResult } = await paymentService.charge({
       tenantId, userId, orderId: order._id, amount: order.totalAmount,
@@ -156,35 +197,50 @@ class OrderService {
     }
 
     const tenantId = order.tenantId;
-    const commitItems = items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty }));
-    const { committed, failed } = await inventoryService.commitForOrder({ tenantId, items: commitItems });
-
-    if (failed.length > 0) {
-      // ---- compensation B: stock lost the race ----
-      await inventoryService.restoreForOrder({ tenantId, items: committed });
+    const reservationId = hold?._id || order.slotReservationId;
+    if (!reservationId) {
+      throw conflict('No slot reservation linked to this order', 'RESERVATION_MISSING');
+    }
+    try {
+      // Capacity is confirmed first. If exact-node inventory confirmation then
+      // fails, the catch path releases this slot before cancelling/refunding.
+      await slotService.confirm({ reservationId, tenantId, orderId: order._id });
+      await inventoryReservationService.confirmOrder({ tenantId, orderId: order._id, actorId: userId, req });
+    } catch (error) {
+      // Reservation expiry/drift is fail-closed after capture: refund rather than
+      // silently reacquiring stock that another customer may now own.
       await refundService.initiate({
         tenantId, userId, orderId: order._id, amount: order.totalAmount,
         reason: REFUND_REASON.ORDER_CANCELLED, paymentId: payment._id, initiatedBy: userId,
         components: this.fullOrderRefundComponents(order),
       });
-      await slotService.release({ reservationId: hold._id, tenantId, reason: 'stock_unavailable' });
+      if (hold?._id || order.slotReservationId) {
+        await slotService.release({ reservationId: hold?._id || order.slotReservationId, tenantId, reason: 'inventory_reservation_unavailable' }).catch(() => {});
+      }
+      order.fulfillmentPlan.status = 'failed';
+      order.fulfillmentPlan.reservationStatus = 'failed';
+      await order.save();
+      await OrderItem.updateMany({ orderId: order._id }, { $set: { 'fulfillmentAllocation.status': 'failed' } });
       await this.markCancelled(order, {
         reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
         cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
-        refundTransactionId: order.cancellation?.refundTransactionId || null,
       });
-      throw conflict('Some items are no longer in stock — order cancelled & refunded', 'STOCK_UNAVAILABLE', { orderId: order._id, failed });
+      throw conflict('Reserved stock expired or became inconsistent — order cancelled and refunded',
+        'INVENTORY_RESERVATION_UNAVAILABLE', { orderId: order._id, cause: error.code || 'UNKNOWN' });
     }
 
-    const reservationId = hold?._id || order.slotReservationId;
-    if (!reservationId) {
-      throw conflict('No slot reservation linked to this order', 'RESERVATION_MISSING');
-    }
-    await slotService.confirm({ reservationId, tenantId, orderId: order._id });
     order.slotReservationId = reservationId;
+    order.fulfillmentPlan.status = 'committed';
+    order.fulfillmentPlan.reservationStatus = 'confirmed';
+    order.fulfillmentPlan.committedAt = new Date();
+    await order.save();
+    await OrderItem.updateMany(
+      { orderId: order._id },
+      { $set: { 'fulfillmentAllocation.status': 'committed' } },
+    );
     await fulfillmentService.createTask({
       orderId: order._id, tenantId,
-      hubId: order.slotSnapshot?.hubId || null,
+      hubId: order.fulfillmentPlan?.primaryHubId || order.slotSnapshot?.hubId || null,
       itemsCount: order.itemsCount,
     });
 
@@ -276,7 +332,12 @@ class OrderService {
       const oi = await (await import('../models/orderItem.model.js')).default.find({ orderId: order._id }).lean();
       const listingMap = await Promise.all(oi.map(async (x) => {
         const cartItem = await CartItem.findOne({ cartId: order.cartId, tenantProductId: x.tenantProductId }).lean();
-        return cartItem || { tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty, priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title, lineTotal: x.lineTotal, isReturnable: x.isReturnable };
+        return cartItem || {
+          tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty,
+          priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title,
+          unitSnapshot: x.skuSnapshot?.unit, unitQuantitySnapshot: x.skuSnapshot?.unitQuantity || 1,
+          lineTotal: x.lineTotal, isReturnable: x.isReturnable,
+        };
       }));
       items.push(...listingMap.filter(Boolean));
     }
@@ -718,12 +779,32 @@ class OrderService {
       throw conflict(`Order cannot be cancelled in state ${order.status}`, 'CANCELLATION_NOT_ALLOWED');
     }
 
-    // 1. restore inventory (reverse the hard commit)
+    // 1. Release a pre-payment hold, or restore physical stock only after the
+    // reservation was confirmed into a hard commit. This distinction prevents
+    // cancellation from manufacturing stock while payment is still pending.
     const items = await OrderItem.find({ orderId: order._id }).lean();
-    await inventoryService.restoreForOrder({
-      tenantId,
-      items: items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty })),
-    });
+    const wasCommitted = order.fulfillmentPlan?.reservationStatus === 'confirmed'
+      || order.fulfillmentPlan?.status === 'committed';
+    if (wasCommitted) {
+      await inventoryService.restoreForOrder({
+        tenantId,
+        items: items.map((i) => ({
+          listingId: i.tenantProductId,
+          qty: i.qty,
+          warehouseId: i.fulfillmentAllocation?.warehouseId || null,
+        })),
+      });
+    } else {
+      await inventoryReservationService.releaseOrder({
+        tenantId, orderId: order._id, reason: reason || 'order_cancelled', actorId, req,
+      });
+    }
+    order.fulfillmentPlan.status = 'released';
+    order.fulfillmentPlan.reservationStatus = 'released';
+    await OrderItem.updateMany(
+      { orderId: order._id },
+      { $set: { 'fulfillmentAllocation.status': 'released' } },
+    );
 
     // 2. release the slot hold
     if (order.slotReservationId) {
@@ -802,6 +883,30 @@ class OrderService {
       refundItemAmount: item,
       refundTaxAmount: tax,
       refundFeeAmount: fee,
+    };
+  }
+
+  async replayCheckout({ order, fingerprint, userId }) {
+    if (order.checkoutFingerprint !== fingerprint) {
+      throw conflict('Checkout idempotency key was already used with different checkout details', 'IDEMPOTENCY_KEY_REUSED');
+    }
+    if (order.status === ORDER_STATUS.CREATED) {
+      throw conflict('Checkout is already being prepared; retry with the same key', 'CHECKOUT_IN_PROGRESS', { orderId: order._id });
+    }
+    if (order.status === ORDER_STATUS.CANCELLED) {
+      throw conflict('This checkout attempt has already been cancelled; choose a new slot before retrying',
+        'CHECKOUT_ALREADY_SETTLED', { orderId: order._id, reason: order.cancellation?.reason || null });
+    }
+    const detail = await this.detail({ tenantId: order.tenantId, orderId: order._id, userId });
+    if (order.status !== ORDER_STATUS.PAYMENT_PENDING) return detail;
+    const latest = await Payment.findOne({ orderId: order._id }).sort({ createdAt: -1 }).lean();
+    return {
+      ...detail,
+      ...(await this.checkoutClientPayload({
+        order, userId,
+        chargeResult: { gatewayOrderId: latest?.gatewayOrderId, provider: latest?.provider },
+      })),
+      idempotentReplay: true,
     };
   }
 
@@ -901,6 +1006,13 @@ class OrderService {
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
     const { charges, slotDoc } = await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
+    const allocation = await warehouseAllocationService.plan({
+      tenantId,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
+      pincode: address.pincode,
+      customerCoordinates: address.coordinates || null,
+      preferredHubId: slotDoc?.hubId || null,
+    });
 
     return {
       itemSubtotal: charges.itemSubtotal,
@@ -914,10 +1026,18 @@ class OrderService {
       slotType: slotDoc?.windowType || 'normal',
       itemCount: items.reduce((a, i) => a + i.qty, 0),
       priceChanged: revalidated.changed,
+      fulfillment: {
+        hub: allocation.hub,
+        strategy: allocation.strategy,
+        allocatable: true,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+        nodeCount: allocation.nodeCount,
+      },
     };
   }
 
-  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null, precomputed = null }) {
+  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null, precomputed = null, checkoutKey, checkoutFingerprint }) {
     // `precomputed` lets checkout price the basket ONCE and then use the same
     // numbers for the cash pre-flight and for the order document. Pricing twice
     // would not merely be wasteful — the two passes could disagree (a coupon
@@ -929,11 +1049,21 @@ class OrderService {
     // resolve category per line for tax lookup (computeOrderCharges already
     // used the category; here we just mirror the breakdown onto the items)
     const lineByListing = new Map(charges.lineItems.map((l) => [String(l.tenantProductId), l]));
+    const allocation = await warehouseAllocationService.plan({
+      tenantId,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
+      pincode: address.pincode,
+      customerCoordinates: address.coordinates || null,
+      preferredHubId: slotDoc?.hubId || null,
+    });
+    const allocationByListing = new Map(allocation.allocations.map((item) => [String(item.listingId), item]));
 
     const totalAmount = charges.grandTotal;
     const order = await Order.create({
       tenantId, userId,
       orderNumber: await nextOrderNumber({ tenantId }),
+      checkoutIdempotencyKey: checkoutKey,
+      checkoutFingerprint,
       status: ORDER_STATUS.CREATED,
       // end-to-end correlation: this order's payment, journals, domain
       // events and any gateway webhook all share this trace (Phase 10)
@@ -958,6 +1088,19 @@ class OrderService {
         hubId: slotDoc.hubId || null,
         windowType: slotDoc.windowType || 'normal',
       } : null,
+      fulfillmentPlan: {
+        policyId: allocation.policyId,
+        policyVersion: allocation.policyVersion,
+        strategy: allocation.strategy,
+        splitPolicy: allocation.splitPolicy,
+        status: 'planned',
+        primaryHubId: allocation.primaryHubId,
+        nodeCount: allocation.nodeCount,
+        promisedAt: allocation.promise.maxAt,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+        plannedAt: allocation.plannedAt,
+      },
       addressSnapshot: {
         addressId: address._id,
         name: address.name || null,
@@ -978,6 +1121,7 @@ class OrderService {
         const line = lineByListing.get(String(i.tenantProductId)) || {
           taxAmount: 0, discountAllocated: 0, taxPolicyId: null, hsnCode: null,
         };
+        const allocated = allocationByListing.get(String(i.tenantProductId));
         return {
           orderId: order._id,
           tenantId,
@@ -985,7 +1129,10 @@ class OrderService {
           productMasterId: i.productMasterId,
           variantId: i.variantId || null,
           vendorId: i.productMasterId ? (vendorByMaster.get(String(i.productMasterId)) || null) : null,
-          skuSnapshot: { skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null, unit: i.unitSnapshot || null },
+          skuSnapshot: {
+            skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null,
+            unit: i.unitSnapshot || null, unitQuantity: i.unitQuantitySnapshot || 1,
+          },
           priceAtOrder: { mrp: i.priceSnapshot?.mrp ?? null, sellingPrice: i.priceSnapshot?.sellingPrice ?? 0, currency: i.priceSnapshot?.currency || 'INR' },
           qty: i.qty,
           lineTotal: line.lineTotal ?? i.lineTotal ?? 0,
@@ -994,6 +1141,19 @@ class OrderService {
           taxPolicyId: line.taxPolicyId || null,
           hsnCode: line.hsnCode || null,
           isReturnable: i.isReturnable !== false,
+          fulfillmentAllocation: allocated ? {
+            warehouseId: allocated.warehouseId,
+            warehouseCode: allocated.warehouseCode,
+            quantity: allocated.quantity,
+            availableAtPlan: allocated.availableAtPlan,
+            safetyStockAtPlan: allocated.safetyStock,
+            policySafetyStockAtPlan: allocated.policySafetyStock,
+            distanceKm: allocated.distanceKm,
+            promiseMinAt: allocated.promiseMinAt,
+            promiseMaxAt: allocated.promiseMaxAt,
+            status: 'planned',
+          } : null,
+          searchQueryId: i.searchQueryId || null,
         };
       })
     );
@@ -1022,6 +1182,11 @@ class OrderService {
   }
 
   async compensateFailedCharge(order, hold, reason, req) {
+    await inventoryReservationService.releaseOrder({
+      tenantId: order.tenantId, orderId: order._id, reason: 'payment_failed', actorId: order.userId, req,
+    }).catch(() => {});
+    order.fulfillmentPlan.reservationStatus = 'released';
+    order.fulfillmentPlan.status = 'released';
     await slotService.release({ reservationId: hold._id, tenantId: order.tenantId, reason: 'payment_failed' }).catch(() => {});
     await this.markCancelled(order, { reason, cancelledBy: order.userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req });
   }

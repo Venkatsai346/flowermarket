@@ -3,6 +3,7 @@ import searchService from '../services/search.service.js';
 import config from '../config/index.js';
 import productMasterService from '../services/productMaster.service.js';
 import inventoryService from '../services/inventory.service.js';
+import warehouseAllocationService from '../services/warehouseAllocation.service.js';
 import slotService from '../services/slot.service.js';
 import ProductMaster from '../models/productMaster.model.js';
 import TenantProduct from '../models/tenantProduct.model.js';
@@ -11,6 +12,8 @@ import { success } from '../utils/ApiResponse.js';
 import { notFound, badRequest } from '../utils/ApiError.js';
 import { pickDefaultVariant, variantDisplayLabel } from '../utils/catalog/variantImages.js';
 import { PRODUCT_MASTER_STATUS } from '../constants/enums.js';
+import { publicBundleComponents } from '../utils/catalog/publicBundle.js';
+import { catalogReadDuration, catalogReadRequests, catalogFamiliesReturned } from '../observability/registry.js';
 
 const OBJECT_ID_RX = /^[0-9a-fA-F]{24}$/;
 
@@ -30,9 +33,11 @@ class CatalogPublicController {
    * If the ranked path throws for any reason we fall back to the legacy scan
    * rather than failing the request: a degraded catalogue beats no catalogue.
    *
-   * `?groupBy=master` collapses the page into ONE card per master with the full
-   * listed-variant family (storefront dropdown cards). Grouping is order-
-   * preserving, so ranked relevance survives it; pagination stays listing-based.
+   * `?groupBy=master` uses the authoritative family read model: filtering,
+   * facets, count and cursor pagination all operate on distinct masters before
+   * each result is hydrated with its complete listed-variant family. Text
+   * relevance contributes ordered master candidates only; live publication,
+   * price, inventory and variant truth remain authoritative.
    */
   search = asyncHandler(async (req, res) => {
     const resolvedTenantId = req.tenantId || req.headers['x-tenant-id'];
@@ -40,12 +45,99 @@ class CatalogPublicController {
       ...req.query,
       search: req.query.search || req.query.q || undefined,
     };
+    let fulfillmentContext = null;
+    if (query.pincode) {
+      fulfillmentContext = await warehouseAllocationService.eligibleHubs({
+        tenantId: resolvedTenantId, pincode: query.pincode,
+      });
+      query.fulfillmentSafetyStock = Number(fulfillmentContext.policy.reserveSafetyStock || 0);
+      query.fulfillmentWarehouseIds = [
+        ...fulfillmentContext.hubs.map((hub) => hub._id),
+        ...(fulfillmentContext.policy.allowLegacyDefaultStock ? [null] : []),
+      ];
+      if (!fulfillmentContext.hubs.length) {
+        return res.status(200).json(success([], {
+          message: 'No fulfillment node serves this pincode',
+          meta: { total: 0, hasMore: false, serviceable: false, pincode: query.pincode, facets: {} },
+        }));
+      }
+    }
     const grouped = query.groupBy === 'master';
     const maybeGroup = async (items, meta) => {
       if (!grouped) return { items, meta };
       const cards = await catalogSearchService.groupListingRows({ tenantId: resolvedTenantId, rows: items });
       return { items: cards, meta: { ...meta, grouped: true, groupedCount: cards.length } };
     };
+
+    // Modern storefronts use the authoritative product-family read model.
+    // It groups before facets/count/pagination and therefore must not pass
+    // through the legacy listing-ranked path, which could split one family
+    // across pages and performed a second full live probe on every request.
+    if (grouped) {
+      const started = process.hrtime.bigint();
+      let source = 'authoritative';
+      try {
+        let ranking = null;
+        // Attribute projection was added after the original search documents.
+        // Until every deployment has completed a full reindex, attribute-filtered
+        // searches stay on live truth rather than risking false zero results
+        // from a partially upgraded index.
+        const hasAttributeFilters = Object.keys(query.attributes || {}).length > 0;
+        if (config.search.rankedCatalog && query.search && !hasAttributeFilters && (!query.sort || query.sort === 'relevance')) {
+          try {
+            const categoryIds = query.categoryId
+              ? await catalogSearchService.categoryScope(query.categoryId)
+              : null;
+            ranking = await searchService.search({
+              tenantId: resolvedTenantId,
+              query: categoryIds ? { ...query, categoryIds } : query,
+              sessionKey: req.get('x-session-id') || req.ip || null,
+              masterCandidates: true,
+            });
+            source = 'ranked_hydration';
+          } catch (err) {
+            // The family read model remains independently authoritative. Search
+            // enrichment can degrade without taking browse/discovery offline.
+            console.error('[search] family ranking failed, using live matching:', err.message);
+            source = 'ranked_fallback';
+          }
+        }
+        const result = await catalogSearchService.searchGrouped({
+          tenantId: resolvedTenantId,
+          query,
+          rankedMasterIds: ranking?.masterIds ?? null,
+        });
+        const durationSeconds = Number(process.hrtime.bigint() - started) / 1e9;
+        catalogReadDuration.observe({ source, outcome: 'ok' }, durationSeconds);
+        catalogReadRequests.inc({ source, outcome: 'ok' });
+        catalogFamiliesReturned.observe({ source }, result.items.length);
+        res.set('Server-Timing', `catalog;dur=${(durationSeconds * 1000).toFixed(1)};desc="${source}"`);
+        return res.status(200).json(success(result.items, {
+          message: 'Catalog fetched',
+          meta: {
+            ...result.meta,
+            indexState: ranking ? 'ranked_authoritative_hydration' : 'authoritative',
+            availabilityScope: fulfillmentContext ? 'serviceable_nodes' : 'network',
+            fulfillmentNodes: fulfillmentContext?.hubs?.length || null,
+            ...(ranking ? {
+              query: ranking.query,
+              normalizedQuery: ranking.query?.normalized || '',
+              profile: ranking.profile,
+              queryId: ranking.meta.queryId,
+              redirect: ranking.meta.redirect || null,
+              substitutions: ranking.meta.substitutions || [],
+              shelves: ranking.meta.shelves || [],
+              appliedMerchandisingRules: ranking.meta.appliedMerchandisingRules || [],
+            } : {}),
+          },
+        }));
+      } catch (err) {
+        catalogReadDuration.observe({ source, outcome: 'error' }, Number(process.hrtime.bigint() - started) / 1e9);
+        catalogReadRequests.inc({ source, outcome: 'error' });
+        throw err;
+      }
+    }
+
     if (config.search.rankedCatalog) {
       try {
         const ranked = await searchService.search({
@@ -56,12 +148,14 @@ class CatalogPublicController {
         // The index must never shadow a live catalogue. The ranked path
         // cannot tell "no products exist" from "the index has not caught
         // up" — an EMPTY index (fresh store, pre-first-drain) or a PARTIAL
-        // one (an event handler failed mid-drain) both serve fewer listings
-        // than actually exist. Probe the legacy scan with the same query:
-        // if the live catalogue is larger than the index, serve it instead.
-        const legacyProbe = await catalogSearchService.search({ tenantId: req.tenantId, query });
-        if (legacyProbe.meta.total > (ranked.meta?.total ?? 0)) {
-          console.warn(`[search] index stale — ranked ${ranked.meta?.total} < live ${legacyProbe.meta.total} listings; serving legacy scan`);
+        // one (an event handler failed mid-drain) can disagree in either
+        // direction. Probe the authoritative live scan with the same query:
+        // any count mismatch serves live data, preventing both missing cards
+        // and stale/blocked index documents from reaching customers.
+        const legacyProbe = await catalogSearchService.search({ tenantId: resolvedTenantId, query });
+        const rankedTotal = ranked.meta?.total ?? 0;
+        if (legacyProbe.meta.total !== rankedTotal) {
+          console.warn(`[search] index/live mismatch — ranked ${rankedTotal}, live ${legacyProbe.meta.total} listings; serving authoritative live scan`);
           const g = await maybeGroup(legacyProbe.items, legacyProbe.meta);
           return res.status(200).json(success(g.items, {
             message: 'Catalog fetched',
@@ -130,11 +224,12 @@ class CatalogPublicController {
    * product itself is sellable. The gallery resolves per selected variant with
    * master fallback, and `imageSource` says which one served.
    */
-  async assembleProductPage({ tenantId, masterId, variantId = null }) {
+  async assembleProductPage({ tenantId, masterId, variantId = null, pincode = null }) {
     const [master, listings] = await Promise.all([
       productMasterService.getMaster(masterId),
       TenantProduct.find({
         tenantId, productMasterId: masterId, status: 'active',
+        'channels.storefront': { $ne: false },
         'price.sellingPrice': { $ne: null }, // never render an unpriced listing
       }).lean(),
     ]);
@@ -142,7 +237,7 @@ class CatalogPublicController {
     // the id PDP must enforce the same gate, or a PENDING_REVIEW/REJECTED/
     // DEPRECATED master keeps a public shareable page (and, for rejected
     // masters, a listing the cascade missed).
-    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
+    if (master.status !== PRODUCT_MASTER_STATUS.ACTIVE || master.complianceStatus === 'pending') {
       throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     }
     if (!listings?.length) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
@@ -157,19 +252,25 @@ class CatalogPublicController {
     const family = variantRows.length ? variantRows : live;
 
     const stockByListing = {};
-    await Promise.all(family.map(async (l) => {
-      try {
-        const s = await inventoryService.getStock({ tenantId, listingId: l._id });
-        stockByListing[String(l._id)] = s?.qtyAvailable ?? l.stockQty ?? 0;
-      } catch {
-        stockByListing[String(l._id)] = l.stockQty ?? 0;
+    const fulfillmentByListing = {};
+    if (pincode) {
+      const exact = await warehouseAllocationService.availability({
+        tenantId, listingIds: family.map((listing) => listing._id), pincode,
+      });
+      for (const listing of family) {
+        const item = exact.byListing[String(listing._id)] || {};
+        stockByListing[String(listing._id)] = item.networkAvailableQty || 0;
+        fulfillmentByListing[String(listing._id)] = item;
       }
-    }));
+    } else {
+      for (const listing of family) stockByListing[String(listing._id)] = listing.stockQty ?? 0;
+    }
 
     const variants = family.map((l) => {
       const v = l.variantId ? variantById.get(String(l.variantId)) : null;
       const gallery = v?.images?.length ? v.images : (master.images || []).map((img) => ({
         id: img._id ?? img.id, url: img.url, altText: img.altText || master.title,
+        mediaType: img.mediaType || 'image', role: img.role || 'gallery', mimeType: img.mimeType || null,
         isPrimary: Boolean(img.isPrimary), sortOrder: img.sortOrder ?? 0,
       }));
       const stockQty = stockByListing[String(l._id)] ?? 0;
@@ -178,14 +279,30 @@ class CatalogPublicController {
         variantId: l.variantId ? String(l.variantId) : null,
         variantType: v?.variantType || null,
         value: v?.value || null,
+        optionValues: v?.optionValues || [],
+        attributes: v?.attributes || [],
+        sellQuantity: v?.sellQuantity || null,
+        combinationKey: v?.combinationKey || null,
         label: v ? variantDisplayLabel(v) : null,
         sku: v?.sku || null,
         sortOrder: v?.sortOrder ?? 0,
         isDefault: Boolean(v?.isDefault),
         price: l.price,
+        priceBasis: l.priceBasis,
+        sellerSku: l.sellerSku || null,
+        merchandising: l.merchandising || {},
         orderLimits: l.orderLimits,
         stockQty,
-        availability: { status: stockQty > 0 ? 'in_stock' : 'out_of_stock', qtyAvailable: stockQty },
+        availability: {
+          status: stockQty > 0 ? 'in_stock' : 'out_of_stock', qtyAvailable: stockQty,
+          scope: pincode ? 'serviceable_nodes' : 'network',
+          fulfillmentNodeCount: fulfillmentByListing[String(l._id)]?.nodes?.length || null,
+          nearestNode: fulfillmentByListing[String(l._id)]?.best ? {
+            id: fulfillmentByListing[String(l._id)].best.fulfillmentHubId,
+            name: fulfillmentByListing[String(l._id)].best.warehouseName,
+            distanceKm: fulfillmentByListing[String(l._id)].best.distanceKm,
+          } : null,
+        },
         imageUrl: gallery[0]?.url || null,
         imageSource: v?.images?.length ? 'variant' : 'master',
         images: gallery,
@@ -206,17 +323,22 @@ class CatalogPublicController {
       tenantId,
       query: {
         categoryId: master.categoryId ? String(master.categoryId) : undefined,
-        limit: 9,
+        excludeMasterId: String(masterId),
+        pincode: pincode || undefined,
+        limit: 24,
       },
     });
-    const familyIds = new Set(family.map((l) => String(l._id)));
-    const related = (relatedRaw.items || [])
-      .filter((r) => !familyIds.has(String(r.listingId)))
+    const relatedRows = (relatedRaw.items || [])
+      .filter((row) => String(row.product?.id || '') !== String(masterId));
+    const related = (await catalogSearchService.groupListingRows({ tenantId, rows: relatedRows }))
       .slice(0, 8);
 
     const images = (selected.images || []).map((img) => ({
       url: img.url,
       altText: img.altText || master.title,
+      mediaType: img.mediaType || 'image',
+      role: img.role || 'gallery',
+      mimeType: img.mimeType || null,
       isPrimary: Boolean(img.isPrimary),
     }));
     const imageUrl = images.find((i) => i.isPrimary)?.url || images[0]?.url || null;
@@ -224,6 +346,17 @@ class CatalogPublicController {
     return {
       product: {
         ...master,
+        category: master.category ? { id: master.category.id, name: master.category.name, slug: master.category.slug } : null,
+        title: selected.merchandising?.titleOverride || master.title,
+        canonicalTitle: master.title,
+        shortDescription: selected.merchandising?.descriptionOverride || master.shortDescription,
+        bundleComponents: master.kind === 'bundle' ? publicBundleComponents(master.bundleComponents) : [],
+        compliance: (master.compliance || []).filter((record) =>
+          record.status === 'verified' && (!record.validUntil || new Date(record.validUntil) > new Date())
+        ).map((record) => ({
+          type: record.type, code: record.code, title: record.title, authority: record.authority,
+          jurisdiction: record.jurisdiction, validUntil: record.validUntil, restrictions: record.restrictions,
+        })),
         imageUrl,
         images,
         imageSource: selected.imageSource,
@@ -233,6 +366,7 @@ class CatalogPublicController {
         listingId: selected.listingId,
         variantId: selected.variantId,
         price: selected.price,
+        priceBasis: selected.priceBasis,
         status: 'active',
         orderLimits: selected.orderLimits,
         stockQty: selected.stockQty,
@@ -246,7 +380,7 @@ class CatalogPublicController {
 
   /** GET /catalog/products/:id — one merged product (tenant context). */
   productDetail = asyncHandler(async (req, res) => {
-    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: req.params.id, variantId: req.query.variantId || null });
+    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: req.params.id, variantId: req.query.variantId || null, pincode: req.query.pincode || null });
     res.status(200).json(success(page, { message: 'Product fetched' }));
   });
 
@@ -273,7 +407,7 @@ class CatalogPublicController {
       }).lean();
     }
     if (!master) throw notFound('Product not found', 'PRODUCT_NOT_FOUND');
-    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: master._id, variantId: req.query.variantId || null });
+    const page = await this.assembleProductPage({ tenantId: req.tenantId, masterId: master._id, variantId: req.query.variantId || null, pincode: req.query.pincode || null });
     res.status(200).json(success(page, { message: 'Product fetched' }));
   });
 
@@ -309,7 +443,24 @@ class CatalogPublicController {
     ]);
     if (master?.status !== PRODUCT_MASTER_STATUS.ACTIVE) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
     if (!listing) throw notFound('Product not available in your area', 'PRODUCT_NOT_AVAILABLE');
-    const stock = await inventoryService.getStock({ tenantId: req.tenantId, listingId: listing._id });
+    let stock;
+    if (req.query.pincode) {
+      const result = await warehouseAllocationService.availability({
+        tenantId: req.tenantId, listingIds: [listing._id], pincode: req.query.pincode,
+      });
+      const item = result.byListing[String(listing._id)] || {};
+      stock = {
+        qtyAvailable: item.networkAvailableQty || 0,
+        allocatableQty: item.best?.allocatableQty || 0,
+        fulfillmentNodeCount: item.nodes?.length || 0,
+        scope: 'serviceable_nodes',
+        nearestNode: item.best ? {
+          id: item.best.fulfillmentHubId, name: item.best.warehouseName, distanceKm: item.best.distanceKm,
+        } : null,
+      };
+    } else {
+      stock = await inventoryService.getStock({ tenantId: req.tenantId, listingId: listing._id });
+    }
     res.status(200).json(success({ ...stock, listingId: String(listing._id), variantId: listing.variantId ? String(listing.variantId) : null }, { message: 'Stock fetched' }));
   });
 }

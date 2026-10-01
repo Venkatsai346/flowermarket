@@ -166,11 +166,54 @@ test('catalog tenant and catalog admin helpers map correctly', async () => {
   api.catalogTenant.listings({ status: 'active' });
   check(api, client.calls, ['GET', '/catalog/tenant/listings']);
 
-  api.catalogTenant.bulkUpload('masters', { rows: [{}] });
-  check(api, client.calls, ['POST', '/catalog/tenant/bulk/masters']);
+  api.catalogTenant.bulkUpload('price', { csv: 'sku,price' }, { dryRun: true });
+  const bulkUpload = check(api, client.calls, ['POST', '/catalog/tenant/bulk/price']);
+  assert.deepEqual(bulkUpload.opts.query, { dryRun: true });
+
+  api.catalogTenant.bulkJobFailures('job_1', { page: 2 });
+  check(api, client.calls, ['GET', '/catalog/tenant/bulk/jobs/job_1/failures']);
+  api.catalogTenant.cancelBulkJob('job_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/bulk/jobs/job_1/cancel']);
+  api.catalogTenant.retryBulkFailures('job_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/bulk/jobs/job_1/retry-failures']);
 
   api.catalogTenant.bulkTemplate('inventory');
   check(api, client.calls, ['DOWNLOAD', '/catalog/tenant/bulk/template/inventory']);
+
+  api.catalogTenant.evaluateQuality();
+  check(api, client.calls, ['POST', '/catalog/tenant/quality/evaluate']);
+  api.catalogTenant.qualityRuns({ limit: 5 });
+  const qualityRuns = check(api, client.calls, ['GET', '/catalog/tenant/quality/runs']);
+  assert.deepEqual(qualityRuns.opts.query, { limit: 5 });
+  api.catalogTenant.qualityRun('run_1');
+  check(api, client.calls, ['GET', '/catalog/tenant/quality/runs/run_1']);
+  api.catalogTenant.cancelQualityRun('run_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/quality/runs/run_1/cancel']);
+  api.catalogTenant.retryQualityRun('run_1');
+  check(api, client.calls, ['POST', '/catalog/tenant/quality/runs/run_1/retry']);
+
+  api.catalogTenant.qualityAssessments({ grade: 'A' });
+  const qualityList = check(api, client.calls, ['GET', '/catalog/tenant/quality/assessments']);
+  assert.deepEqual(qualityList.opts.query, { grade: 'A' });
+
+  api.catalogTenant.qualityAssessment('master_1');
+  check(api, client.calls, ['GET', '/catalog/tenant/quality/assessments/master_1']);
+
+  api.catalogAdmin.mediaSummary();
+  check(api, client.calls, ['GET', '/catalog/admin/media/summary']);
+
+  api.catalogAdmin.mediaFamilies({ issue: 'missing_alt' });
+  const mediaFamilies = check(api, client.calls, ['GET', '/catalog/admin/media/families']);
+  assert.deepEqual(mediaFamilies.opts.query, { issue: 'missing_alt' });
+
+  api.catalogAdmin.updateMediaAsset('master_1', 'image_1', { altText: 'Red rose', expectedVersion: 3 });
+  check(api, client.calls, ['PATCH', '/catalog/admin/masters/master_1/images/image_1/metadata']);
+
+  api.catalogAdmin.reorderMediaGallery('master_1', { items: [], expectedVersion: 3 });
+  check(api, client.calls, ['PUT', '/catalog/admin/masters/master_1/images/order']);
+
+  api.catalogAdmin.masterVariants('master_1');
+  check(api, client.calls, ['GET', '/catalog/admin/masters/master_1/variants']);
 
   api.catalogAdmin.changeRequests({ status: 'pending' });
   check(api, client.calls, ['GET', '/catalog/admin/change-requests']);

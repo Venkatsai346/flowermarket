@@ -435,9 +435,10 @@ const TEST_CLIENT_EMAIL = 'push@fm-prod.iam.gserviceaccount.com';
 
   assert.equal(isDeclaredNotImplemented('notification', 'apns'), true);
   assert.equal(isDeclaredNotImplemented('search', 'atlas'), true);
-  assert.equal(isDeclaredNotImplemented('search', 'opensearch'), true);
+  assert.equal(isDeclaredNotImplemented('search', 'opensearch'), false);
   assert.equal(isImplemented('search', 'mongo'), true, 'mongo is the real ranked index');
-  ok('apns, atlas and opensearch are seams; mongo search is real');
+  assert.equal(isImplemented('search', 'opensearch'), true, 'OpenSearch is a live production adapter');
+  ok('apns and atlas remain seams; Mongo and OpenSearch are real search providers');
 
   assert.equal(isDevOnly('otp', 'console'), true);
   assert.equal(isDevOnly('otp', 'memory'), true);

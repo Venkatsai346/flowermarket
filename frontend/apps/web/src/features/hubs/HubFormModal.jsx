@@ -65,10 +65,27 @@ export default function HubFormModal({ hub, onClose }) {
         <Field label="Hub PIN">
           <Input maxLength={12} value={form.pincode} onChange={(e) => set('pincode', e.target.value)} />
         </Field>
+        <Field label="Longitude" hint="Used for nearest-node allocation.">
+          <Input type="number" step="any" min="-180" max="180" value={form.longitude} onChange={(e) => set('longitude', e.target.value)} />
+        </Field>
+        <Field label="Latitude" hint="Used for nearest-node allocation.">
+          <Input type="number" step="any" min="-90" max="90" value={form.latitude} onChange={(e) => set('latitude', e.target.value)} />
+        </Field>
         <Field label="Default slot capacity" hint="Forecast can override this per day.">
           <Input type="number" min="1" step="1" value={form.defaultSlotCapacity} onChange={(e) => set('defaultSlotCapacity', e.target.value)} />
         </Field>
-        <div className="flex items-end pb-1">
+        <Field label="Fulfillment priority" hint="Lower values are preferred.">
+          <Input type="number" min="0" step="1" value={form.fulfillmentPriority} onChange={(e) => set('fulfillmentPriority', e.target.value)} />
+        </Field>
+        <Field label="Handling time" hint="Minutes before dispatch readiness.">
+          <Input type="number" min="0" step="1" value={form.handlingTimeMinutes} onChange={(e) => set('handlingTimeMinutes', e.target.value)} />
+        </Field>
+        <Field label="Overflow radius" hint="Maximum km for overflow orders; blank means unrestricted.">
+          <Input type="number" min="0" step="0.1" value={form.maxDeliveryRadiusKm} onChange={(e) => set('maxDeliveryRadiusKm', e.target.value)} />
+        </Field>
+        <div className="space-y-2 pt-5">
+          <Checkbox label="Fulfillment enabled" checked={form.isFulfillmentEnabled} onChange={(e) => set('isFulfillmentEnabled', e.target.checked)} />
+          <Checkbox label="Accept overflow demand" checked={form.acceptsOverflow} onChange={(e) => set('acceptsOverflow', e.target.checked)} />
           <Checkbox label="Active hub" checked={form.isActive} onChange={(e) => set('isActive', e.target.checked)} />
         </div>
         <Field label="Serviceable pincodes" className="sm:col-span-2" hint="Comma or space-separated 6-digit PINs.">

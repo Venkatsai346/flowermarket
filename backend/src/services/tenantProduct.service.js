@@ -7,8 +7,10 @@ import Inventory from '../models/inventory.model.js';
 import PriceHistory from '../models/priceHistory.model.js';
 import auditService from './audit.service.js';
 import catalogEventService from './catalogEvent.service.js';
+import { runCatalogCommand } from './catalogCommand.service.js';
 import { updateWithVersion } from '../utils/catalog/optimisticLock.js';
 import deriveAvailability from '../utils/catalog/availability.js';
+import { normalizeUnitPolicy, assertQuantity } from '../utils/catalog/unitConversion.js';
 import { attachVariantGalleries, groupImagesByVariant, sortGallery } from '../utils/catalog/variantImages.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import {
@@ -39,9 +41,9 @@ import { assertMasterListable } from '../utils/catalogGuards.js';
  */
 class TenantProductService {
   /** A variant may be listed only if it belongs to the master and is active. */
-  async assertVariantListable(masterId, variantId) {
+  async assertVariantListable(masterId, variantId, session = null) {
     if (!variantId) return null;
-    const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId });
+    const variant = await ProductVariant.findOne({ _id: variantId, productMasterId: masterId }).session(session);
     if (!variant) throw badRequest('Variant does not belong to this product', 'VARIANT_MISMATCH');
     if (variant.status !== ENTITY_STATUS.ACTIVE) {
       throw badRequest(`Variant "${variant.value}" is not active`, 'VARIANT_NOT_AVAILABLE');
@@ -49,18 +51,38 @@ class TenantProductService {
     return variant;
   }
 
-  async createListing({ tenantId, payload, actorId = null, req = null }) {
-    const master = await ProductMaster.findById(payload.productMasterId);
+  async createListing({ tenantId, payload, actorId = null, req = null, idempotencyKey = null }) {
+    const { value } = await runCatalogCommand({
+      scopeId: tenantId,
+      idempotencyKey,
+      operation: 'tenant_listing.create',
+      request: payload,
+      serialize: (listing) => listing.toJSON ? listing.toJSON() : listing,
+      execute: ({ session, registerCompensation }) => this._createListing({
+        tenantId, payload, actorId, req, session, registerCompensation,
+      }),
+    });
+    return value;
+  }
+
+  async _createListing({ tenantId, payload, actorId = null, req = null, session = null, registerCompensation = () => {} }) {
+    const master = await ProductMaster.findById(payload.productMasterId).session(session);
     assertMasterListable(master);
 
     const variantId = payload.variantId || null;
-    await this.assertVariantListable(master.id, variantId);
-    const existing = await TenantProduct.findOne({ tenantId, productMasterId: master.id, variantId });
+    await this.assertVariantListable(master.id, variantId, session);
+    const existing = await TenantProduct.findOne({ tenantId, productMasterId: master.id, variantId }).session(session);
     if (existing) throw conflict('A listing already exists for this product', 'LISTING_EXISTS');
 
     if (payload.price && payload.price.sellingPrice != null && payload.price.mrp != null) {
       this.assertPriceValid(payload.price);
     }
+    const unitPolicy = normalizeUnitPolicy(master.unitPolicy, master.defaultSellingUnit);
+    const priceBasis = payload.priceBasis || {
+      quantity: 1,
+      unitCode: unitPolicy.baseUnit,
+    };
+    assertQuantity(priceBasis.quantity, priceBasis.unitCode, unitPolicy);
 
     const creatingActive = (payload.status || TENANT_LISTING_STATUS.DRAFT) === TENANT_LISTING_STATUS.ACTIVE;
     if (creatingActive) {
@@ -69,6 +91,8 @@ class TenantProductService {
       // set + master ACTIVE" — previously unenforced; a priceless listing is
       // otherwise orderable at ₹0 via the cart's `sellingPrice ?? 0`).
       this.assertActivatable({ listing: { price: payload.price || {} }, master });
+      const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+      await catalogStructureService.assertPublishable(master);
     }
 
     // Plan entitlement: the products cap counts ACTIVE listings. Drafts are
@@ -80,12 +104,17 @@ class TenantProductService {
       await entitlementService.assertWithinLimit({ tenantId, resource: 'products' });
     }
 
-    const listing = await TenantProduct.create({
+    const listingData = {
       tenantId,
       productMasterId: master.id,
       variantId,
+      sellerSku: payload.sellerSku || null,
       price: payload.price || { mrp: null, sellingPrice: null },
+      priceBasis,
       orderLimits: payload.orderLimits || {},
+      sellingPolicy: payload.sellingPolicy || {},
+      merchandising: payload.merchandising || {},
+      channels: payload.channels || {},
       stockQty: payload.stockQty || 0,
       status: payload.status || TENANT_LISTING_STATUS.DRAFT,
       listedBy: actorId,
@@ -94,26 +123,36 @@ class TenantProductService {
         updatedAt: new Date(),
       },
       lastStatusChangedAt: payload.status ? new Date() : null,
-    });
+    };
+    const listing = session
+      ? (await TenantProduct.create([listingData], { session }))[0]
+      : await TenantProduct.create(listingData);
+    registerCompensation(() => TenantProduct.deleteOne({ _id: listing.id }));
 
     if ((payload.stockQty || 0) > 0) {
-      await Inventory.create({
+      const inventoryData = {
         tenantId,
         tenantProductId: listing.id,
         qtyOnHand: payload.stockQty,
         lastUpdatedAt: new Date(),
-      });
+      };
+      const inventory = session
+        ? (await Inventory.create([inventoryData], { session }))[0]
+        : await Inventory.create(inventoryData);
+      registerCompensation(() => Inventory.deleteOne({ _id: inventory.id }));
     }
 
-    await auditService.record({
+    const audit = await auditService.record({
       action: 'create', entityType: 'tenant_product', entityId: listing.id,
       tenantId, actorId, actorType: 'tenant',
-      after: { masterId: master.id, price: listing.price, status: listing.status, stockQty: listing.stockQty }, req,
+      after: { masterId: master.id, price: listing.price, status: listing.status, stockQty: listing.stockQty }, req, session,
     });
-    await catalogEventService.publish({
+    registerCompensation(() => audit.constructor.deleteOne({ _id: audit.id }));
+    const event = await catalogEventService.publish({
       eventType: 'tenant_product_created', entityType: 'tenant_product', entityId: listing.id,
-      tenantId, payload: { id: listing.id, masterId: master.id, status: listing.status },
+      tenantId, payload: { id: listing.id, masterId: master.id, status: listing.status }, session,
     });
+    registerCompensation(() => event.constructor.deleteOne({ _id: event.id }));
     return listing;
   }
 
@@ -194,6 +233,11 @@ class TenantProductService {
             stockQty: row.stockQty ?? 0,
             status: row.status || TENANT_LISTING_STATUS.DRAFT,
             orderLimits: row.orderLimits || {},
+            sellerSku: row.sellerSku || null,
+            priceBasis: row.priceBasis || null,
+            sellingPolicy: row.sellingPolicy || {},
+            merchandising: row.merchandising || {},
+            channels: row.channels || {},
           },
           actorId,
           req,
@@ -236,7 +280,9 @@ class TenantProductService {
     return {
       master: {
         id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal,
-        type: master.type, status: master.status, defaultSellingUnit: master.defaultSellingUnit,
+        type: master.type, kind: master.kind, options: master.options || [],
+        status: master.status, complianceStatus: master.complianceStatus,
+        defaultSellingUnit: master.defaultSellingUnit, unitPolicy: master.unitPolicy,
         images: sortGallery(groupImagesByVariant(images).master).map((g) => ({
           id: g._id, url: g.url, altText: g.altText, isPrimary: g.isPrimary,
         })),
@@ -250,6 +296,7 @@ class TenantProductService {
         return {
           variant: {
             id: v._id, variantType: v.variantType, value: v.value,
+            optionValues: v.optionValues || [], combinationKey: v.combinationKey || null,
             displayLabel: v.displayLabel, sku: v.sku, sortOrder: v.sortOrder,
             isDefault: v.isDefault, status: v.status,
             images: v.images, imageSource: v.imageSource, primaryImageUrl: v.primaryImageUrl,
@@ -263,38 +310,91 @@ class TenantProductService {
     };
   }
 
-  async getListing({ tenantId, listingId }) {
-    const listing = await TenantProduct.findOne({ _id: listingId, tenantId });
+  async getListing({ tenantId, listingId, session = null }) {
+    const listing = await TenantProduct.findOne({ _id: listingId, tenantId }).session(session);
     if (!listing) throw notFound('Listing not found', 'LISTING_NOT_FOUND');
     return listing;
   }
 
-  async updatePrice({ tenantId, listingId, price, expectedVersion, actorId = null, reason = PRICE_CHANGE_REASON.MANUAL, source = PRICE_CHANGE_SOURCE.TENANT, req = null }) {
+  async updateOffer({ tenantId, listingId, patch, expectedVersion, actorId = null, req = null }) {
     const listing = await this.getListing({ tenantId, listingId });
-    this.assertPriceValid(price);
-    const before = listing.price.toObject();
-    await updateWithVersion(listing, expectedVersion, { price, lastPriceChangedAt: new Date() });
-
-    await PriceHistory.create({
-      tenantId, tenantProductId: listing.id,
-      before: { mrp: before.mrp, sellingPrice: before.sellingPrice },
-      after: { mrp: price.mrp, sellingPrice: price.sellingPrice },
-      currency: price.currency || 'INR',
-      reason, source, changedBy: actorId,
-    });
-
+    const master = await ProductMaster.findById(listing.productMasterId);
+    if (!master) throw notFound('Product master not found', 'PRODUCT_MASTER_NOT_FOUND');
+    if (patch.priceBasis) assertQuantity(
+      patch.priceBasis.quantity,
+      patch.priceBasis.unitCode,
+      normalizeUnitPolicy(master.unitPolicy, master.defaultSellingUnit),
+    );
+    const policy = { ...(listing.sellingPolicy?.toObject?.() || listing.sellingPolicy || {}), ...(patch.sellingPolicy || {}) };
+    if (policy.availableFrom && policy.availableUntil && new Date(policy.availableUntil) <= new Date(policy.availableFrom)) {
+      throw badRequest('Offer availability end must be after its start', 'OFFER_DATES_INVALID');
+    }
+    const limits = { ...(listing.orderLimits?.toObject?.() || listing.orderLimits || {}), ...(patch.orderLimits || {}) };
+    if (limits.minOrderQty && limits.maxOrderQty && limits.minOrderQty > limits.maxOrderQty) {
+      throw badRequest('Minimum order quantity cannot exceed maximum', 'ORDER_LIMITS_INVALID');
+    }
+    const next = {
+      ...(patch.sellerSku !== undefined ? { sellerSku: patch.sellerSku || null } : {}),
+      ...(patch.priceBasis ? { priceBasis: patch.priceBasis } : {}),
+      ...(patch.sellingPolicy ? { sellingPolicy: policy } : {}),
+      ...(patch.orderLimits ? { orderLimits: limits } : {}),
+      ...(patch.merchandising ? { merchandising: { ...(listing.merchandising?.toObject?.() || listing.merchandising || {}), ...patch.merchandising } } : {}),
+      ...(patch.channels ? { channels: { ...(listing.channels?.toObject?.() || listing.channels || {}), ...patch.channels } } : {}),
+    };
+    await updateWithVersion(listing, expectedVersion, next);
     await auditService.record({
-      action: 'price_change', entityType: 'tenant_product', entityId: listing.id,
-      tenantId, actorId, actorType: 'tenant',
-      before: { mrp: before.mrp, sellingPrice: before.sellingPrice },
-      after: { mrp: price.mrp, sellingPrice: price.sellingPrice },
-      meta: { reason }, req,
+      action: 'update', entityType: 'tenant_product', entityId: listing.id,
+      tenantId, actorId, actorType: 'tenant', after: next, req,
     });
     await catalogEventService.publish({
-      eventType: 'price_changed', entityType: 'tenant_product', entityId: listing.id,
-      tenantId, payload: { id: listing.id, price, reason },
+      eventType: 'tenant_product_updated', entityType: 'tenant_product', entityId: listing.id,
+      tenantId, payload: { id: listing.id, fields: Object.keys(next) },
     });
     return listing;
+  }
+
+  async updatePrice({ tenantId, listingId, price, expectedVersion, actorId = null, reason = PRICE_CHANGE_REASON.MANUAL, source = PRICE_CHANGE_SOURCE.TENANT, req = null, idempotencyKey = null }) {
+    const request = { listingId, price, expectedVersion, reason, source };
+    const { value } = await runCatalogCommand({
+      scopeId: tenantId, idempotencyKey, operation: 'tenant_listing.update_price', request,
+      serialize: (listing) => listing.toJSON ? listing.toJSON() : listing,
+      execute: async ({ session, registerCompensation }) => {
+        const listing = await this.getListing({ tenantId, listingId, session });
+        this.assertPriceValid(price);
+        const before = listing.price.toObject();
+        const beforeChangedAt = listing.lastPriceChangedAt;
+        await updateWithVersion(listing, expectedVersion, { price, lastPriceChangedAt: new Date() }, { session });
+        registerCompensation(() => TenantProduct.updateOne(
+          { _id: listing.id, version: Number(expectedVersion) + 1 },
+          { $set: { price: before, lastPriceChangedAt: beforeChangedAt, version: Number(expectedVersion) } },
+        ));
+
+        const historyData = {
+          tenantId, tenantProductId: listing.id,
+          before: { mrp: before.mrp, sellingPrice: before.sellingPrice },
+          after: { mrp: price.mrp, sellingPrice: price.sellingPrice },
+          currency: price.currency || 'INR', reason, source, changedBy: actorId,
+        };
+        const history = session
+          ? (await PriceHistory.create([historyData], { session }))[0]
+          : await PriceHistory.create(historyData);
+        registerCompensation(() => PriceHistory.deleteOne({ _id: history.id }));
+
+        const audit = await auditService.record({
+          action: 'price_change', entityType: 'tenant_product', entityId: listing.id,
+          tenantId, actorId, actorType: 'tenant',
+          before: historyData.before, after: historyData.after, meta: { reason }, req, session,
+        });
+        registerCompensation(() => audit.constructor.deleteOne({ _id: audit.id }));
+        const event = await catalogEventService.publish({
+          eventType: 'price_changed', entityType: 'tenant_product', entityId: listing.id,
+          tenantId, payload: { id: listing.id, price, reason }, session,
+        });
+        registerCompensation(() => event.constructor.deleteOne({ _id: event.id }));
+        return listing;
+      },
+    });
+    return value;
   }
 
   async updateStatus({ tenantId, listingId, status, expectedVersion, actorId = null, req = null }) {
@@ -309,6 +409,8 @@ class TenantProductService {
       // unset on a DRAFT row.
       const master = await ProductMaster.findById(listing.productMasterId);
       this.assertActivatable({ listing, master });
+      const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+      await catalogStructureService.assertPublishable(master);
     }
 
     // Activating past the plan's products cap is a 402 (deactivations always pass).
@@ -374,7 +476,17 @@ class TenantProductService {
 
     if (query.search) {
       const rx = literalRegex(query.search); // escaped — raw input must never reach new RegExp
-      pipeline.push({ $match: { $or: [{ 'master.title': rx }, { 'master.searchText': rx }] } });
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'master.title': rx },
+            { 'master.searchText': rx },
+            { 'master.skuGlobal': rx },
+            { 'variant.sku': rx },
+            { sellerSku: rx },
+          ],
+        },
+      });
     }
     if (query.categoryId) pipeline.push({ $match: { 'master.categoryId': query.categoryId } });
     if (query.brandId) pipeline.push({ $match: { 'master.brandId': query.brandId } });
@@ -395,20 +507,22 @@ class TenantProductService {
           { $limit: limit },
           {
             $project: {
-              id: 1, tenantId: 1, productMasterId: 1, variantId: 1, price: 1, orderLimits: 1,
+              id: 1, tenantId: 1, productMasterId: 1, variantId: 1, sellerSku: 1,
+              price: 1, priceBasis: 1, orderLimits: 1, sellingPolicy: 1, merchandising: 1, channels: 1,
               stockQty: 1, availability: 1, status: 1, version: 1, createdAt: 1, updatedAt: 1,
               master: {
                 id: '$master._id', title: '$master.title', slug: '$master.slug',
-                skuGlobal: '$master.skuGlobal', type: '$master.type',
+                skuGlobal: '$master.skuGlobal', type: '$master.type', kind: '$master.kind', unitPolicy: '$master.unitPolicy',
                 categoryId: '$master.categoryId', brandId: '$master.brandId',
                 isPerishable: '$master.isPerishable', defaultSellingUnit: '$master.defaultSellingUnit',
-                status: '$master.status',
+                status: '$master.status', complianceStatus: '$master.complianceStatus',
               },
               variant: {
                 $cond: [
                   { $ifNull: ['$variant._id', false] },
                   {
                     id: '$variant._id', variantType: '$variant.variantType', value: '$variant.value',
+                    optionValues: '$variant.optionValues', combinationKey: '$variant.combinationKey', sellQuantity: '$variant.sellQuantity',
                     displayLabel: '$variant.displayLabel', sku: '$variant.sku',
                     sortOrder: '$variant.sortOrder', isDefault: '$variant.isDefault',
                     status: '$variant.status',
@@ -441,10 +555,16 @@ class TenantProductService {
     const withGalleries = attachVariantGalleries(variant ? [variant] : [], images);
     return {
       listing: listing.toObject(),
-      master: master ? { id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal, type: master.type, description: master.description, isPerishable: master.isPerishable, defaultSellingUnit: master.defaultSellingUnit, status: master.status } : null,
+      master: master ? {
+        id: master._id, title: master.title, slug: master.slug, skuGlobal: master.skuGlobal,
+        type: master.type, kind: master.kind, description: master.description,
+        isPerishable: master.isPerishable, defaultSellingUnit: master.defaultSellingUnit,
+        unitPolicy: master.unitPolicy, options: master.options, optionRules: master.optionRules, status: master.status,
+      } : null,
       images: sortGallery(masterGallery).map((i) => ({ id: i._id, url: i.url, altText: i.altText, isPrimary: i.isPrimary })),
       variant: variant ? {
         id: variant._id, variantType: variant.variantType, value: variant.value,
+        optionValues: variant.optionValues, combinationKey: variant.combinationKey, sellQuantity: variant.sellQuantity,
         displayLabel: variant.displayLabel, sku: variant.sku, sortOrder: variant.sortOrder,
         isDefault: variant.isDefault, status: variant.status,
         images: withGalleries[0]?.images || [],
@@ -465,8 +585,16 @@ class TenantProductService {
   // ---------------- helpers ----------------
 
   assertPriceValid(price) {
+    for (const key of ['sellingPrice', 'mrp', 'costPrice']) {
+      if (price?.[key] != null && (!Number.isFinite(Number(price[key])) || Number(price[key]) < 0)) {
+        throw badRequest(`${key} must be a non-negative number`, 'PRICE_INVALID');
+      }
+    }
     if (price.sellingPrice != null && price.mrp != null && Number(price.sellingPrice) > Number(price.mrp)) {
       throw badRequest('sellingPrice cannot exceed mrp', 'PRICE_INVALID');
+    }
+    if (price.saleStartsAt && price.saleEndsAt && new Date(price.saleEndsAt) <= new Date(price.saleStartsAt)) {
+      throw badRequest('saleEndsAt must be after saleStartsAt', 'PRICE_INVALID');
     }
   }
 

@@ -2,7 +2,10 @@ import crypto from 'node:crypto';
 import RankingProfile from '../models/rankingProfile.model.js';
 import SearchSynonym from '../models/searchSynonym.model.js';
 import SearchQueryLog from '../models/searchQueryLog.model.js';
+import SearchDocument from '../models/searchDocument.model.js';
 import searchProvider from './searchProvider.service.js';
+import searchAnalyticsService from './searchAnalytics.service.js';
+import searchMerchandisingService from './searchMerchandising.service.js';
 import config from '../config/index.js';
 import { fromPaise } from '../utils/money.js';
 import { BoundedCache } from '../utils/BoundedCache.js';
@@ -131,7 +134,7 @@ class SearchService {
    * response, plus additive fields — the storefront and mobile client keep
    * working without a change.
    */
-  async search({ tenantId, query = {}, sessionKey = null, log = true }) {
+  async search({ tenantId, query = {}, sessionKey = null, log = true, masterCandidates = false }) {
     const started = process.hrtime.bigint();
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(60, Math.max(1, Number(query.limit) || 24));
@@ -143,17 +146,23 @@ class SearchService {
     ]);
 
     const parsed = parseQuery(query.search || '', { synonyms, vocabulary });
+    const merchandising = await searchMerchandisingService.resolve({
+      tenantId, normalizedQuery: parsed.normalized, categoryId: query.categoryId || null,
+    });
 
     // explicit filters win over anything inferred from the text
     const filters = {
       ...parsed.filters,
-      ...(query.categoryId ? { categoryId: query.categoryId } : {}),
+      ...(query.categoryIds?.length ? { categoryIds: query.categoryIds } : query.categoryId ? { categoryId: query.categoryId } : {}),
+      ...(query.brandId ? { brandId: query.brandId } : {}),
+      ...(query.type ? { productType: query.type } : {}),
       ...(query.vendorId ? { vendorId: query.vendorId } : {}),
       ...(query.minPrice != null ? { minPrice: Number(query.minPrice) } : {}),
       ...(query.maxPrice != null ? { maxPrice: Number(query.maxPrice) } : {}),
       ...(query.inStock ? { inStock: true } : {}),
       // an EXPLICIT colour from the client constrains; an inferred one does not
       ...(query.colour ? { colour: query.colour } : {}),
+      ...(query.attributes && Object.keys(query.attributes).length ? { attributes: query.attributes } : {}),
     };
 
     let candidates = await searchProvider.retrieve({ tenantId, parsed, filters });
@@ -189,10 +198,102 @@ class SearchService {
       textScores,
     });
 
-    const pinsForQuery = (profile.pins || [])
-      .filter((p) => !p.query || p.query.toLowerCase() === parsed.normalized)
-      .flatMap((p) => p.listingIds || []);
-    ranked = applyEditorial(ranked, { pins: pinsForQuery, buries: profile.buries });
+    // Replace unavailable campaign targets with the first configured in-stock
+    // alternative. Targets are fetched from canonical Mongo so the rule works
+    // even when the substitute did not text-match the original query.
+    for (const substitution of merchandising.substitutions) {
+      const unavailable = ranked.find((row) => !row.doc.inStock && substitution.from.includes(String(row.doc.listingId)));
+      if (!unavailable || !substitution.to.length) continue;
+      // Rules are bounded to 20 substitutes; one indexed read per matching rule is predictable.
+      // eslint-disable-next-line no-await-in-loop
+      const replacement = await SearchDocument.findOne({
+        tenantId, listingId: { $in: substitution.to }, inStock: true, status: 'active',
+      }).lean();
+      if (!replacement || ranked.some((row) => String(row.doc.listingId) === String(replacement.listingId))) continue;
+      const [replacementRank] = rankDocuments([replacement], {
+        weights: profile.weights, tuning: profile.tuning,
+        textScores: new Map([[String(replacement._id), textRelevance(parsed, replacement)]]),
+      });
+      ranked = ranked.filter((row) => row !== unavailable);
+      ranked.push({ ...replacementRank, score: unavailable.score, substitutedFor: String(unavailable.doc.listingId) });
+      ranked.sort((a, b) => b.score - a.score || String(a.doc._id).localeCompare(String(b.doc._id)));
+    }
+
+    if (merchandising.boosts.size) {
+      ranked = ranked.map((row) => {
+        const editorialBoost = merchandising.boosts.get(String(row.doc.listingId)) || 0;
+        return editorialBoost ? { ...row, score: row.score + editorialBoost, promoted: true } : row;
+      }).sort((a, b) => b.score - a.score || String(a.doc._id).localeCompare(String(b.doc._id)));
+    }
+    const pinsForQuery = [
+      ...(profile.pins || [])
+        .filter((p) => !p.query || p.query.toLowerCase() === parsed.normalized)
+        .flatMap((p) => p.listingIds || []),
+      ...merchandising.pins,
+    ];
+    ranked = applyEditorial(ranked, {
+      pins: pinsForQuery,
+      buries: [...(profile.buries || []), ...merchandising.buries],
+    });
+
+    // Explicit customer sorts must be deterministic and must not silently
+    // continue using relevance ranking. Editorial pinning applies to the
+    // default relevance view only; price/newest/popularity mean exactly what
+    // their labels promise.
+    if (query.sort === 'price_asc') {
+      ranked.sort((a, b) => (a.doc.pricePaise - b.doc.pricePaise) || String(a.doc._id).localeCompare(String(b.doc._id)));
+    } else if (query.sort === 'price_desc') {
+      ranked.sort((a, b) => (b.doc.pricePaise - a.doc.pricePaise) || String(a.doc._id).localeCompare(String(b.doc._id)));
+    } else if (query.sort === 'newest') {
+      ranked.sort((a, b) => new Date(b.doc.listedAt || 0) - new Date(a.doc.listedAt || 0));
+    } else if (query.sort === 'popularity') {
+      ranked.sort((a, b) => (b.doc.soldCount30d || 0) - (a.doc.soldCount30d || 0));
+    }
+
+    // Family PLPs need the ranker's ordered master identities, not a page of
+    // listing rows. Returning this bounded internal projection lets the
+    // authoritative catalog read model perform exact master-level facets,
+    // visibility checks and cursor pagination without giving up typo recovery,
+    // synonyms, experiments or editorial ranking.
+    if (masterCandidates) {
+      const seen = new Set();
+      const masterIds = [];
+      for (const row of ranked) {
+        const id = String(row.doc.masterId || '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        masterIds.push(id);
+      }
+      const latencyMs = Number(process.hrtime.bigint() - started) / 1e6;
+      const queryId = crypto.randomUUID();
+      if (log) {
+        await this.logQuery({
+          tenantId, sessionKey, queryId, parsed, filters, profile,
+          resultCount: masterIds.length, relaxedTo, latencyMs,
+          topListingIds: ranked.slice(0, 1000).map((row) => String(row.doc.listingId)),
+          topMasterIds: ranked.slice(0, 1000).map((row) => String(row.doc.masterId)),
+        }).catch(() => {});
+      }
+      return {
+        masterIds,
+        meta: {
+          total: masterIds.length, queryId, latencyMs: Number(latencyMs.toFixed(1)),
+          redirect: merchandising.redirect,
+          substitutions: merchandising.substitutions,
+          shelves: merchandising.shelves,
+          appliedMerchandisingRules: merchandising.appliedRuleCodes,
+        },
+        query: {
+          raw: parsed.raw,
+          normalized: parsed.normalized,
+          corrections: parsed.corrections,
+          appliedFilters: filters,
+          relaxedTo,
+          inferredColour: parsed.inferredColour,
+        },
+        profile: { code: profile.code, bucket: profile.bucket },
+      };
+    }
 
     const total = ranked.length;
     const slice = ranked.slice((page - 1) * limit, page * limit);
@@ -204,10 +305,11 @@ class SearchService {
     const queryId = crypto.randomUUID();
 
     if (log) {
-      this.logQuery({
+      await this.logQuery({
         tenantId, sessionKey, queryId, parsed, filters, profile,
         resultCount: total, relaxedTo, latencyMs,
-        topListingIds: items.slice(0, 10).map((i) => i.listingId),
+        topListingIds: ranked.slice(0, 1000).map((row) => String(row.doc.listingId)),
+        topMasterIds: ranked.slice(0, 1000).map((row) => String(row.doc.masterId)),
       }).catch(() => {});
     }
 
@@ -219,6 +321,10 @@ class SearchService {
         hasMore: page * limit < total,
         queryId,
         latencyMs: Number(latencyMs.toFixed(1)),
+        redirect: merchandising.redirect,
+        substitutions: merchandising.substitutions,
+        shelves: merchandising.shelves,
+        appliedMerchandisingRules: merchandising.appliedRuleCodes,
       },
       query: {
         raw: parsed.raw,
@@ -247,6 +353,7 @@ class SearchService {
         label: d.variantLabel || null,
         value: d.variantLabel || null,
         variantType: d.variantType || null,
+        optionValues: d.optionValues || [],
       } : null,
       product: {
         id: String(d.masterId),
@@ -255,6 +362,11 @@ class SearchService {
         categoryId: d.categoryId ? String(d.categoryId) : null,
         brandName: d.brandName,
         defaultSellingUnit: d.unit,
+        kind: d.productKind || 'physical',
+        unitPolicy: d.unitPolicy || null,
+        packageCodes: d.packageCodes || [],
+        complianceCodes: d.complianceCodes || [],
+        variantAttributes: d.variantAttributes || [],
         imageUrl: d.imageUrl,
         isPerishable: d.isPerishable,
         soldCount: d.soldCount30d,
@@ -274,7 +386,12 @@ class SearchService {
   // -------------------------------------------------------------------------
 
   /** PII-free, sampled. The session is hashed, never stored raw. */
-  async logQuery({ tenantId, sessionKey, queryId, parsed, filters, profile, resultCount, relaxedTo, latencyMs, topListingIds }) {
+  async logQuery({ tenantId, sessionKey, queryId, parsed, filters, profile, resultCount, relaxedTo, latencyMs, topListingIds, topMasterIds }) {
+    await searchAnalyticsService.recordQuery({
+      tenantId, sessionKey, queryId, normalizedQuery: parsed.normalized,
+      profileCode: profile.code, experimentBucket: profile.bucket,
+      resultCount, latencyMs, candidateListingIds: topListingIds, candidateMasterIds: topMasterIds,
+    });
     if (Math.random() * 100 > config.search.logSamplePct) return null;
     return SearchQueryLog.create({
       tenantId,
@@ -297,16 +414,10 @@ class SearchService {
   }
 
   /** Click / add-to-cart beacons from the storefront. */
-  async recordEvent({ queryId, type, position = null, listingId = null }) {
-    if (!queryId) return { recorded: false };
-    const update = {};
-    if (type === 'click' && position != null) update.$addToSet = { clickedPositions: Number(position) };
-    else if (type === 'add_to_cart' && listingId) update.$addToSet = { addedToCart: String(listingId) };
-    else if (type === 'order' && listingId) update.$addToSet = { orderedListingIds: String(listingId) };
-    else return { recorded: false };
-
-    const res = await SearchQueryLog.updateOne({ queryId }, update);
-    return { recorded: res.modifiedCount > 0 };
+  async recordEvent({ tenantId, sessionKey, queryId, eventId, type, position = null, listingId = null }) {
+    return searchAnalyticsService.recordEvent({
+      tenantId, sessionKey, queryId, eventId, type, position, listingId,
+    });
   }
 
   /**
@@ -314,60 +425,7 @@ class SearchService {
    * and how the two experiment arms compare.
    */
   async analytics({ tenantId, from = null, to = null }) {
-    const match = { tenantId };
-    if (from || to) {
-      match.at = {
-        ...(from ? { $gte: new Date(from) } : {}),
-        ...(to ? { $lte: new Date(to) } : {}),
-      };
-    }
-
-    const [top, zero, buckets, latency] = await Promise.all([
-      SearchQueryLog.aggregate([
-        { $match: { ...match, normalizedQuery: { $ne: '' } } },
-        { $group: { _id: '$normalizedQuery', searches: { $sum: 1 }, clicks: { $sum: { $size: '$clickedPositions' } }, carts: { $sum: { $size: '$addedToCart' } } } },
-        { $sort: { searches: -1 } },
-        { $limit: 20 },
-      ]),
-      SearchQueryLog.aggregate([
-        { $match: { ...match, zeroResult: true } },
-        { $group: { _id: '$normalizedQuery', searches: { $sum: 1 } } },
-        { $sort: { searches: -1 } },
-        { $limit: 20 },
-      ]),
-      SearchQueryLog.aggregate([
-        { $match: match },
-        {
-          $group: {
-            _id: '$experimentBucket',
-            searches: { $sum: 1 },
-            clicked: { $sum: { $cond: [{ $gt: [{ $size: '$clickedPositions' }, 0] }, 1, 0] } },
-            carted: { $sum: { $cond: [{ $gt: [{ $size: '$addedToCart' }, 0] }, 1, 0] } },
-            zero: { $sum: { $cond: ['$zeroResult', 1, 0] } },
-          },
-        },
-      ]),
-      SearchQueryLog.aggregate([
-        { $match: match },
-        { $group: { _id: null, avg: { $avg: '$latencyMs' }, max: { $max: '$latencyMs' } } },
-      ]),
-    ]);
-
-    return {
-      topQueries: top.map((t) => ({
-        query: t._id, searches: t.searches, clicks: t.clicks, carts: t.carts,
-        ctr: t.searches ? Number((t.clicks / t.searches).toFixed(3)) : 0,
-      })),
-      zeroResultQueries: zero.map((z) => ({ query: z._id, searches: z.searches })),
-      experiments: buckets.map((b) => ({
-        bucket: b._id,
-        searches: b.searches,
-        clickThroughRate: b.searches ? Number((b.clicked / b.searches).toFixed(3)) : 0,
-        addToCartRate: b.searches ? Number((b.carted / b.searches).toFixed(3)) : 0,
-        zeroResultRate: b.searches ? Number((b.zero / b.searches).toFixed(3)) : 0,
-      })),
-      latency: { avgMs: Math.round(latency[0]?.avg || 0), maxMs: latency[0]?.max || 0 },
-    };
+    return searchAnalyticsService.analytics({ tenantId, from, to });
   }
 
   // -------------------------------------------------------------------------

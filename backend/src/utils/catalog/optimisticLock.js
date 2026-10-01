@@ -26,7 +26,7 @@ import { conflict } from '../ApiError.js';
  *   later `doc.save()` (e.g. the searchText recompute in updateGlobalFields)
  *   writes only its own new fields on top of the committed state.
  */
-export async function updateWithVersion(doc, expectedVersion, patch, { bump = true } = {}) {
+export async function updateWithVersion(doc, expectedVersion, patch, { bump = true, session = null } = {}) {
   if (expectedVersion === undefined || expectedVersion === null) {
     throw conflict('expectedVersion is required for updates', 'VERSION_REQUIRED');
   }
@@ -57,6 +57,7 @@ export async function updateWithVersion(doc, expectedVersion, patch, { bump = tr
   const res = await Model.updateOne(
     { _id: doc._id, version: expected },
     { $set: set },
+    { session },
   );
 
   if (res.matchedCount !== 1) {
@@ -64,7 +65,7 @@ export async function updateWithVersion(doc, expectedVersion, patch, { bump = tr
     // Re-sync the in-memory doc with the database so anything downstream of
     // this error (loggers, callers re-using the doc) sees truth, then fail.
     try {
-      const fresh = await Model.findById(doc._id);
+      const fresh = await Model.findById(doc._id).session(session);
       if (fresh) doc.init(fresh);
     } catch {
       /* best-effort re-sync; the 409 below is what matters */

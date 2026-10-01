@@ -8,6 +8,7 @@ import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
 import ReturnSheet from '../components/ReturnSheet.jsx';
+import ProductImage from '../components/ProductImage.jsx';
 import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
 import { CANCEL_REASONS, canCancel, canReturn, meta } from '../lib/afterSales.js';
 import { cn, errMsg } from '../lib/utils.js';
@@ -257,6 +258,11 @@ export default function OrderDetail() {
                       ? 'Payment confirmed — finalising your order…'
                       : 'We are waiting for your bank or UPI app to confirm. This page updates automatically, so you can stay right here.'}
                 </p>
+                {order.fulfillmentPlan?.reservationExpiresAt && (
+                  <p className="mt-1 text-[11px] font-semibold text-amber-800">
+                    Your exact fulfillment-node stock is held until {new Date(order.fulfillmentPlan.reservationExpiresAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}.
+                  </p>
+                )}
               </div>
             </div>
             <div className="text-right">
@@ -404,9 +410,7 @@ export default function OrderDetail() {
         {items.map((it) => (
           <div key={it.id} className="flex items-center gap-3 p-4">
             <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-slate-50">
-              {it.skuSnapshot?.imageUrl
-                ? <img src={it.skuSnapshot.imageUrl} alt="" className="h-full w-full object-cover" />
-                : <span className="flex h-full w-full items-center justify-center text-xl" aria-hidden>🌸</span>}
+              <ProductImage src={it.skuSnapshot?.imageUrl} alt={it.skuSnapshot?.title || 'Product'} fallbackCompact className="h-full w-full object-cover" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-slate-800">{it.skuSnapshot?.title}</p>

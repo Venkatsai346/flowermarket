@@ -48,7 +48,10 @@ class InventoryService {
       { $set: { qtyOnHand: qty, lastUpdatedAt: new Date() } },
       { new: true, upsert: true }
     );
-    const before = row.qtyOnHand - qty; // pre-value: upsert insert → 0, else (new - set)
+    // Absolute counts are intentionally last-write-wins. Mongo cannot return
+    // both pre/post images from this single atomic operation, so avoid lying
+    // in the audit trail with the former `row.qtyOnHand - qty` (always zero).
+    const before = null;
     await this.refreshListingStock(listing, row);
     await this.logOp({ tenantId, listingId, op: INVENTORY_OP_TYPE.ADJUSTMENT, qty, before, after: qty, actorId, req });
     return row;
@@ -243,21 +246,44 @@ class InventoryService {
   async commitForOrder({ tenantId, items }) {
     const committed = [];
     const failed = [];
-    for (const it of items) {
+    for (const it of items || []) {
+      if (!it?.listingId || !Number.isInteger(it.qty) || it.qty <= 0) {
+        failed.push({ listingId: it?.listingId || null, qty: it?.qty, reason: 'invalid_quantity' });
+        continue;
+      }
+      // Each inventory mutation is deliberately sequential so compensation preserves item order.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
         {
           tenantId,
           tenantProductId: it.listingId,
-          $expr: { $gte: ['$qtyOnHand', it.qty] },
+          // Allocation is resolved and snapshotted before payment. `null` is a
+          // deliberate legacy pool, never an implicit arbitrary-row fallback.
+          warehouseId: it.warehouseId || null,
+          isSellable: { $ne: false },
+          // Respect internal reservations: checkout cannot consume stock held
+          // by another order while the storefront reports it unavailable.
+          $expr: {
+            $gte: [
+              { $subtract: ['$qtyOnHand', { $add: ['$qtyReserved', { $ifNull: ['$safetyStock', 0] }, Number(it.policySafetyStock || 0)] }] },
+              it.qty,
+            ],
+          },
         },
-        { $inc: { qtyOnHand: -it.qty }, $set: { lastUpdatedAt: new Date() } },
+        { $inc: { qtyOnHand: -it.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
         { new: true }
       );
       if (row) {
-        committed.push({ listingId: it.listingId, qty: it.qty, row });
+        committed.push({ listingId: it.listingId, qty: it.qty, warehouseId: it.warehouseId || null, row });
+        // Each inventory mutation is deliberately sequential so compensation preserves item order.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, 1);
         }
       } else {
@@ -269,32 +295,62 @@ class InventoryService {
 
   /** COMPENSATION — restore qtyOnHand (and undo the soldCount bump) for items that were committed. */
   async restoreForOrder({ tenantId, items }) {
-    for (const it of items) {
+    let restored = 0;
+    for (const it of items || []) {
+      if (!it?.listingId || !Number.isInteger(it.qty) || it.qty <= 0) continue;
+      // Each inventory mutation is deliberately sequential so compensation preserves item order.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Inventory.findOneAndUpdate(
-        { tenantId, tenantProductId: it.listingId },
-        { $inc: { qtyOnHand: it.qty }, $set: { lastUpdatedAt: new Date() } },
+        { tenantId, tenantProductId: it.listingId, warehouseId: it.warehouseId || null },
+        { $inc: { qtyOnHand: it.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
         { new: true }
       );
       if (row) {
+        restored += 1;
+        // Each inventory mutation is deliberately sequential so compensation preserves item order.
+        // eslint-disable-next-line no-await-in-loop
         const listing = await TenantProduct.findOne({ _id: it.listingId, tenantId });
         if (listing) {
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.refreshListingStock(listing, row);
+          // Each inventory mutation is deliberately sequential so compensation preserves item order.
+          // eslint-disable-next-line no-await-in-loop
           await this.bumpSoldCount(listing, it.qty, -1);
         }
       }
     }
-    return { restored: items.length };
+    return { restored };
   }
 
   // ---------------- helpers ----------------
 
-  /** Refresh the denormalized stockQty + availability on the tenant listing. */
-  async refreshListingStock(listing, row) {
-    const stock = row.qtyOnHand - row.qtyReserved;
+  /**
+   * Refresh the network-wide denormalized snapshot. `stockQty` means aggregate
+   * allocatable stock, not one arbitrary/default row. Address-specific promise
+   * checks still use WarehouseAllocationService at request/checkout time.
+   */
+  async refreshListingStock(listing) {
+    const [{ default: warehouseAllocationService }, rows] = await Promise.all([
+      import('./warehouseAllocation.service.js'),
+      Inventory.find({
+        tenantId: listing.tenantId, tenantProductId: listing._id,
+        status: 'active', isSellable: { $ne: false }, isDeleted: { $ne: true },
+      }).lean(),
+    ]);
+    const policy = await warehouseAllocationService.getPolicy(listing.tenantId);
+    const stock = rows.reduce((sum, row) => sum + Math.max(0,
+      Number(row.qtyOnHand || 0) - Number(row.qtyReserved || 0)
+      - Number(row.safetyStock || 0) - Number(policy.reserveSafetyStock || 0)), 0);
+    const physicalOnHand = rows.reduce((sum, row) => sum + Number(row.qtyOnHand || 0), 0);
+    const reserved = rows.reduce((sum, row) => sum + Number(row.qtyReserved || 0), 0);
     const availability = deriveAvailability(stock);
     const patch = {
-      stockQty: Math.max(0, stock),
+      stockQty: stock,
       'availability.status': availability,
+      'availability.networkOnHand': physicalOnHand,
+      'availability.networkReserved': reserved,
+      'availability.fulfillmentNodeCount': new Set(rows.map((row) => String(row.warehouseId || 'default'))).size,
       'availability.updatedAt': new Date(),
       lastStockChangedAt: new Date(),
     };

@@ -21,6 +21,7 @@ export default function InventoryLedgerDrawer({ row, onClose, onChanged }) {
 
   const inventory = data?.inventory;
   const adjustments = data?.adjustments || [];
+  const nodes = data?.nodes || [];
 
   return (
     <Modal
@@ -45,8 +46,22 @@ export default function InventoryLedgerDrawer({ row, onClose, onChanged }) {
             </div>
           ))}
           <div className="rounded-xl bg-slate-50 p-3.5">
-            <p className="text-[11px] font-semibold uppercase text-slate-400">Version</p>
-            <p className="mt-1 text-lg font-bold text-slate-900">v{inventory?.version ?? '—'}</p>
+            <p className="text-[11px] font-semibold uppercase text-slate-400">Nodes</p>
+            <p className="mt-1 text-lg font-bold text-slate-900">{inventory?.nodeCount ?? nodes.length}</p>
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Fulfillment nodes</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {nodes.map((node) => (
+              <div key={node.id} className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-3">
+                <div className="flex items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-800">{node.warehouseName}</p><Badge tone={node.isSellable ? 'emerald' : 'slate'}>{node.isSellable ? 'Sellable' : 'Paused'}</Badge></div>
+                <p className="mt-0.5 font-mono text-[10px] text-slate-400">{node.warehouseCode}</p>
+                <div className="mt-3 flex justify-between text-xs"><span className="text-slate-500">On hand <b className="text-slate-800">{node.qtyOnHand}</b></span><span className="text-slate-500">Reserved <b className="text-slate-800">{node.qtyReserved}</b></span><span className="text-slate-500">Allocatable <b className="text-indigo-700">{node.available}</b></span></div>
+              </div>
+            ))}
+            {!nodes.length && <p className="text-sm text-slate-400">No physical node inventory exists for this listing.</p>}
           </div>
         </div>
 
@@ -84,7 +99,7 @@ export default function InventoryLedgerDrawer({ row, onClose, onChanged }) {
 
       {adjust && (
         <AdjustStockModal
-          row={row}
+          row={{ ...row, inventoryNodes: nodes }}
           onClose={() => { setAdjust(false); refetch(); onChanged?.(); }}
         />
       )}
