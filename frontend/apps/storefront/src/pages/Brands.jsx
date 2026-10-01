@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BadgeCheck, ChevronLeft, Search, SlidersHorizontal, Store } from 'lucide-react';
+import { BadgeCheck, ChevronLeft, Search, SlidersHorizontal, Sparkles, Store } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -56,16 +56,15 @@ export default function Brands() {
         <ChevronLeft className="h-4 w-4" /> {t(language, 'backToShop')}
       </Link>
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-display text-3xl tracking-tight text-slate-900">
-            {t(language, 'brandsAt', store?.name || '')}
-          </h1>
-          <p className="mt-1 text-sm text-slate-500">
-            {loading ? t(language, 'loading') : t(language, 'brandCount', brands.length)}
-          </p>
+      <header className="relative overflow-hidden rounded-3xl border border-slate-200 bg-slate-950 px-5 py-7 text-white shadow-sm sm:px-8 sm:py-9">
+        <div className="absolute -right-16 -top-20 h-52 w-52 rounded-full opacity-30 blur-3xl" style={{ background: 'var(--brand)' }} />
+        <div className="relative max-w-2xl">
+          <p className="mb-2 inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.18em] text-white/60"><Sparkles className="h-3.5 w-3.5" />Curated makers</p>
+          <h1 className="font-display text-3xl tracking-tight sm:text-4xl">{t(language, 'brandsAt', store?.name || '')}</h1>
+          <p className="mt-2 text-sm leading-relaxed text-white/65">Explore trusted producers, verified labels and specialist collections—each connected to products currently available from this store.</p>
+          <p className="mt-4 text-xs font-semibold text-white/80">{loading ? t(language, 'loading') : t(language, 'brandCount', brands.length)}</p>
         </div>
-      </div>
+      </header>
 
       <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center">
         <label className="relative min-w-0 flex-1">

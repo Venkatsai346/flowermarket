@@ -29,6 +29,7 @@ const OrderItemSchema = new Schema(
       title: { type: String, required: true, maxlength: 200 },
       imageUrl: { type: String, default: null },
       unit: { type: String, default: null },
+      unitQuantity: { type: Number, default: 1, min: Number.EPSILON },
     },
     priceAtOrder: {
       mrp: { type: Number, min: 0, default: null },
@@ -46,6 +47,20 @@ const OrderItemSchema = new Schema(
     hsnCode: { type: String, default: null, maxlength: 16 },
 
     isReturnable: { type: Boolean, default: true },
+    fulfillmentAllocation: {
+      warehouseId: { type: Types.ObjectId, ref: 'Hub', default: null },
+      warehouseCode: { type: String, default: null, maxlength: 40 },
+      quantity: { type: Number, default: 0, min: 0 },
+      availableAtPlan: { type: Number, default: 0, min: 0 },
+      safetyStockAtPlan: { type: Number, default: 0, min: 0 },
+      policySafetyStockAtPlan: { type: Number, default: 0, min: 0 },
+      distanceKm: { type: Number, default: null, min: 0 },
+      promiseMinAt: { type: Date, default: null },
+      promiseMaxAt: { type: Date, default: null },
+      status: { type: String, enum: ['planned', 'reserved', 'committed', 'released', 'failed'], default: 'planned' },
+    },
+    /** Search query that introduced this line; never contains user identity. */
+    searchQueryId: { type: String, default: null, maxlength: 64 },
     returnedQty: { type: Number, default: 0, min: 0 },
     cancelledQty: { type: Number, default: 0, min: 0 },
   },
@@ -53,6 +68,8 @@ const OrderItemSchema = new Schema(
 );
 
 OrderItemSchema.index({ orderId: 1, tenantProductId: 1 });
+OrderItemSchema.index({ tenantId: 1, 'fulfillmentAllocation.warehouseId': 1, createdAt: -1 });
+OrderItemSchema.index({ tenantId: 1, searchQueryId: 1, createdAt: -1 }, { sparse: true, name: 'order_item_search_attribution_idx' });
 
 OrderItemSchema.plugin(auditPlugin);
 OrderItemSchema.plugin(softDeletePlugin);

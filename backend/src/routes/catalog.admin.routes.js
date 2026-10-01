@@ -24,12 +24,19 @@ import {
   masterReviewSchema,
   masterDeprecateSchema,
   attributeSetSchema,
+  variantAttributeSetSchema,
+  packageSetSchema,
+  bundleComponentSetSchema,
+  complianceSetSchema,
   changeRequestReviewSchema,
   changeRequestQuerySchema,
   auditQuerySchema,
   idParamSchema,
   masterVariantParamSchema,
   masterImageParamSchema,
+  mediaOperationsQuerySchema,
+  mediaAssetUpdateSchema,
+  mediaGalleryOrderSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -60,10 +67,15 @@ router.patch('/brands/:id', validate(idParamSchema, 'params'), validate(brandUpd
 router.patch('/brands/:id/verify', validate(idParamSchema, 'params'), validate(brandVerifySchema), CatalogAdminController.verifyBrand);
 router.delete('/brands/:id', validate(idParamSchema, 'params'), CatalogAdminController.deleteBrand);
 
+// ---- global media operations ----
+router.get('/media/summary', CatalogAdminController.mediaSummary);
+router.get('/media/families', validate(mediaOperationsQuerySchema, 'query'), CatalogAdminController.listMediaFamilies);
+
 // ---- global masters ----
 router.post('/masters', validate(masterCreateSchema), CatalogAdminController.createMaster);
 router.get('/masters', validate(masterQuerySchema, 'query'), CatalogAdminController.listMasters);
 router.get('/masters/:id', validate(idParamSchema, 'params'), CatalogAdminController.getMaster);
+router.get('/masters/:id/variants', validate(idParamSchema, 'params'), CatalogAdminController.getMasterVariants);
 router.patch('/masters/:id', validate(idParamSchema, 'params'), validate(masterUpdateSchema), CatalogAdminController.updateMaster);
 router.post('/masters/:id/review', validate(idParamSchema, 'params'), validate(masterReviewSchema), CatalogAdminController.reviewMaster);
 router.post('/masters/:id/deprecate', validate(idParamSchema, 'params'), validate(masterDeprecateSchema), CatalogAdminController.deprecateMaster);
@@ -74,7 +86,15 @@ router.post('/masters/:id/variants/:variantId/images', validate(masterVariantPar
 router.post('/masters/:id/images', validate(idParamSchema, 'params'), validate(imageCreateSchema), CatalogAdminController.addImage);
 router.delete('/masters/:id/images/:imageId', validate(masterImageParamSchema, 'params'), validate(versionOnlySchema), CatalogAdminController.removeImage);
 router.patch('/masters/:id/images/:imageId/primary', validate(masterImageParamSchema, 'params'), validate(imagePrimarySchema), CatalogAdminController.setImagePrimary);
+router.patch('/masters/:id/images/:imageId/metadata', validate(masterImageParamSchema, 'params'), validate(mediaAssetUpdateSchema), CatalogAdminController.updateMediaAsset);
+router.put('/masters/:id/images/order', validate(idParamSchema, 'params'), validate(mediaGalleryOrderSchema), CatalogAdminController.reorderMediaGallery);
 router.put('/masters/:id/attributes', validate(idParamSchema, 'params'), validate(attributeSetSchema), CatalogAdminController.setAttributes);
+router.get('/masters/:id/structures', validate(idParamSchema, 'params'), CatalogAdminController.getStructures);
+router.get('/masters/:id/integrity', validate(idParamSchema, 'params'), CatalogAdminController.getIntegrityReport);
+router.put('/masters/:id/variants/:variantId/attributes', validate(masterVariantParamSchema, 'params'), validate(variantAttributeSetSchema), CatalogAdminController.setVariantAttributes);
+router.put('/masters/:id/packages', validate(idParamSchema, 'params'), validate(packageSetSchema), CatalogAdminController.setPackages);
+router.put('/masters/:id/bundle-components', validate(idParamSchema, 'params'), validate(bundleComponentSetSchema), CatalogAdminController.setBundleComponents);
+router.put('/masters/:id/compliance', validate(idParamSchema, 'params'), validate(complianceSetSchema), CatalogAdminController.setCompliance);
 
 // ---- review queue ----
 router.get('/change-requests', validate(changeRequestQuerySchema, 'query'), CatalogAdminController.listChangeRequests);

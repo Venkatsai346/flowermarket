@@ -18,6 +18,9 @@ import Stat from '../../components/ui/Stat.jsx';
 import InventoryLedgerDrawer from './InventoryLedgerDrawer.jsx';
 import AdjustStockModal from './AdjustStockModal.jsx';
 import { INVENTORY_HEALTH_META } from './inventoryMeta.js';
+import WarehousePolicyPanel from './WarehousePolicyPanel.jsx';
+import WarehouseTransferPanel from './WarehouseTransferPanel.jsx';
+import InventoryReservationPanel from './InventoryReservationPanel.jsx';
 
 export default function InventoryPage() {
   const [page, setPage] = useState(1);
@@ -60,11 +63,17 @@ export default function InventoryPage() {
       />
 
       <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Stat label="SKUs" value={summary?.totalSku ?? '—'} sub="active listings" icon={SlidersHorizontal} tone="slate" />
+        <Stat label="SKUs" value={summary?.totalSku ?? '—'} sub={`${summary?.fulfillmentNodes ?? 0} fulfillment nodes`} icon={SlidersHorizontal} tone="slate" />
         <Stat label="In stock" value={summary?.inStock ?? '—'} sub="available stay healthy" icon={SlidersHorizontal} tone="emerald" />
         <Stat label="Low stock" value={summary?.lowStock ?? '—'} sub={`threshold ${summary?.lowStockThreshold ?? 5}`} icon={SlidersHorizontal} tone="amber" />
         <Stat label="Out of stock" value={summary?.outOfStock ?? '—'} sub="need attention" icon={SlidersHorizontal} tone="rose" />
         <Stat label="On-hand value" value={inr(summary?.onHandValue)} sub={`${summary?.reservedUnits ?? 0} reserved units`} icon={SlidersHorizontal} tone="sky" />
+      </div>
+
+      <div className="mb-5 space-y-5">
+        <WarehousePolicyPanel onChanged={refresh} />
+        <InventoryReservationPanel onChanged={refresh} />
+        <WarehouseTransferPanel listings={rows || []} onChanged={refresh} />
       </div>
 
       {error && !rows ? (
@@ -109,7 +118,8 @@ export default function InventoryPage() {
               { key: 'price', header: 'Price', align: 'right', render: (r) => <span className="text-sm text-slate-700">{r.price?.sellingPrice != null ? inr(r.price.sellingPrice) : '—'}</span> },
               { key: 'onHand', header: 'On hand', align: 'right', render: (r) => <span className="font-semibold">{r.qtyOnHand ?? 0}</span> },
               { key: 'reserved', header: 'Reserved', align: 'right', render: (r) => <span className="text-slate-500">{r.qtyReserved ?? 0}</span> },
-              { key: 'available', header: 'Available', align: 'right', render: (r) => <span className="font-semibold">{r.available ?? 0}</span> },
+              { key: 'available', header: 'Allocatable', align: 'right', render: (r) => <span className="font-semibold">{r.available ?? 0}</span> },
+              { key: 'nodes', header: 'Nodes', align: 'right', render: (r) => <span className="text-xs font-semibold text-indigo-600">{r.fulfillmentNodeCount ?? 0}</span> },
               { key: 'health', header: 'Health', render: (r) => <Badge tone={pickMeta(INVENTORY_HEALTH_META, r.health).tone} dot>{pickMeta(INVENTORY_HEALTH_META, r.health).label}</Badge> },
               { key: 'restock', header: 'Restock hint', align: 'right', render: (r) => <span className="text-xs text-slate-500">{r.restockSuggestion ? `+${r.restockSuggestion}` : '—'}</span> },
               { key: 'actions', header: '', align: 'right', render: (r) => (

@@ -1,12 +1,16 @@
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Check, Heart, Plus } from 'lucide-react';
+import { BadgeCheck, Check, Heart, Package, Plus, ShieldCheck, Sparkles } from 'lucide-react';
 import { inr } from '@flower-market/shared';
 import { Money, Stepper } from './ui.jsx';
-import FloralImage from './FloralImage.jsx';
+import ProductImage from './ProductImage.jsx';
 import { cn } from '../lib/utils.js';
 import { useWishlist } from '../lib/useWishlist.js';
+import { api } from '../api.js';
+
+const eventId = () => globalThis.crypto?.randomUUID?.()
+  || `00000000-0000-4000-8000-${Math.random().toString(16).slice(2).padEnd(12, '0').slice(0, 12)}`;
 
 /**
  * A product tile — two shapes, one look.
@@ -44,15 +48,22 @@ export default function ProductCard({
 
   const line = {
     listingId: listing.listingId,
+    variantId: listing.variantId || listing.variant?.id || null,
+    variantLabel: listing.variant?.displayLabel || listing.variant?.value || null,
+    sellerSku: listing.sellerSku || null,
     price: listing.price,
+    priceBasis: listing.priceBasis,
     stockQty: listing.stockQty ?? 0,
+    availability: listing.availability || null,
+    _search: listing._search || null,
     product: p,
   };
+  const productPath = `/p/${p.slug || p.id || listing.listingId}`;
 
   return (
     <CardShell
       title={p.title}
-      href={`/p/${p.slug || p.id || listing.listingId}`}
+      href={line.variantId ? { pathname: productPath, search: `?variantId=${line.variantId}` } : productPath}
       imageUrl={p.imageUrl}
       unit={p.defaultSellingUnit}
       line={line}
@@ -91,11 +102,17 @@ function GroupedCard({
 
   const line = {
     listingId: sel.listingId,
+    variantId: sel.variantId || null,
+    variantLabel: sel.label || sel.value || null,
+    sellerSku: sel.sellerSku || null,
     price: {
       sellingPrice: sel.price?.sellingPrice ?? 0,
       mrp: sel.price?.mrp ?? null,
     },
+    priceBasis: sel.priceBasis || listing.priceBasis,
     stockQty: sel.stockQty ?? 0,
+    availability: sel.availability || null,
+    _search: sel._search || listing._search || null,
     product: {
       ...p,
       imageUrl: sel.imageUrl || p.imageUrl,
@@ -205,11 +222,46 @@ function CardShell({
       : 0;
 
   const stock = line.stockQty ?? 0;
+  const cardRef = useRef(null);
+  const impressionId = useRef(eventId());
+  const clicked = useRef(false);
+  const attribution = line._search;
+  useEffect(() => {
+    impressionId.current = eventId();
+    clicked.current = false;
+    if (!attribution?.queryId || !line.listingId || !cardRef.current || typeof IntersectionObserver === 'undefined') return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.5)) return;
+      api.shop.searchEvent({
+        queryId: attribution.queryId, eventId: impressionId.current, type: 'impression',
+        listingId: line.listingId, position: attribution.position,
+      }).catch(() => {});
+      observer.disconnect();
+    }, { threshold: [0.5] });
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, [attribution?.queryId, attribution?.position, line.listingId]);
+  const recordClick = () => {
+    if (clicked.current || !attribution?.queryId) return;
+    clicked.current = true;
+    api.shop.searchEvent({
+      queryId: attribution.queryId,
+      eventId: eventId(),
+      type: 'click', listingId: line.listingId, position: attribution.position,
+    }).catch(() => {});
+  };
   const out = stock <= 0;
   const low = !out && stock <= 5;
 
   // Wishlist identity comes from the active product.
   const product = line.product || {};
+  const basisQuantity = line.priceBasis?.quantity || 1;
+  const basisUnit = line.priceBasis?.unitCode || unit;
+  // Never infer a public claim from the master's aggregate status: individual
+  // evidence may have expired since indexing. Only disclose records the public
+  // projection has already verified and date-filtered.
+  const verified = (product.compliance || []).length > 0;
+  const packCount = (product.packages || []).length;
 
   const slug =
     product.slug ||
@@ -222,63 +274,69 @@ function CardShell({
   const wishlistImage =
     product.imageUrl || imageUrl || '';
 
-  const {
-    wishlisted,
-    toggle,
-  } = useWishlist(slug);
+  const wishlistItem = {
+    slug,
+    listingId: line.listingId,
+    variantId: line.variantId,
+    variantLabel: line.variantLabel,
+    sellerSku: line.sellerSku,
+  };
+  const { isWishlisted, toggle } = useWishlist();
+  const wishlisted = isWishlisted(wishlistItem);
 
   return (
     <article
+      ref={cardRef}
       className={cn(
-        'card group relative flex flex-col overflow-hidden transition hover:shadow-lift',
-        out && 'opacity-70',
+        'card group relative flex flex-col overflow-hidden rounded-3xl border-slate-200/80 transition duration-300 hover:-translate-y-1 hover:border-slate-300 hover:shadow-lift',
+        out && 'bg-slate-50/50',
       )}
     >
       <Link
         to={href}
-        className="relative block aspect-square w-full overflow-hidden bg-slate-50 text-left"
+        className="relative block aspect-[4/3] w-full overflow-hidden bg-gradient-to-br from-slate-50 to-slate-100 text-left sm:aspect-square"
         aria-label={`View ${title}`}
+        onClick={recordClick}
       >
-        {imageUrl ? (
-          <FloralImage
-            src={imageUrl}
-            alt={title}
-            className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
-          />
-        ) : (
-          <span
-            className="flex h-full w-full items-center justify-center text-4xl"
-            style={{ background: 'var(--brand-soft)' }}
-            aria-hidden
-          >
-            🌸
+        <ProductImage
+          src={imageUrl}
+          alt={title}
+          className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.04]"
+        />
+
+        <span className="absolute left-2 top-2 flex flex-col items-start gap-1.5">
+          {off > 0 && (
+            <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white shadow-sm">
+              {off}% off
+            </span>
+          )}
+          {product.kind === 'bundle' && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-violet-700/90 px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur"><Sparkles className="h-3 w-3" />Bundle</span>
+          )}
+        </span>
+
+        {out && (
+          <span className="absolute inset-x-0 bottom-0 bg-slate-900/75 py-1.5 text-center text-xs font-semibold text-white">
+            Out of stock
           </span>
         )}
+      </Link>
 
-        {off > 0 && (
-          <span className="absolute left-2 top-2 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white">
-            {off}% off
-          </span>
-        )}
-
-        <button
+      <button
           type="button"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-
+          onClick={() => {
             toggle({
-              slug,
+              ...wishlistItem,
               title: wishlistTitle,
               imageUrl: wishlistImage,
               price,
             });
           }}
           className={cn(
-            'absolute right-2 top-2 rounded-full p-1.5 shadow-sm transition',
+            'absolute right-2.5 top-2.5 z-10 grid h-9 w-9 place-items-center rounded-full border shadow-sm backdrop-blur transition duration-200 hover:scale-105 active:scale-95',
             wishlisted
-              ? 'bg-rose-100 text-rose-600'
-              : 'bg-white/80 text-slate-400 opacity-0 group-hover:opacity-100',
+              ? 'border-rose-200 bg-rose-50 text-rose-600'
+              : 'border-white/70 bg-white/90 text-slate-500 hover:text-rose-600',
           )}
           aria-label={
             wishlisted
@@ -289,28 +347,40 @@ function CardShell({
         >
           <Heart
             className={cn(
-              'h-4 w-4',
-              wishlisted && 'fill-current',
+              'h-[18px] w-[18px] transition-transform',
+              wishlisted && 'scale-110 fill-current',
             )}
           />
         </button>
 
-        {out && (
-          <span className="absolute inset-x-0 bottom-0 bg-slate-900/75 py-1.5 text-center text-xs font-semibold text-white">
-            Out of stock
-          </span>
-        )}
-      </Link>
-
-      <div className="flex flex-1 flex-col gap-1 p-3">
-        <h3 className="line-clamp-2 text-sm font-medium leading-snug text-slate-800">
-          {title}
-        </h3>
-
-        {unit && (
-          <p className="text-[11px] text-slate-400">
-            per {unit}
+      <div className="flex flex-1 flex-col gap-1 px-3.5 pb-3.5 pt-3">
+        {(product.brand?.name || product.brandName) && (
+          <p className="flex items-center gap-1 truncate text-[10px] font-bold uppercase tracking-[0.12em] text-slate-400">
+            {product.brand?.name || product.brandName}{product.brand?.isVerified && <BadgeCheck className="h-3 w-3 text-sky-500" />}
           </p>
+        )}
+        <h3 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-800 transition group-hover:text-slate-950">
+          <Link to={href} onClick={recordClick} className="focus-visible:rounded-sm">{title}</Link>
+        </h3>
+        {line.variantLabel && (
+          <p className="line-clamp-1 text-[11px] font-semibold text-slate-500" title={line.variantLabel}>{line.variantLabel}</p>
+        )}
+
+        {basisUnit && (
+          <p className="text-[11px] font-medium text-slate-400">
+            {basisQuantity === 1 ? 'per' : 'price for'} {basisQuantity} {basisUnit}
+          </p>
+        )}
+        {line.availability?.nearestNode?.name && (
+          <p className="line-clamp-1 text-[10px] font-semibold text-indigo-600" title={`Fulfilled by ${line.availability.nearestNode.name}`}>
+            From {line.availability.nearestNode.name}{line.availability.nearestNode.distanceKm != null ? ` · ${line.availability.nearestNode.distanceKm} km` : ''}
+          </p>
+        )}
+        {(verified || packCount > 0) && (
+          <div className="mt-0.5 flex flex-wrap gap-1.5">
+            {verified && <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700"><ShieldCheck className="h-3 w-3" />Verified</span>}
+            {packCount > 0 && <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-slate-500"><Package className="h-3 w-3" />{packCount} pack option{packCount === 1 ? '' : 's'}</span>}
+          </div>
         )}
 
         {selector}

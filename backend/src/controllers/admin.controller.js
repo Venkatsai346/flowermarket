@@ -63,6 +63,7 @@ class AdminController {
       tenantId: req.tenantId, listingId: req.params.id,
       type: req.body.type, qtyChange: req.body.qtyChange,
       reason: req.body.reason, note: req.body.note,
+      warehouseId: req.body.warehouseId || null,
       actorId: req.auth.userId, req,
     });
     res.status(200).json(success(result, { message: 'Inventory adjusted (ledger row appended)' }));

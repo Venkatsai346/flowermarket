@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BadgeIndianRupee, Banknote, Calendar, Check, CreditCard, MapPin, Plus, ShieldCheck, Tag, Wallet,
@@ -65,6 +65,7 @@ export default function Checkout() {
   // switching cash off is an env flip, not a deploy.
   const payments = useShop((s) => s.payments);
   const navigate = useNavigate();
+  const checkoutKeyRef = useRef(null);
   const isAuth = useShopAuth((s) => s.isAuthenticated());
   
   const [addressId, setAddressId] = useState('');
@@ -102,6 +103,7 @@ export default function Checkout() {
   const pinServiceable = !pin || slots?.serviceable !== false;
 
   const reservationId = reservation?.id || reservation?.reservationId || null;
+  useEffect(() => { checkoutKeyRef.current = null; }, [addressId, reservationId, payment]);
   const couponCode = cart?.cart?.couponCode || cart?.couponCode || '';
   const quoteKey = isAuth && addressId && reservationId ? `${addressId}:${reservationId}:${couponCode}` : null;
   
@@ -228,8 +230,10 @@ export default function Checkout() {
   const place = async () => {
     setPlacing(true);
     try {
+      if (!checkoutKeyRef.current) checkoutKeyRef.current = globalThis.crypto?.randomUUID?.() || `checkout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const r = await api.shop.checkout({
         addressId,
+        idempotencyKey: checkoutKeyRef.current,
         slotReservationId: reservation?.id || reservation?.reservationId,
         paymentMethod: payment,
         confirmPriceChanges: true,
@@ -454,6 +458,16 @@ export default function Checkout() {
             <div className="mb-3 flex items-center justify-between rounded-xl bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
               <span className="inline-flex items-center gap-1.5"><Tag className="h-3.5 w-3.5" />{couponCode}</span>
               <button type="button" onClick={dropCoupon} className="underline">remove</button>
+            </div>
+          )}
+          {quote?.fulfillment?.hub && (
+            <div className="mb-3 rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-cyan-50 p-3">
+              <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-indigo-600">Fulfillment promise</p>
+              <p className="mt-1 text-sm font-semibold text-slate-800">{quote.fulfillment.hub.name}</p>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Expected by {new Date(quote.fulfillment.promiseMaxAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                {quote.fulfillment.hub.distanceKm != null ? ` · ${Number(quote.fulfillment.hub.distanceKm).toFixed(1)} km away` : ''}
+              </p>
             </div>
           )}
           <dl className="space-y-1.5 border-t border-slate-100 pt-3 text-sm">

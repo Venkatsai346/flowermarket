@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ChevronLeft, PackageSearch, Search } from 'lucide-react';
+import { ChevronLeft, PackageSearch, Search, Shapes } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
@@ -45,16 +45,15 @@ export default function Categories() {
         <ChevronLeft className="h-4 w-4" /> {t(language, 'backToShop')}
       </Link>
 
-      <div>
-        <h1 className="font-display text-3xl tracking-tight text-slate-900">
-          {t(language, 'categoriesAt', store?.name || '')}
-        </h1>
-        <p className="mt-1 text-sm text-slate-500">
-          {loading
-            ? t(language, 'loading')
-            : t(language, 'categoryCount', flat.length)}
-        </p>
-      </div>
+      <header className="relative overflow-hidden rounded-3xl border border-slate-200 px-5 py-7 shadow-sm sm:px-8 sm:py-9" style={{ background: 'linear-gradient(135deg, var(--brand-soft), white 68%)' }}>
+        <div className="absolute -right-8 -top-10 grid h-36 w-36 place-items-center rounded-full border border-white/70 bg-white/30 text-slate-900/10"><Shapes className="h-20 w-20" /></div>
+        <div className="relative max-w-2xl">
+          <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em]" style={{ color: 'var(--brand)' }}>Shop by collection</p>
+          <h1 className="font-display text-3xl tracking-tight text-slate-900 sm:text-4xl">{t(language, 'categoriesAt', store?.name || '')}</h1>
+          <p className="mt-2 text-sm leading-relaxed text-slate-600">Navigate a structured catalog built around how you shop, with live availability and starting prices rolled up from every subcategory.</p>
+          <p className="mt-4 text-xs font-semibold text-slate-500">{loading ? t(language, 'loading') : t(language, 'categoryCount', flat.length)}</p>
+        </div>
+      </header>
 
       <label className="relative mt-5 block max-w-md">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />

@@ -30,7 +30,7 @@ const ICONS = {
 };
 
 export function HighlightIcon({ name, className }) {
-  const Icon = ICONS[String(name || '').toLowerCase().trim()] || Flower2;
+  const Icon = ICONS[String(name || '').toLowerCase().trim()] || Package;
   return <Icon className={className} />;
 }
 

@@ -33,6 +33,7 @@ export const inventoryAdjustSchema = Joi.object({
   qtyChange: Joi.number().integer().min(-999999).max(999999).required().custom((v) => (v === 0 ? { message: 'qtyChange must be non-zero' } : v)),
   reason: Joi.string().min(3).max(300).required(),
   note: Joi.string().max(500).allow(null, '').optional(),
+  warehouseId: objectId.allow(null).optional(),
 });
 
 export const hubCreateSchema = Joi.object({
@@ -42,6 +43,11 @@ export const hubCreateSchema = Joi.object({
   coordinates: Joi.array().items(Joi.number()).length(2).optional(),
   pincodes: Joi.array().items(Joi.string().regex(/^\d{6}$/)).max(200).optional(),
   defaultSlotCapacity: Joi.number().integer().min(1).max(10000).optional(),
+  fulfillmentPriority: Joi.number().integer().min(0).max(10000).optional(),
+  handlingTimeMinutes: Joi.number().integer().min(0).max(10080).optional(),
+  maxDeliveryRadiusKm: Joi.number().min(0).max(1000).allow(null).optional(),
+  acceptsOverflow: Joi.boolean().optional(),
+  isFulfillmentEnabled: Joi.boolean().optional(),
   isActive: Joi.boolean().optional(),
 });
 
@@ -50,6 +56,11 @@ export const hubUpdateSchema = Joi.object({
   address: Joi.object({ line1: Joi.string().max(160).allow('', null), city: Joi.string().max(80).allow('', null), state: Joi.string().max(80).allow('', null), pincode: Joi.string().max(12).allow('', null) }).optional(),
   coordinates: Joi.array().items(Joi.number()).length(2).optional(),
   defaultSlotCapacity: Joi.number().integer().min(1).max(10000).optional(),
+  fulfillmentPriority: Joi.number().integer().min(0).max(10000).optional(),
+  handlingTimeMinutes: Joi.number().integer().min(0).max(10080).optional(),
+  maxDeliveryRadiusKm: Joi.number().min(0).max(1000).allow(null).optional(),
+  acceptsOverflow: Joi.boolean().optional(),
+  isFulfillmentEnabled: Joi.boolean().optional(),
 });
 
 export const hubToggleSchema = Joi.object({ isActive: Joi.boolean().required() });

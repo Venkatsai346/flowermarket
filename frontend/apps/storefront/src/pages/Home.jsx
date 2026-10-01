@@ -9,7 +9,7 @@ import { resolveBrandTheme } from '../theme.js';
 import { t } from '../i18n.js';
 import { readViewed } from '../lib/viewed.js';
 import ProductCard from '../components/ProductCard.jsx';
-import FloralImage from '../components/FloralImage.jsx';
+import ProductImage from '../components/ProductImage.jsx';
 import ArrivalPromise from '../components/ArrivalPromise.jsx';
 import HeroCarousel from '../components/HeroCarousel.jsx';
 import StoreHighlights from '../components/StoreHighlights.jsx';
@@ -103,7 +103,7 @@ export default function Home() {
         />
       ) : store ? (
         <section className="relative min-h-[28rem] overflow-hidden sm:min-h-[32rem]">
-          <FloralImage
+          <ProductImage
             src={hero}
             alt=""
             priority
@@ -139,7 +139,7 @@ export default function Home() {
                   className="w-28 shrink-0"
                 >
                   <span className="block aspect-square overflow-hidden rounded-2xl bg-slate-100">
-                    <FloralImage src={v.imageUrl} alt="" className="h-full w-full object-cover" />
+                    <ProductImage src={v.imageUrl} alt="" className="h-full w-full object-cover" />
                   </span>
                   <span className="mt-1.5 block line-clamp-2 text-[11px] font-medium text-slate-600">{v.title}</span>
                 </Link>
@@ -163,7 +163,7 @@ export default function Home() {
                   className="group w-24 shrink-0 text-center sm:w-28"
                 >
                   <span className="block aspect-square overflow-hidden rounded-3xl bg-slate-100 ring-1 ring-slate-200/70 transition group-hover:ring-2" style={{ '--tw-ring-color': 'var(--brand)' }}>
-                    <FloralImage
+                    <ProductImage
                       src={c.imageUrl || c.bannerUrl}
                       alt=""
                       className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.06]"
@@ -305,7 +305,7 @@ export default function Home() {
             className="card grid overflow-hidden sm:grid-cols-2"
           >
             <div className="relative min-h-56 overflow-hidden bg-slate-100">
-              <FloralImage
+              <ProductImage
                 src={about.imageUrl}
                 alt=""
                 className="absolute inset-0 h-full w-full object-cover"

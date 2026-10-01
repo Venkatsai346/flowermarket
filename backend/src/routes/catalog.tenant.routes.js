@@ -11,6 +11,7 @@ import {
   listingBulkSchema,
   listingQuerySchema,
   listingUpdatePriceSchema,
+  listingUpdateOfferSchema,
   listingUpdateStatusSchema,
   changeRequestCreateSchema,
   changeRequestQuerySchema,
@@ -18,6 +19,13 @@ import {
   stockSetSchema,
   stockAdjustSchema,
   versionOnlySchema,
+  catalogQualityQuerySchema,
+  qualityMasterParamSchema,
+  qualityRunParamSchema,
+  bulkQuerySchema,
+  bulkUploadSchema,
+  bulkJobsQuerySchema,
+  bulkJobParamSchema,
 } from '../utils/validators/catalog.validators.js';
 
 const router = Router();
@@ -47,6 +55,7 @@ router.get('/masters/:id/variants', validate(idParamSchema, 'params'), CatalogTe
 router.get('/listings', validate(listingQuerySchema, 'query'), CatalogTenantController.listListings);
 router.get('/listings/:id', validate(idParamSchema, 'params'), CatalogTenantController.getListing);
 router.patch('/listings/:id/price', validate(idParamSchema, 'params'), validate(listingUpdatePriceSchema), CatalogTenantController.updatePrice);
+router.patch('/listings/:id/offer', validate(idParamSchema, 'params'), validate(listingUpdateOfferSchema), CatalogTenantController.updateOffer);
 router.patch('/listings/:id/status', validate(idParamSchema, 'params'), validate(listingUpdateStatusSchema), CatalogTenantController.updateStatus);
 router.post('/listings/:id/deactivate', validate(idParamSchema, 'params'), validate(versionOnlySchema), CatalogTenantController.deactivateListing);
 
@@ -68,10 +77,24 @@ router.get('/change-requests', validate(changeRequestQuerySchema, 'query'), Cata
 router.post('/change-requests/:id/cancel', validate(idParamSchema, 'params'), CatalogTenantController.cancelChangeRequest);
 router.post('/change-requests/:id/revise', validate(idParamSchema, 'params'), CatalogTenantController.reviseChangeRequest);
 
-// ---- bulk ----
-router.post('/bulk/:kind', CatalogTenantController.bulkUpload);
-router.get('/bulk/jobs', CatalogTenantController.listBulkJobs);
-router.get('/bulk/jobs/:jobId', CatalogTenantController.getBulkJob);
+// ---- catalog quality control plane (tenant-wide; vendors are intentionally excluded) ----
+const tenantQualityAdmin = authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN);
+router.post('/quality/evaluate', tenantQualityAdmin, CatalogTenantController.evaluateQuality);
+router.get('/quality/summary', tenantQualityAdmin, CatalogTenantController.qualitySummary);
+router.get('/quality/runs', tenantQualityAdmin, validate(bulkJobsQuerySchema, 'query'), CatalogTenantController.listQualityRuns);
+router.get('/quality/runs/:runId', tenantQualityAdmin, validate(qualityRunParamSchema, 'params'), CatalogTenantController.qualityRunDetail);
+router.post('/quality/runs/:runId/cancel', tenantQualityAdmin, validate(qualityRunParamSchema, 'params'), CatalogTenantController.cancelQualityRun);
+router.post('/quality/runs/:runId/retry', tenantQualityAdmin, validate(qualityRunParamSchema, 'params'), CatalogTenantController.retryQualityRun);
+router.get('/quality/assessments', tenantQualityAdmin, validate(catalogQualityQuerySchema, 'query'), CatalogTenantController.listQuality);
+router.get('/quality/assessments/:masterId', tenantQualityAdmin, validate(qualityMasterParamSchema, 'params'), CatalogTenantController.qualityDetail);
+
+// ---- durable bulk operations ----
+router.post('/bulk/:kind', validate(bulkQuerySchema, 'query'), validate(bulkUploadSchema), CatalogTenantController.bulkUpload);
+router.get('/bulk/jobs', validate(bulkJobsQuerySchema, 'query'), CatalogTenantController.listBulkJobs);
+router.get('/bulk/jobs/:jobId/failures', validate(bulkJobParamSchema, 'params'), validate(bulkJobsQuerySchema, 'query'), CatalogTenantController.listBulkFailures);
+router.post('/bulk/jobs/:jobId/cancel', validate(bulkJobParamSchema, 'params'), CatalogTenantController.cancelBulkJob);
+router.post('/bulk/jobs/:jobId/retry-failures', validate(bulkJobParamSchema, 'params'), CatalogTenantController.retryBulkFailures);
+router.get('/bulk/jobs/:jobId', validate(bulkJobParamSchema, 'params'), CatalogTenantController.getBulkJob);
 router.get('/bulk/template/:kind', CatalogTenantController.downloadTemplate);
 
 export default router;

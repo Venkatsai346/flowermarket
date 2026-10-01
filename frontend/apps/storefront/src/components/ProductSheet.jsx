@@ -1,5 +1,6 @@
 import { Leaf, Snowflake, Truck } from 'lucide-react';
 import { Button, Money, Sheet, Stepper } from './ui.jsx';
+import ProductImage from './ProductImage.jsx';
 
 export default function ProductSheet({ listing, qty, onClose, onAdd, onQty }) {
   const p = listing.product || {};
@@ -30,9 +31,7 @@ export default function ProductSheet({ listing, qty, onClose, onAdd, onQty }) {
     >
       <div className="space-y-4">
         <div className="aspect-[4/3] w-full overflow-hidden rounded-2xl bg-slate-50">
-          {p.imageUrl
-            ? <img src={p.imageUrl} alt={p.title} className="h-full w-full object-cover" />
-            : <span className="flex h-full w-full items-center justify-center text-6xl" style={{ background: 'var(--brand-soft)' }} aria-hidden>🌸</span>}
+          <ProductImage src={p.imageUrl} alt={p.title} className="h-full w-full object-cover" />
         </div>
 
         <div className="flex items-end gap-2">

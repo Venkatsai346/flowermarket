@@ -14,7 +14,7 @@ import Modal from '../../components/ui/Modal.jsx';
 import { Checkbox, Field, Input, Select, Textarea } from '../../components/ui/Field.jsx';
 import EmptyState from '../../components/ui/EmptyState.jsx';
 
-const TYPES = ['fresh_flower', 'flower_bouquet', 'plant', 'other'];
+const TYPES = ['fresh_flower', 'flower_bouquet', 'plant', 'apparel', 'beauty', 'grocery', 'electronics', 'home', 'book', 'digital_good', 'service', 'bundle', 'other'];
 const PRODUCT_TYPES = {
   fresh_flower: 'Fresh flower',
   flower_bouquet: 'Bouquet',
@@ -39,6 +39,11 @@ export default function VendorProductsPage() {
   const [form, setForm] = useState({
     title: '',
     type: 'fresh_flower',
+    kind: 'physical',
+    manufacturer: '',
+    modelNumber: '',
+    countryOfOrigin: '',
+    condition: 'new',
     categoryId: '',
     skuGlobal: '',
     shortDescription: '',
@@ -140,9 +145,13 @@ export default function VendorProductsPage() {
             <Input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Vizag Rose Bouquet (12 stems)" />
           </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Type" required>
-              <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-                {TYPES.map((t) => <option key={t} value={t}>{PRODUCT_TYPES[t] || t}</option>)}
+            <Field label="Product class" required hint="Choose a preset or enter your own class">
+              <Input list="vendor-product-types" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, '_') })} />
+              <datalist id="vendor-product-types">{TYPES.map((type) => <option key={type} value={type}>{PRODUCT_TYPES[type] || titleCase(type)}</option>)}</datalist>
+            </Field>
+            <Field label="Product kind" required>
+              <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })}>
+                <option value="physical">Physical</option><option value="digital">Digital</option><option value="service">Service</option><option value="bundle">Bundle</option>
               </Select>
             </Field>
             <Field label="SKU" required hint="Unique, uppercase">
@@ -157,6 +166,12 @@ export default function VendorProductsPage() {
               ))}
             </Select>
           </Field>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Field label="Manufacturer"><Input value={form.manufacturer} onChange={(e) => setForm({ ...form, manufacturer: e.target.value })} /></Field>
+            <Field label="Model number"><Input value={form.modelNumber} onChange={(e) => setForm({ ...form, modelNumber: e.target.value })} /></Field>
+            <Field label="Country of origin"><Input value={form.countryOfOrigin} onChange={(e) => setForm({ ...form, countryOfOrigin: e.target.value })} /></Field>
+            <Field label="Condition"><Select value={form.condition} onChange={(e) => setForm({ ...form, condition: e.target.value })}><option value="new">New</option><option value="refurbished">Refurbished</option><option value="used">Used</option></Select></Field>
+          </div>
           <Field label="Short description">
             <Textarea value={form.shortDescription} onChange={(e) => setForm({ ...form, shortDescription: e.target.value })} placeholder="Fresh-cut roses sourced from local farms…" />
           </Field>

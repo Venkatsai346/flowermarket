@@ -3,6 +3,7 @@ import { RotateCcw, ShieldCheck } from 'lucide-react';
 import { api } from '../api.js';
 import { useShop } from '../store.js';
 import { Button, Sheet, Stepper, Empty } from './ui.jsx';
+import ProductImage from './ProductImage.jsx';
 import { cn, errMsg } from '../lib/utils.js';
 import {
   INSTANT_CLAIM_WINDOW_HOURS, RETURN_WINDOW_DAYS, RETURN_CLAIM_META, RETURN_REASONS,
@@ -191,11 +192,7 @@ export default function ReturnSheet({ order, items = [], open, onClose, onCreate
                 return (
                   <li key={it.id} className={cn('flex items-center gap-3 p-3', !allowed && 'opacity-40')}>
                     <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-slate-50">
-                      {it.skuSnapshot?.imageUrl ? (
-                        <img src={it.skuSnapshot.imageUrl} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        <span className="flex h-full w-full items-center justify-center text-xl" aria-hidden>🌸</span>
-                      )}
+                      <ProductImage src={it.skuSnapshot?.imageUrl} alt={it.skuSnapshot?.title || 'Product'} fallbackCompact className="h-full w-full object-cover" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-slate-800">{it.skuSnapshot?.title}</p>
