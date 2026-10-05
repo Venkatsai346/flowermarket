@@ -1,5 +1,6 @@
 import Category from '../models/category.model.js';
-import { badRequest, notFound } from '../utils/ApiError.js';
+import ProductMaster from '../models/productMaster.model.js';
+import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { uniqueSlug, assertSlugFree } from '../utils/slugify.js';
 import { serializeDoc, serializeList } from '../utils/serialize.js';
 import auditService from './audit.service.js';
@@ -49,6 +50,8 @@ class CategoryService {
       if (seen.has(key)) return false; // legacy cycle — stop
       seen.add(key);
       if (key === String(targetId)) return true;
+      // Ancestor traversal is deliberately sequential because each parent depends on the previous row.
+      // eslint-disable-next-line no-await-in-loop
       const row = await Category.findById(cur).select('parentId').lean();
       cur = row?.parentId || null;
     }
@@ -61,6 +64,7 @@ class CategoryService {
     let processed = 0;
     while (frontier.length) {
       const next = [];
+      // The ancestor/subtree walk is deliberately sequential because each frontier depends on the previous level.
       // eslint-disable-next-line no-await-in-loop
       const rows = await Category.find({
         parentId: { $in: frontier.map((f) => f._id) },
@@ -68,6 +72,7 @@ class CategoryService {
       const levelOf = new Map(frontier.map((f) => [String(f._id), f.level]));
       for (const r of rows) {
         const lvl = (levelOf.get(String(r.parentId)) ?? 0) + 1;
+        // The ancestor/subtree walk is deliberately sequential because each frontier depends on the previous level.
         // eslint-disable-next-line no-await-in-loop
         await Category.updateOne({ _id: r._id }, { $set: { level: lvl } });
         processed += 1;
@@ -105,6 +110,15 @@ class CategoryService {
     const oldParentKey = cat.parentId ? String(cat.parentId) : '';
     Object.assign(cat, patch);
     await cat.save();
+    if (patch.complianceRequirements) {
+      const hasRequiredCompliance = patch.complianceRequirements.some((requirement) => requirement.required !== false);
+      if (hasRequiredCompliance) {
+        await ProductMaster.updateMany(
+          { categoryId: cat.id, status: 'active' },
+          { $set: { complianceStatus: 'pending' }, $inc: { version: 1 } },
+        );
+      }
+    }
     const newParentKey = cat.parentId ? String(cat.parentId) : '';
     // A reparented subtree carries STALE `level` values on every descendant
     // (level is denormalized depth) — recompute the whole subtree.
@@ -151,7 +165,7 @@ class CategoryService {
       const visited = new Set(seen);
       visited.add(String(cat._id));
       return {
-        ...cat,
+        ...serializeDoc(cat),
         children: children.filter((ch) => !visited.has(String(ch._id))).map((ch) => attach(ch, visited)),
       };
     };
@@ -170,6 +184,16 @@ class CategoryService {
     if (children > 0) {
       throw badRequest('Cannot delete a category that has children', 'CATEGORY_HAS_CHILDREN');
     }
+    const referenced = await ProductMaster.exists({
+      categoryId: id,
+      status: { $in: ['active', 'pending_review'] },
+    });
+    if (referenced) {
+      throw conflict(
+        'Cannot delete a category used by active or pending products. Move those products first.',
+        'CATEGORY_IN_USE',
+      );
+    }
     await cat.softDelete();
     await auditService.record({
       action: 'delete', entityType: 'category', entityId: cat.id,
@@ -186,9 +210,11 @@ class CategoryService {
    * Validate EAV attributes against the category's attributeSchema
    * (compliance gating: food/pharma categories can require FSSAI, expiry, etc.).
    */
-  async validateAttributes(categoryId, attributes = []) {
+  async validateAttributes(categoryId, attributes = [], { scope = 'master' } = {}) {
     const cat = await this.getById(categoryId);
-    const schema = cat.attributeSchema || [];
+    const schema = (cat.attributeSchema || []).filter((field) =>
+      (field.appliesTo || 'master') === 'both' || (field.appliesTo || 'master') === scope
+    );
     if (schema.length === 0) return { ok: true, errors: [] };
 
     const byKey = new Map((attributes || []).map((a) => [a.key, a]));
@@ -202,9 +228,10 @@ class CategoryService {
       }
       if (!entry) continue;
 
-      const value = String(entry.value ?? '');
+      const rawValue = entry.value;
+      const value = String(rawValue ?? '');
       if (field.type === ATTRIBUTE_FIELD_TYPE.NUMBER) {
-        const n = Number(value);
+        const n = Number(rawValue);
         if (Number.isNaN(n)) { errors.push(`${field.key} must be a number`); continue; }
         if (field.min !== null && field.min !== undefined && n < field.min) errors.push(`${field.key} must be >= ${field.min}`);
         if (field.max !== null && field.max !== undefined && n > field.max) errors.push(`${field.key} must be <= ${field.max}`);
@@ -212,10 +239,20 @@ class CategoryService {
         if (field.options?.length && !field.options.includes(value)) {
           errors.push(`${field.key} must be one of: ${field.options.join(', ')}`);
         }
+      } else if (field.type === ATTRIBUTE_FIELD_TYPE.MULTI_SELECT) {
+        if (!Array.isArray(rawValue) || !rawValue.length) {
+          errors.push(`${field.key} must contain at least one selection`);
+        } else if (field.options?.length && rawValue.some((v) => !field.options.includes(String(v)))) {
+          errors.push(`${field.key} contains an unsupported selection`);
+        }
       } else if (field.type === ATTRIBUTE_FIELD_TYPE.BOOLEAN) {
-        if (!['true', 'false'].includes(value.toLowerCase())) errors.push(`${field.key} must be true/false`);
+        if (typeof rawValue !== 'boolean' && !['true', 'false'].includes(value.toLowerCase())) errors.push(`${field.key} must be true/false`);
+      } else if (field.type === ATTRIBUTE_FIELD_TYPE.DATE) {
+        if (Number.isNaN(Date.parse(value))) errors.push(`${field.key} must be a valid date`);
+      } else if (field.type === ATTRIBUTE_FIELD_TYPE.JSON) {
+        if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) errors.push(`${field.key} must be an object`);
       }
-      if (field.regex) {
+      if (field.regex && typeof rawValue !== 'object') {
         try {
           if (!new RegExp(field.regex).test(value)) errors.push(`${field.key} failed format validation`);
         } catch { /* ignore invalid regex in schema */ }

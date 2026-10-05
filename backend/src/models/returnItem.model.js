@@ -13,6 +13,7 @@ const ReturnItemSchema = new Schema(
     returnRequestId: { type: Types.ObjectId, ref: 'ReturnRequest', required: true, index: true },
     orderItemId: { type: Types.ObjectId, ref: 'OrderItem', required: true, index: true },
     orderId: { type: Types.ObjectId, ref: 'Order', required: true, index: true },
+    shipmentId: { type: Types.ObjectId, ref: 'Shipment', default: null, index: true },
     tenantProductId: { type: Types.ObjectId, ref: 'TenantProduct', required: true },
 
     qty: { type: Number, required: true, min: 1 },

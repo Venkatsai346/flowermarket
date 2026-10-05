@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { useShop } from '../store.js';
 import { t } from '../i18n.js';
-import FloralImage from '../components/FloralImage.jsx';
+import ProductImage from '../components/ProductImage.jsx';
 import Testimonials from '../components/Testimonials.jsx';
 import { HighlightIcon } from '../components/StoreHighlights.jsx';
 import { Button } from '../components/ui.jsx';
@@ -90,7 +90,7 @@ export default function About() {
         </div>
       ) : heroImage ? (
         <div className="mb-8 overflow-hidden rounded-3xl">
-          <FloralImage
+          <ProductImage
             src={heroImage}
             alt={store.name}
             className="h-48 w-full object-cover sm:h-64"

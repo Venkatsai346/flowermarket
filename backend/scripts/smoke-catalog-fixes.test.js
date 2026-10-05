@@ -52,6 +52,7 @@ async function main() {
   ];
   const loaded = {};
   for (const m of models) {
+    // This integration scenario is deliberately sequential because each operation depends on previous test state.
     // eslint-disable-next-line no-await-in-loop
     loaded[m] = (await import(`../src/models/${m}`)).default;
   }
@@ -87,6 +88,7 @@ async function main() {
   const { default: AuthService } = await import('../src/services/auth.service.js');
   const tok = {};
   for (const [k, u] of Object.entries({ admin, vendor, vendor2, custA, custB, adminUser })) {
+    // This integration scenario is deliberately sequential because each operation depends on previous test state.
     // eslint-disable-next-line no-await-in-loop
     tok[k] = (await AuthService.issueTokens(u)).accessToken;
   }
@@ -128,12 +130,14 @@ async function main() {
   const pollJob = async (jobId, { timeoutMs = 15_000 } = {}) => {
     const t0 = Date.now();
     for (;;) {
+      // This integration scenario is deliberately sequential because each operation depends on previous test state.
       // eslint-disable-next-line no-await-in-loop
       const r = await call(`/catalog/tenant/bulk/jobs/${jobId}`, { token: tok.vendor });
       assert.equal(r.status, 200, JSON.stringify(r.body));
       const job = r.body.data;
       if (job.status === 'completed' || job.status === 'failed') return job;
       if (Date.now() - t0 > timeoutMs) throw new Error(`job ${jobId} did not finish: ${JSON.stringify(job)}`);
+      // This integration scenario is deliberately sequential because each operation depends on previous test state.
       // eslint-disable-next-line no-await-in-loop
       await new Promise((res2) => { setTimeout(res2, 150); });
     }
@@ -520,9 +524,11 @@ async function main() {
   // ================= F-10: regex injection in search =================
   section('F-10 hostile search strings return 200, not 500');
   for (const evil of ['(', '(a+)+', '[', '*', '.*', '$$$', '\\', 'a|b']) {
+    // This integration scenario is deliberately sequential because each operation depends on previous test state.
     // eslint-disable-next-line no-await-in-loop
     const a = await call(`/catalog/admin/masters?search=${encodeURIComponent(evil)}`, { token: tok.admin });
     assert.equal(a.status, 200, `admin master search "${evil}" must be 200`);
+    // This integration scenario is deliberately sequential because each operation depends on previous test state.
     // eslint-disable-next-line no-await-in-loop
     const b = await call(`/catalog/tenant/listings?search=${encodeURIComponent(evil)}`, { token: tok.vendor });
     assert.equal(b.status, 200, `tenant listing search "${evil}" must be 200`);

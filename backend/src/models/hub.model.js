@@ -32,6 +32,14 @@ const HubSchema = new Schema(
     serviceablePincodes: { type: [String], default: [] },
 
     defaultSlotCapacity: { type: Number, default: 50, min: 1 },
+
+    // Allocation controls. Lower priority wins after serviceability; distance is
+    // the deterministic tie-breaker. Handling time feeds the customer promise.
+    fulfillmentPriority: { type: Number, default: 100, min: 0, max: 10000 },
+    handlingTimeMinutes: { type: Number, default: 30, min: 0, max: 10080 },
+    maxDeliveryRadiusKm: { type: Number, default: null, min: 0, max: 1000 },
+    acceptsOverflow: { type: Boolean, default: false },
+    isFulfillmentEnabled: { type: Boolean, default: true, index: true },
     isActive: { type: Boolean, default: true, index: true },
 
     status: {
@@ -45,6 +53,7 @@ const HubSchema = new Schema(
 
 HubSchema.index({ tenantId: 1, code: 1 }, { unique: true });
 HubSchema.index({ tenantId: 1, isActive: 1 });
+HubSchema.index({ tenantId: 1, isFulfillmentEnabled: 1, fulfillmentPriority: 1 });
 
 HubSchema.plugin(auditPlugin);
 HubSchema.plugin(softDeletePlugin);

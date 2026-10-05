@@ -17,6 +17,8 @@ import ledgerPostingService from './ledgerPosting.service.js';
 import taxDocumentService from './taxDocument.service.js';
 import payoutService from './payout.service.js';
 import searchIndexer from './searchIndexer.service.js';
+import inventoryReservationService from './inventoryReservation.service.js';
+import shipmentService from './shipment.service.js';
 import auditService from './audit.service.js';
 import config from '../config/index.js';
 import { EXPORT_JOB_TYPE } from '../constants/enums.js';
@@ -48,6 +50,16 @@ class MaintenanceService {
       out.analytics = await analyticsService.rebuildDailyStats({ tenantId, from, to });
     } catch (err) {
       out.analytics = { error: err?.message || String(err) };
+    }
+
+    // 2b. genuine rolling search signals (engagement + paid order facts).
+    try {
+      const { default: searchAnalyticsService } = await import('./searchAnalytics.service.js');
+      out.searchAnalytics = await searchAnalyticsService.rollup30d({ tenantId });
+    } catch (err) {
+      const { searchRollups } = await import('../observability/registry.js');
+      searchRollups.inc({ outcome: 'error' });
+      out.searchAnalytics = { error: err?.message || String(err) };
     }
 
     // 3. create analytics_daily export jobs (idempotent jobKey)
@@ -180,6 +192,21 @@ class MaintenanceService {
       out.chainRepair = { error: err?.message || String(err) };
     }
 
+    // Durable checkout inventory holds: expiry closes abandoned payment
+    // windows; reconciliation detects terminal-order leaks and counter drift.
+    try {
+      out.inventoryReservationSweep = await inventoryReservationService.sweepExpired({ tenantId });
+      out.inventoryReservationReconciliation = await inventoryReservationService.reconcile({ tenantId, repair: true });
+    } catch (err) {
+      out.inventoryReservationSweep = { error: err?.message || String(err) };
+    }
+
+    try {
+      out.shipmentReconciliation = await shipmentService.reconcile({ tenantId, limit: 1000, repair: true });
+    } catch (err) {
+      out.shipmentReconciliation = { error: err?.message || String(err) };
+    }
+
     await auditService.record({
       action: 'nightly', entityType: 'maintenance', entityId: tenantId || 'platform',
       tenantId, actorId: actorId || null, actorType,
@@ -293,7 +320,6 @@ class MaintenanceService {
         drift: verify.drifted.slice(0, 10),
       };
       if (!trial.balanced || verify.drifted.length) {
-        // eslint-disable-next-line no-console
         console.error('[ledger] INTEGRITY ALERT', JSON.stringify(out.ledger));
       }
     } catch (err) {

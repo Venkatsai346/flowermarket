@@ -29,15 +29,16 @@ import {
 class FulfillmentService {
   // ---------------- picking ----------------
 
-  async createTask({ orderId, tenantId, hubId = null, itemsCount = 0 }) {
-    return FulfillmentTask.create({
-      orderId, tenantId, hubId: hubId || null, itemsCount,
-      status: FULFILLMENT_TASK_STATUS.QUEUED,
-    });
+  async createTask({ orderId, tenantId, shipmentId = null, hubId = null, itemsCount = 0 }) {
+    return FulfillmentTask.findOneAndUpdate(
+      { orderId, tenantId, shipmentId: shipmentId || null },
+      { $setOnInsert: { hubId: hubId || null, itemsCount, status: FULFILLMENT_TASK_STATUS.QUEUED } },
+      { upsert: true, new: true },
+    );
   }
 
-  async startPick({ orderId, tenantId, pickerId }) {
-    const task = await this.getTask({ orderId, tenantId });
+  async startPick({ orderId, tenantId, shipmentId = null, pickerId }) {
+    const task = await this.getTask({ orderId, tenantId, shipmentId });
     if (task.status !== FULFILLMENT_TASK_STATUS.QUEUED) {
       throw conflict(`Task is ${task.status}`, 'INVALID_TASK_TRANSITION');
     }
@@ -49,8 +50,8 @@ class FulfillmentService {
     return task;
   }
 
-  async completePick({ orderId, tenantId }) {
-    const task = await this.getTask({ orderId, tenantId });
+  async completePick({ orderId, tenantId, shipmentId = null }) {
+    const task = await this.getTask({ orderId, tenantId, shipmentId });
     if (task.status !== FULFILLMENT_TASK_STATUS.PICKING) {
       throw conflict(`Task is ${task.status}`, 'INVALID_TASK_TRANSITION');
     }
@@ -61,8 +62,8 @@ class FulfillmentService {
     return task;
   }
 
-  async failTask({ orderId, tenantId, reason }) {
-    const task = await this.getTask({ orderId, tenantId });
+  async failTask({ orderId, tenantId, shipmentId = null, reason }) {
+    const task = await this.getTask({ orderId, tenantId, shipmentId });
     task.status = FULFILLMENT_TASK_STATUS.FAILED;
     task.failedAt = new Date();
     task.failureReason = reason || null;
@@ -70,8 +71,8 @@ class FulfillmentService {
     return task;
   }
 
-  async getTask({ orderId, tenantId }) {
-    const task = await FulfillmentTask.findOne({ orderId, tenantId });
+  async getTask({ orderId, tenantId, shipmentId = null }) {
+    const task = await FulfillmentTask.findOne({ orderId, tenantId, shipmentId: shipmentId || null });
     if (!task) throw notFound('Fulfillment task not found', 'TASK_NOT_FOUND');
     return task;
   }
@@ -83,8 +84,8 @@ class FulfillmentService {
    * nearest available rider: PENDING_ACCEPT with a 45s accept deadline.
    * Reuse the row on retry (riderId cleared, rejected list preserved).
    */
-  async assignRider({ orderId, tenantId, hubId = null }) {
-    let assignment = await DeliveryAssignment.findOne({ orderId, tenantId });
+  async assignRider({ orderId, tenantId, shipmentId = null, hubId = null }) {
+    let assignment = await DeliveryAssignment.findOne({ orderId, tenantId, shipmentId: shipmentId || null });
 
     const rider = await this.findCandidateRider({ tenantId, hubId, excludeIds: assignment?.rejectedRiderIds || [] });
 
@@ -104,7 +105,7 @@ class FulfillmentService {
       Object.assign(assignment, patch);
       await assignment.save();
     } else {
-      assignment = await DeliveryAssignment.create({ orderId, tenantId, hubId: hubId || null, ...patch });
+      assignment = await DeliveryAssignment.create({ orderId, tenantId, shipmentId: shipmentId || null, hubId: hubId || null, ...patch });
     }
 
     if (rider) {
@@ -132,8 +133,8 @@ class FulfillmentService {
   }
 
   /** Rider accepts the assignment. */
-  async acceptAssignment({ orderId, tenantId, riderId }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async acceptAssignment({ orderId, tenantId, shipmentId = null, riderId }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (assignment.status !== S.PENDING_ACCEPT) {
       throw conflict(`Assignment is ${assignment.status} — cannot accept now`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -154,8 +155,8 @@ class FulfillmentService {
   }
 
   /** Rider rejects; we immediately try the next rider (same PENDING_ACCEPT row). */
-  async rejectAssignment({ orderId, tenantId, riderId, reason = null }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async rejectAssignment({ orderId, tenantId, shipmentId = null, riderId, reason: _reason = null }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (assignment.status !== S.PENDING_ACCEPT) {
       throw conflict(`Assignment is ${assignment.status}`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -229,8 +230,8 @@ class FulfillmentService {
 
   // ---------------- rider leg transitions ----------------
 
-  async markAtHub({ orderId, tenantId }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async markAtHub({ orderId, tenantId, shipmentId = null }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (assignment.status !== S.ACCEPTED) {
       throw conflict(`Assignment is ${assignment.status} — must ACCEPTED first`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -241,8 +242,8 @@ class FulfillmentService {
   }
 
   /** Depart the hub: package must be verified (barcode/order-ID scan match). */
-  async departHub({ orderId, tenantId, packageVerified = false }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async departHub({ orderId, tenantId, shipmentId = null, packageVerified = false }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (assignment.status !== S.AT_HUB) {
       throw conflict(`Assignment is ${assignment.status} — must be AT_HUB`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -256,8 +257,8 @@ class FulfillmentService {
     return assignment;
   }
 
-  async markArrived({ orderId, tenantId }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async markArrived({ orderId, tenantId, shipmentId = null }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (assignment.status !== S.IN_TRANSIT) {
       throw conflict(`Assignment is ${assignment.status} — must be IN_TRANSIT`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -268,8 +269,8 @@ class FulfillmentService {
   }
 
   /** Capture POD + complete: ARRIVED -> DELIVERED. OTP stored hashed. */
-  async completeDelivery({ orderId, tenantId, podType, podValue = null, actorId = null }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async completeDelivery({ orderId, tenantId, shipmentId = null, podType, podValue = null, actorId: _actorId = null }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (assignment.status !== S.ARRIVED) {
       throw conflict(`Assignment is ${assignment.status} — must be ARRIVED`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -291,8 +292,8 @@ class FulfillmentService {
   }
 
   /** Fail the delivery: IN_TRANSIT | ARRIVED -> FAILED (saga decides retry/cancel). */
-  async failDelivery({ orderId, tenantId, reason = null }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async failDelivery({ orderId, tenantId, shipmentId = null, reason = null }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if (![S.IN_TRANSIT, S.ARRIVED].includes(assignment.status)) {
       throw conflict(`Assignment is ${assignment.status} — cannot fail from here`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -306,8 +307,8 @@ class FulfillmentService {
     return assignment;
   }
 
-  async getAssignment({ orderId, tenantId }) {
-    const assignment = await DeliveryAssignment.findOne({ orderId, tenantId });
+  async getAssignment({ orderId, tenantId, shipmentId = null }) {
+    const assignment = await DeliveryAssignment.findOne({ orderId, tenantId, shipmentId: shipmentId || null });
     if (!assignment) throw notFound('Delivery assignment not found', 'ASSIGNMENT_NOT_FOUND');
     return assignment;
   }

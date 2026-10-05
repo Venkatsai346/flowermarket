@@ -3,6 +3,7 @@ import { RotateCcw, ShieldCheck } from 'lucide-react';
 import { api } from '../api.js';
 import { useShop } from '../store.js';
 import { Button, Sheet, Stepper, Empty } from './ui.jsx';
+import ProductImage from './ProductImage.jsx';
 import { cn, errMsg } from '../lib/utils.js';
 import {
   INSTANT_CLAIM_WINDOW_HOURS, RETURN_WINDOW_DAYS, RETURN_CLAIM_META, RETURN_REASONS,
@@ -18,7 +19,7 @@ import {
  * is good at: let the customer say *what* and *why* without making them type a
  * form of JSON, and surface a server refusal in human words.
  */
-export default function ReturnSheet({ order, items = [], open, onClose, onCreated }) {
+export default function ReturnSheet({ order, items = [], shipments = [], open, onClose, onCreated }) {
   const toast = useShop((s) => s.toast);
   const [claimType, setClaimType] = useState('pickup_qc');
   const [qtyMap, setQtyMap] = useState({});
@@ -28,11 +29,14 @@ export default function ReturnSheet({ order, items = [], open, onClose, onCreate
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState(null);
 
-  const lines = useMemo(
-    () => (items || []).map((it) => ({ ...it, remaining: remainingQty(it) })).filter((it) => it.remaining > 0),
-    [items]
-  );
+  const lines = useMemo(() => {
+    const shipmentStatus = new Map(shipments.map((shipment) => [String(shipment.id || shipment._id), shipment.status]));
+    return (items || [])
+      .map((it) => ({ ...it, remaining: remainingQty(it) }))
+      .filter((it) => it.remaining > 0 && (!it.shipmentId || shipmentStatus.get(String(it.shipmentId)) === 'delivered'));
+  }, [items, shipments]);
 
+  const activeShipmentId = lines.find((line) => (qtyMap[line.id] || 0) > 0)?.shipmentId || null;
   const totalQty = lines.reduce((sum, it) => sum + (qtyMap[it.id] || 0), 0);
   const hasSelected = totalQty > 0;
 
@@ -186,23 +190,22 @@ export default function ReturnSheet({ order, items = [], open, onClose, onCreate
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">Items</p>
             <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
               {lines.map((it) => {
-                const allowed = effectiveClaimType === 'instant_claim' || canPickupReturn(it);
+                const sameDelivery = !activeShipmentId || !it.shipmentId || String(it.shipmentId) === String(activeShipmentId);
+                const allowed = sameDelivery && (effectiveClaimType === 'instant_claim' || canPickupReturn(it));
                 const qty = qtyMap[it.id] || 0;
                 return (
                   <li key={it.id} className={cn('flex items-center gap-3 p-3', !allowed && 'opacity-40')}>
                     <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-slate-50">
-                      {it.skuSnapshot?.imageUrl ? (
-                        <img src={it.skuSnapshot.imageUrl} alt="" className="h-full w-full object-cover" />
-                      ) : (
-                        <span className="flex h-full w-full items-center justify-center text-xl" aria-hidden>🌸</span>
-                      )}
+                      <ProductImage src={it.skuSnapshot?.imageUrl} alt={it.skuSnapshot?.title || 'Product'} fallbackCompact className="h-full w-full object-cover" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-slate-800">{it.skuSnapshot?.title}</p>
                       <p className="text-xs text-slate-500">
-                        {!it.isReturnable && effectiveClaimType === 'pickup_qc'
-                          ? 'Not eligible for pickup return'
-                          : `${it.remaining} of ${it.qty} can be returned`}
+                        {!sameDelivery
+                          ? 'Create a separate return for this delivery'
+                          : !it.isReturnable && effectiveClaimType === 'pickup_qc'
+                            ? 'Not eligible for pickup return'
+                            : `${it.remaining} of ${it.qty} can be returned`}
                       </p>
                     </div>
                     {allowed ? (

@@ -145,6 +145,26 @@ test('raw 401 refresh retries once and carries the rotated token', async () => {
   ]);
 });
 
+test('mutation idempotency key survives an auth-refresh retry', async () => {
+  let mutationCalls = 0;
+  const { client, calls } = setup({
+    fetchImpl: async (url) => {
+      if (url === '/api/v1/auth/refresh') {
+        return jsonResponse({ success: true, data: { tokens: { accessToken: 'access-2', refreshToken: 'refresh-2' } } });
+      }
+      mutationCalls += 1;
+      if (mutationCalls === 1) return jsonResponse({ success: false, code: 'UNAUTHORIZED' }, { status: 401 });
+      return jsonResponse({ success: true, data: { id: 'listing-1' } });
+    },
+  });
+
+  await client.post('/catalog/tenant/listings', { sku: 'ROSE' });
+  const mutations = calls.filter((call) => call.url.endsWith('/catalog/tenant/listings'));
+  assert.equal(mutations.length, 2);
+  assert.ok(mutations[0].opts.headers['idempotency-key']);
+  assert.equal(mutations[0].opts.headers['idempotency-key'], mutations[1].opts.headers['idempotency-key']);
+});
+
 test('401 refresh failure clears the session and reports the refresh error', async () => {
   let cleared = null;
   let unauthorized = null;

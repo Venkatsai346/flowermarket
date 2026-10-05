@@ -183,6 +183,7 @@ export class AdminCatalogService {
     let page = 1;
     let complete = true;
     while (true) {
+      // Export pagination is deliberately sequential because each bounded page depends on the previous cursor.
       // eslint-disable-next-line no-await-in-loop
       const { items, meta } = await this.list({ tenantId, query: { ...query, page, limit: PAGE } });
       rows.push(...items);

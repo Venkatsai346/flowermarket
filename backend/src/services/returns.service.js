@@ -2,10 +2,13 @@ import ReturnRequest from '../models/returnRequest.model.js';
 import ReturnItem from '../models/returnItem.model.js';
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
+import Shipment from '../models/shipment.model.js';
+import ShipmentItem from '../models/shipmentItem.model.js';
+import shipmentService from './shipment.service.js';
 import refundService from './refund.service.js';
 import refundCalculator from './refundCalculator.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
-import { roundMoney, moneySum } from '../utils/money.js';
+import { roundMoney } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
 import { returnWindow, RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS } from '../utils/returnWindow.js';
 import {
@@ -33,16 +36,27 @@ class ReturnsService {
     const order = await Order.findById(orderId);
     if (!order) throw notFound('Order not found', 'ORDER_NOT_FOUND');
     if (String(order.userId) !== String(userId)) throw badRequest('Not your order', 'FORBIDDEN');
-    if (order.status !== ORDER_STATUS.DELIVERED) {
+
+    // A return belongs to exactly one physical shipment. This lets a customer
+    // return an already delivered parcel while another parcel from the same
+    // order is still in transit, without treating undelivered goods as eligible.
+    const orderItems = await OrderItem.find({ orderId, _id: { $in: items.map((i) => i.orderItemId) } }).lean();
+    if (orderItems.length !== items.length) throw badRequest('One or more items are not part of this order', 'INVALID_ITEMS');
+    const shipmentIds = [...new Set(orderItems.map((item) => item.shipmentId && String(item.shipmentId)).filter(Boolean))];
+    if (shipmentIds.length > 1) throw badRequest('Create a separate return for each delivery', 'RETURN_MUST_MATCH_SHIPMENT');
+    const shipment = shipmentIds.length
+      ? await Shipment.findOne({ _id: shipmentIds[0], tenantId: order.tenantId, orderId }).lean()
+      : null;
+    if (shipment && shipment.status !== 'delivered') {
+      return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'This delivery has not arrived yet' };
+    }
+    if (!shipment && order.status !== ORDER_STATUS.DELIVERED) {
       return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'Order is not delivered yet' };
     }
 
-    // The clock starts at ACTUAL DELIVERY, not at payment — and the stamp
-    // resolution lives in utils/returnWindow.js, the SAME helper the payout
-    // eligibility gate uses. Two subsystems reading the delivery moment from
-    // different fields is how the platform ends up paying a vendor while the
-    // customer still has a live return window.
-    const window = returnWindow(order, { claimType });
+    // Shipment delivery is authoritative for split orders; legacy orders retain
+    // the order-level delivery stamp fallback.
+    const window = returnWindow(shipment ? { ...order.toObject(), deliveredAt: shipment.deliveredAt } : order, { claimType });
     if (window.windowExpired) {
       return {
         isEligible: false, windowExpired: true, nonReturnableItems: false,
@@ -52,13 +66,10 @@ class ReturnsService {
     }
 
     // ---- item-level checks ----
-    const orderItems = await OrderItem.find({ orderId, _id: { $in: items.map((i) => i.orderItemId) } }).lean();
-    if (orderItems.length !== items.length) throw badRequest('One or more items are not part of this order', 'INVALID_ITEMS');
-
     const nonReturnable = orderItems.some((oi) => {
       const req = items.find((i) => String(i.orderItemId) === String(oi._id));
-      const alreadyReturned = oi.returnedQty || 0;
-      if (req.qty <= 0 || req.qty > oi.qty - alreadyReturned) return true; // over-request
+      const unavailableQty = (oi.returnedQty || 0) + (oi.cancelledQty || 0);
+      if (req.qty <= 0 || req.qty > oi.qty - unavailableQty) return true; // over-request
       if (claimType === RETURN_CLAIM_TYPE.PICKUP_QC && !oi.isReturnable) return true;
       return false;
     });
@@ -83,7 +94,7 @@ class ReturnsService {
       }
     }
 
-    return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, window, order, orderItems };
+    return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, window, order, orderItems, shipment };
   }
 
   /**
@@ -102,7 +113,7 @@ class ReturnsService {
       return { eligible: false, eligibility };
     }
 
-    const { order, orderItems } = eligibility;
+    const { order, orderItems, shipment } = eligibility;
 
     // ---- Phase 3.5: correct refund = item (price − discount + tax) + fee
     //      share per TenantRefundPolicy (blueprint §5). A lookup against the
@@ -126,8 +137,8 @@ class ReturnsService {
     const amount = comps.totalRefund;
 
     const rr = await ReturnRequest.create({
-      tenantId, orderId, userId,
-      claimType, reason, reasonCode,
+      tenantId, orderId, shipmentId: shipment?._id || null, userId,
+      claimType, reason, reasonCode, customerNote,
       status: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? RETURN_REQUEST_STATUS.APPROVED : RETURN_REQUEST_STATUS.APPROVED,
       refundAmount: roundMoney(amount),
       eligibility: {
@@ -147,6 +158,7 @@ class ReturnsService {
         );
         return {
           returnRequestId: rr._id, orderItemId: oi._id, orderId,
+          shipmentId: oi.shipmentId || shipment?._id || null,
           tenantProductId: oi.tenantProductId,
           qty: req.qty,
           refundAmount: roundMoney(netPerUnit * req.qty),
@@ -178,7 +190,7 @@ class ReturnsService {
   }
 
   /** Pickup scheduled (Flow A step 2). */
-  async markPickedUp({ returnRequestId, tenantId, actorId = null }) {
+  async markPickedUp({ returnRequestId, tenantId, actorId: _actorId = null }) {
     const rr = await this.getOwned({ returnRequestId, tenantId });
     if (![RETURN_REQUEST_STATUS.APPROVED].includes(rr.status)) {
       throw conflict(`Return is in state ${rr.status} — cannot mark picked up`, 'INVALID_RETURN_TRANSITION');
@@ -285,20 +297,37 @@ class ReturnsService {
   /** Update returnedQty on order items (prevents over-returning the same line). */
   async markItemsReturned({ returnRequestId, orderItems }) {
     const returnItems = await ReturnItem.find({ returnRequestId });
-    for (const ri of returnItems) {
-      const oi = orderItems.find((x) => String(x._id) === String(ri.orderItemId));
-      if (oi) {
-        await OrderItem.updateOne(
-          { _id: oi._id },
-          { $inc: { returnedQty: ri.qty }, $set: { updatedAt: new Date() } }
-        );
-      }
-    }
+    const rows = returnItems.map((ri) => ({
+      ri, oi: orderItems.find((item) => String(item._id) === String(ri.orderItemId)),
+    })).filter((row) => row.oi);
+    const orderOps = rows.map(({ ri, oi }) => ({
+      updateOne: {
+        filter: { _id: oi._id, returnedQty: { $lte: oi.qty - ri.qty } },
+        update: { $inc: { returnedQty: ri.qty }, $set: { updatedAt: new Date() } },
+      },
+    }));
+    const shipmentOps = rows.filter(({ ri }) => ri.shipmentId).map(({ ri, oi }) => ({
+      updateOne: {
+        filter: { shipmentId: ri.shipmentId, orderItemId: oi._id, returnedQty: { $lte: oi.qty - ri.qty } },
+        update: { $inc: { returnedQty: ri.qty } },
+      },
+    }));
+    await Promise.all([
+      orderOps.length ? OrderItem.bulkWrite(orderOps) : null,
+      shipmentOps.length ? ShipmentItem.bulkWrite(shipmentOps) : null,
+    ]);
   }
 
   /** Order-level status mirror for the customer timeline (doc §6 sub-machine). */
   async syncOrderStatus(order, returnStatus) {
     if (!order) return;
+    // Shipment-backed orders retain their fulfillment aggregate while returns
+    // progress independently per delivered parcel. A return on delivery 1 must
+    // not make delivery 2 disappear from tracking as `return_approved`.
+    if (await Shipment.exists({ tenantId: order.tenantId, orderId: order._id })) {
+      await shipmentService.deriveOrderStatus({ tenantId: order.tenantId, orderId: order._id });
+      return;
+    }
     const orderStateMap = {
       [RETURN_REQUEST_STATUS.APPROVED]: ORDER_STATUS.RETURN_APPROVED,
       [RETURN_REQUEST_STATUS.PICKED_UP]: ORDER_STATUS.RETURN_PICKED_UP,

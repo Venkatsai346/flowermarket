@@ -40,6 +40,7 @@ const ReturnRequestSchema = new Schema(
   {
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
     orderId: { type: Types.ObjectId, ref: 'Order', required: true },
+    shipmentId: { type: Types.ObjectId, ref: 'Shipment', default: null, index: true },
     userId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
 
     claimType: {

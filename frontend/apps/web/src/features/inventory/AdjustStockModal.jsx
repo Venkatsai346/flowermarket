@@ -48,6 +48,14 @@ export default function AdjustStockModal({ row, onClose }) {
           </p>
         </div>
 
+        {row.inventoryNodes?.length > 0 && (
+          <Field label="Fulfillment node" required hint="Stock is always adjusted at one physical node.">
+            <Select value={form.warehouseId} onChange={(e) => set('warehouseId', e.target.value)}>
+              {row.inventoryNodes.map((node) => <option key={node.id} value={node.warehouseId || ''}>{node.warehouseName} · {node.available} allocatable</option>)}
+            </Select>
+          </Field>
+        )}
+
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Adjustment type" required>
             <Select value={form.type} onChange={(e) => set('type', e.target.value)}>

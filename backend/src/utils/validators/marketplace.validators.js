@@ -58,7 +58,16 @@ export const vendorProfileUpdateSchema = Joi.object({
 
 export const vendorProductCreateSchema = Joi.object({
   title: Joi.string().max(160).required(),
-  type: Joi.string().required(),
+  type: Joi.string().pattern(/^[a-z][a-z0-9_]{0,59}$/).required(),
+  kind: Joi.string().valid('physical', 'digital', 'service', 'bundle').default('physical'),
+  manufacturer: Joi.string().max(160).allow('', null).optional(),
+  modelNumber: Joi.string().max(100).allow('', null).optional(),
+  countryOfOrigin: Joi.string().max(80).allow('', null).optional(),
+  condition: Joi.string().valid('new', 'refurbished', 'used').default('new'),
+  identifiers: Joi.object({
+    gtin: Joi.string().max(32).allow('', null), mpn: Joi.string().max(100).allow('', null),
+    isbn: Joi.string().max(20).allow('', null), hsn: Joi.string().max(16).allow('', null),
+  }).optional(),
   categoryId: objectId.required(),
   brandId: objectId.allow(null).optional(),
   skuGlobal: Joi.string().max(80).required(),

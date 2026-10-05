@@ -10,7 +10,13 @@
  *     claimedBy + leaseExpiresAt). Handler failures back off exponentially
  *     (30s/2m/10m/30m) and dead-letter after WORKER_MAX_ATTEMPTS; ops can
  *     re-queue via POST /catalog/admin/events/retry-failed.
- *  2. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
+ *  2. CATALOG BULK JOBS — advances one bounded, durable row checkpoint batch
+ *     per tick. Mongo leases make restarts and concurrent workers safe.
+ *  3. CATALOG QUALITY — advances one durable, resumable 100-family sweep
+ *     checkpoint per tick with tenant-scoped leases and cancellation.
+ *  4. MEDIA PROCESSING — verifies signatures, extracts metadata and creates
+ *     immutable responsive AVIF/WebP renditions through durable leases.
+ *  5. SCHEDULER — runs the built-in jobs (per-tenant nightly + marketplace
  *     nightly) at their scheduled hour. Single-flight across workers via an
  *     atomic nextRunAt advance (see workers/scheduler.js).
  *
@@ -29,6 +35,11 @@ import catalogEventService from './services/catalogEvent.service.js';
 import notificationService from './services/notification.service.js';
 import searchIndexer from './services/searchIndexer.service.js';
 import heartbeatService from './services/heartbeat.service.js';
+import bulkImportService from './services/bulkImport.service.js';
+import catalogQualityService from './services/catalogQuality.service.js';
+import mediaProcessingService from './services/mediaProcessing.service.js';
+import inventoryReservationService from './services/inventoryReservation.service.js';
+import { catalogQualityEvaluationDuration, catalogQualityEvaluations, catalogQualityFamilies } from './observability/registry.js';
 import { seedJobs, tick as schedulerTick } from './workers/scheduler.js';
 
 const workerId = `worker-${process.pid}-${crypto.randomBytes(2).toString('hex')}`;
@@ -41,6 +52,10 @@ const counters = {
   eventsFailed: 0,
   leasesReclaimed: 0,
   jobsStarted: 0,
+  bulkJobsAdvanced: 0,
+  qualityRunsAdvanced: 0,
+  mediaJobsProcessed: 0,
+  inventoryReservationsExpired: 0,
 };
 
 async function main() {
@@ -89,6 +104,51 @@ async function main() {
       if (res.published || res.failed) {
         console.log(`[worker] drained ${res.published} ok / ${res.failed} failed (scanned ${res.scanned})`);
       }
+    }
+    const bulkResults = await bulkImportService.processAvailable({
+      workerId, maxJobs: 1, maxBatchesPerJob: 1,
+    }).catch((e) => {
+      // Worker failures must be visible; leases make the batch reclaimable.
+      // eslint-disable-next-line no-console
+      console.error('[worker] bulk import advance failed:', e?.message);
+      return [];
+    });
+    counters.bulkJobsAdvanced += bulkResults.length;
+    const qualityStarted = process.hrtime.bigint();
+    const qualityResults = await catalogQualityService.processAvailableRuns({ workerId, maxRuns: 1 }).catch((e) => {
+      catalogQualityEvaluationDuration.observe({ outcome: 'error' }, Number(process.hrtime.bigint() - qualityStarted) / 1e9);
+      catalogQualityEvaluations.inc({ outcome: 'error' });
+      // The run lease remains reclaimable after an unexpected batch failure.
+      // eslint-disable-next-line no-console
+      console.error('[worker] catalog quality advance failed:', e?.message);
+      return [];
+    });
+    if (qualityResults.length) {
+      catalogQualityEvaluationDuration.observe({ outcome: 'ok' }, Number(process.hrtime.bigint() - qualityStarted) / 1e9);
+      catalogQualityEvaluations.inc({ outcome: 'ok' });
+      counters.qualityRunsAdvanced += qualityResults.length;
+      for (const result of qualityResults) {
+        if (result?.status === 'completed') catalogQualityFamilies.observe({}, result.evaluated || 0);
+      }
+    }
+    const mediaResults = await mediaProcessingService.processAvailable({ workerId, maxJobs: 1 }).catch((e) => {
+      // eslint-disable-next-line no-console
+      console.error('[worker] media processing failed:', e?.message);
+      return [];
+    });
+    counters.mediaJobsProcessed += mediaResults.length;
+    await mediaProcessingService.probeOne().catch((e) => {
+      // eslint-disable-next-line no-console
+      console.error('[worker] media health probe failed:', e?.message);
+    });
+    const reservationSweepEvery = Math.max(1, Math.round(60000 / config.worker.pollMs));
+    if (counters.ticks % reservationSweepEvery === 0) {
+      const sweep = await inventoryReservationService.sweepExpired({}).catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error('[worker] inventory reservation sweep failed:', e?.message);
+        return null;
+      });
+      if (sweep) counters.inventoryReservationsExpired += sweep.expired;
     }
     try {
       const started = await schedulerTick(workerId);

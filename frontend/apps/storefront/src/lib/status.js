@@ -13,6 +13,7 @@ export const STATUS_META = {
   picking: { label: 'Being prepared', tone: 'bg-sky-100 text-sky-800', step: 2 },
   packed: { label: 'Being prepared', tone: 'bg-sky-100 text-sky-800', step: 2 },
   out_for_delivery: { label: 'On the way', tone: 'bg-violet-100 text-violet-800', step: 3 },
+  partially_delivered: { label: 'Partially delivered', tone: 'bg-indigo-100 text-indigo-800', step: 3 },
   delivered: { label: 'Delivered', tone: 'bg-emerald-100 text-emerald-800', step: 4 },
   delivery_failed: { label: 'Delivery failed', tone: 'bg-rose-100 text-rose-800', step: 3 },
   cancelled: { label: 'Cancelled', tone: 'bg-slate-200 text-slate-600', step: -1 },

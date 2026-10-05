@@ -1,4 +1,5 @@
 import orderService from '../services/order.service.js';
+import shipmentService from '../services/shipment.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success } from '../utils/ApiResponse.js';
 
@@ -34,6 +35,15 @@ class OrderController {
       tenantId: req.tenantId, userId: req.auth.userId, query: req.query,
     });
     res.status(200).json(success(result.items, { message: 'Orders fetched', meta: result.meta }));
+  });
+
+  cancelShipment = asyncHandler(async (req, res) => {
+    await shipmentService.cancel({
+      tenantId: req.tenantId, orderId: req.params.id, shipmentId: req.params.shipmentId,
+      reason: req.body.reason, actorId: req.auth.userId,
+    });
+    const result = await orderService.detail({ tenantId: req.tenantId, orderId: req.params.id, userId: req.auth.userId });
+    res.status(200).json(success(result, { message: 'Delivery cancelled — partial refund initiated' }));
   });
 
   cancel = asyncHandler(async (req, res) => {

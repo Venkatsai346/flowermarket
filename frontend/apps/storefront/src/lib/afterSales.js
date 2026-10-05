@@ -105,7 +105,8 @@ export function canCancel(status) {
 export function remainingQty(item) {
   const qty = Number(item?.qty) || 0;
   const returned = Number(item?.returnedQty) || 0;
-  return Math.max(0, qty - returned);
+  const cancelled = Number(item?.cancelledQty) || 0;
+  return Math.max(0, qty - returned - cancelled);
 }
 
 /** Whether a line can be returned on a pickup/QC return. */
@@ -115,7 +116,7 @@ export function canPickupReturn(item) {
 
 /** Whether an order can start a return at all. */
 export function canReturn(order, items = []) {
-  return order?.status === 'delivered' && items?.some((i) => remainingQty(i) > 0);
+  return ['delivered', 'partially_delivered'].includes(order?.status) && items?.some((i) => remainingQty(i) > 0);
 }
 
 /** Map any status to a fallback label/tone (never breaks the UI). */

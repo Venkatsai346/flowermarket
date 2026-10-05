@@ -52,6 +52,7 @@ ok('a line is pickup-returnable only when flagged returnable and non-zero', () =
 
 ok('an order can start a return only after delivery with a remaining line', () => {
   assert.equal(canReturn({ status: 'delivered' }, [{ qty: 1 }]), true);
+  assert.equal(canReturn({ status: 'partially_delivered' }, [{ qty: 1 }]), true);
   assert.equal(canReturn({ status: 'confirmed' }, [{ qty: 1 }]), false);
   assert.equal(canReturn({ status: 'delivered' }, [{ qty: 1, returnedQty: 1 }]), false);
 });

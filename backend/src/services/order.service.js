@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
 import Payment from '../models/payment.model.js';
@@ -9,6 +10,9 @@ import cartService from './cart.service.js';
 import slotService from './slot.service.js';
 import paymentService from './payment.service.js';
 import inventoryService from './inventory.service.js';
+import inventoryReservationService from './inventoryReservation.service.js';
+import shipmentService from './shipment.service.js';
+import warehouseAllocationService from './warehouseAllocation.service.js';
 import fulfillmentService from './fulfillment.service.js';
 import refundService from './refund.service.js';
 import pricingPolicyService from './pricingPolicy.service.js';
@@ -21,8 +25,8 @@ import { checkCodAllowed } from './payment.service.js';
 import payoutService from './payout.service.js';
 import nextOrderNumber from '../utils/orderNumber.js';
 import { assertTransition, cancellationAllowed } from '../utils/orderStateMachine.js';
-import { roundMoney, moneySum, toPaise, attachPaise, QUOTE_MONEY_KEYS, ORDER_MONEY_KEYS } from '../utils/money.js';
-import { notFound, badRequest, conflict, unauthorized } from '../utils/ApiError.js';
+import { roundMoney, toPaise, attachPaise, ORDER_MONEY_KEYS } from '../utils/money.js';
+import { notFound, badRequest, conflict } from '../utils/ApiError.js';
 import User from '../models/user.model.js';
 import config from '../config/index.js';
 import { serializeList } from '../utils/serialize.js';
@@ -60,6 +64,13 @@ class OrderService {
    * The main checkout saga entry point.
    */
   async checkout({ tenantId, userId, slotReservationId, addressId, paymentMethod = 'upi', idempotencyKey = null, confirmPriceChanges = false, source = 'app', req = null }) {
+    const checkoutKey = String(idempotencyKey || `slot:${slotReservationId}`).trim();
+    const checkoutFingerprint = createHash('sha256').update(JSON.stringify({
+      slotReservationId: String(slotReservationId), addressId: String(addressId), paymentMethod, source,
+    })).digest('hex');
+    const replay = await Order.findOne({ tenantId, userId, checkoutIdempotencyKey: checkoutKey });
+    if (replay) return this.replayCheckout({ order: replay, fingerprint: checkoutFingerprint, userId });
+
     // ---- 1. cart revalidation (stale-cart problem) ----
     const revalidated = await cartService.revalidate({ tenantId, userId });
     if (revalidated.itemCount === 0) throw badRequest('Cart is empty', 'CART_EMPTY');
@@ -102,14 +113,45 @@ class OrderService {
       });
     }
 
-    const order = await this.createOrderDoc({
-      tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
-      precomputed,
-    });
+    let order;
+    try {
+      order = await this.createOrderDoc({
+        tenantId, userId, cart, items, hold, address, paymentMethod, source, req,
+        precomputed, checkoutKey, checkoutFingerprint,
+      });
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      const winner = await Order.findOne({ tenantId, userId, checkoutIdempotencyKey: checkoutKey });
+      if (!winner) throw error;
+      return this.replayCheckout({ order: winner, fingerprint: checkoutFingerprint, userId });
+    }
 
-    // ---- 5. charge (idempotent) ----
-    const key = idempotencyKey || paymentService.newIdempotencyKey();
-    await this.transition(order, ORDER_STATUS.PAYMENT_PENDING, { actorType: AUDIT_ACTOR_TYPE.SYSTEM, note: 'charge initiated', req });
+    // ---- 4b. reserve exact-node stock BEFORE initiating payment. ----
+    try {
+      const held = await inventoryReservationService.reserveOrder({
+        tenantId, orderId: order._id, userId, idempotencyKey: checkoutKey,
+        holdExpiresAt: hold.expiresAt, actorId: userId, req,
+      });
+      order.fulfillmentPlan.reservationStatus = 'active';
+      order.fulfillmentPlan.reservationExpiresAt = held.reservations.reduce((min, row) =>
+        (!min || row.expiresAt < min ? row.expiresAt : min), null);
+      await order.save();
+      await OrderItem.updateMany({ orderId: order._id }, { $set: { 'fulfillmentAllocation.status': 'reserved' } });
+    } catch (error) {
+      order.fulfillmentPlan.status = 'failed';
+      order.fulfillmentPlan.reservationStatus = 'failed';
+      await order.save();
+      await slotService.release({ reservationId: hold._id, tenantId, reason: 'inventory_reservation_failed' }).catch(() => {});
+      await this.markCancelled(order, {
+        reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
+        cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
+      });
+      throw error;
+    }
+
+    // ---- 5. charge (idempotent; the same key protects order, stock and payment). ----
+    const key = checkoutKey;
+    await this.transition(order, ORDER_STATUS.PAYMENT_PENDING, { actorType: AUDIT_ACTOR_TYPE.SYSTEM, note: 'inventory reserved, charge initiated', req });
 
     const { payment, chargeResult } = await paymentService.charge({
       tenantId, userId, orderId: order._id, amount: order.totalAmount,
@@ -149,44 +191,55 @@ class OrderService {
    *   commit inventory (real stock race) -> confirm slot -> queue picking ->
    *   CONFIRMED -> cart checked out -> events
    */
-  async finalizeOrderAfterPayment({ order, hold, items, payment, userId, req = null }) {
+  async finalizeOrderAfterPayment({ order, hold, items: _items, payment, userId, req = null }) {
     if (order.status === ORDER_STATUS.CONFIRMED) return order; // webhook replay
     if (order.status !== ORDER_STATUS.PAYMENT_PENDING) {
       throw conflict(`Order is ${order.status} — cannot finalize`, 'INVALID_ORDER_STATE');
     }
 
     const tenantId = order.tenantId;
-    const commitItems = items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty }));
-    const { committed, failed } = await inventoryService.commitForOrder({ tenantId, items: commitItems });
-
-    if (failed.length > 0) {
-      // ---- compensation B: stock lost the race ----
-      await inventoryService.restoreForOrder({ tenantId, items: committed });
+    const reservationId = hold?._id || order.slotReservationId;
+    if (!reservationId) {
+      throw conflict('No slot reservation linked to this order', 'RESERVATION_MISSING');
+    }
+    try {
+      // Capacity is confirmed first. If exact-node inventory confirmation then
+      // fails, the catch path releases this slot before cancelling/refunding.
+      await slotService.confirm({ reservationId, tenantId, orderId: order._id });
+      await inventoryReservationService.confirmOrder({ tenantId, orderId: order._id, actorId: userId, req });
+    } catch (error) {
+      // Reservation expiry/drift is fail-closed after capture: refund rather than
+      // silently reacquiring stock that another customer may now own.
       await refundService.initiate({
         tenantId, userId, orderId: order._id, amount: order.totalAmount,
         reason: REFUND_REASON.ORDER_CANCELLED, paymentId: payment._id, initiatedBy: userId,
         components: this.fullOrderRefundComponents(order),
       });
-      await slotService.release({ reservationId: hold._id, tenantId, reason: 'stock_unavailable' });
+      if (hold?._id || order.slotReservationId) {
+        await slotService.release({ reservationId: hold?._id || order.slotReservationId, tenantId, reason: 'inventory_reservation_unavailable' }).catch(() => {});
+      }
+      order.fulfillmentPlan.status = 'failed';
+      order.fulfillmentPlan.reservationStatus = 'failed';
+      await order.save();
+      await OrderItem.updateMany({ orderId: order._id }, { $set: { 'fulfillmentAllocation.status': 'failed' } });
       await this.markCancelled(order, {
         reason: ORDER_CANCELLATION_REASON.STOCK_UNAVAILABLE,
         cancelledBy: userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req,
-        refundTransactionId: order.cancellation?.refundTransactionId || null,
       });
-      throw conflict('Some items are no longer in stock — order cancelled & refunded', 'STOCK_UNAVAILABLE', { orderId: order._id, failed });
+      throw conflict('Reserved stock expired or became inconsistent — order cancelled and refunded',
+        'INVENTORY_RESERVATION_UNAVAILABLE', { orderId: order._id, cause: error.code || 'UNKNOWN' });
     }
 
-    const reservationId = hold?._id || order.slotReservationId;
-    if (!reservationId) {
-      throw conflict('No slot reservation linked to this order', 'RESERVATION_MISSING');
-    }
-    await slotService.confirm({ reservationId, tenantId, orderId: order._id });
     order.slotReservationId = reservationId;
-    await fulfillmentService.createTask({
-      orderId: order._id, tenantId,
-      hubId: order.slotSnapshot?.hubId || null,
-      itemsCount: order.itemsCount,
-    });
+    order.fulfillmentPlan.status = 'committed';
+    order.fulfillmentPlan.reservationStatus = 'confirmed';
+    order.fulfillmentPlan.committedAt = new Date();
+    await order.save();
+    await OrderItem.updateMany(
+      { orderId: order._id },
+      { $set: { 'fulfillmentAllocation.status': 'committed' } },
+    );
+    await shipmentService.queueForOrder({ tenantId, orderId: order._id });
 
     await this.transition(order, ORDER_STATUS.CONFIRMED, {
       actorType: AUDIT_ACTOR_TYPE.SYSTEM, note: 'payment captured, inventory committed', req,
@@ -276,7 +329,12 @@ class OrderService {
       const oi = await (await import('../models/orderItem.model.js')).default.find({ orderId: order._id }).lean();
       const listingMap = await Promise.all(oi.map(async (x) => {
         const cartItem = await CartItem.findOne({ cartId: order.cartId, tenantProductId: x.tenantProductId }).lean();
-        return cartItem || { tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty, priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title, lineTotal: x.lineTotal, isReturnable: x.isReturnable };
+        return cartItem || {
+          tenantProductId: x.tenantProductId, productMasterId: x.productMasterId, qty: x.qty,
+          priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title,
+          unitSnapshot: x.skuSnapshot?.unit, unitQuantitySnapshot: x.skuSnapshot?.unitQuantity || 1,
+          lineTotal: x.lineTotal, isReturnable: x.isReturnable,
+        };
       }));
       items.push(...listingMap.filter(Boolean));
     }
@@ -297,9 +355,10 @@ class OrderService {
 
   async detail({ tenantId, orderId, userId = null }) {
     const order = await this.getOrder({ tenantId, orderId, userId });
-    const [items, timeline] = await Promise.all([
+    const [items, timeline, shipments] = await Promise.all([
       OrderItem.find({ orderId: order._id }).lean(),
       OrderStatusHistory.find({ orderId: order._id }).sort({ createdAt: 1 }).lean(),
+      shipmentService.listForOrder({ tenantId, orderId: order._id }),
     ]);
     const enabled = config.money.dualWritePaise !== false;
     const plain = typeof order.toJSON === 'function' ? order.toJSON() : order;
@@ -307,6 +366,7 @@ class OrderService {
     return {
       order: attachPaise(plain, ORDER_MONEY_KEYS, { enabled }),
       items: itemPaise,
+      shipments: serializeList(shipments),
       timeline: serializeList(timeline),
     };
   }
@@ -390,29 +450,31 @@ class OrderService {
    * assignment), this is the full explicit machine driven by the rider app:
    *   PENDING_ACCEPT -> ACCEPTED -> AT_HUB -> IN_TRANSIT -> ARRIVED -> DELIVERED
    */
-  async riderFlow({ tenantId, orderId, action, riderId, body = {}, req = null }) {
+  async riderFlow({ tenantId, orderId, shipmentId = null, action, riderId, body = {}, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     const { packageVerified, podType, podValue, reason, codCollected, amountCollected, note } = body;
 
     switch (action) {
       case 'accept': {
-        await fulfillmentService.acceptAssignment({ orderId, tenantId, riderId });
+        await fulfillmentService.acceptAssignment({ orderId, shipmentId, tenantId, riderId });
         return this.detail({ tenantId, orderId });
       }
       case 'reject': {
-        const assignment = await fulfillmentService.rejectAssignment({ orderId, tenantId, riderId, reason });
+        const assignment = await fulfillmentService.rejectAssignment({ orderId, shipmentId, tenantId, riderId, reason });
         return { assignment };
       }
       case 'arrive-hub': {
-        await fulfillmentService.markAtHub({ orderId, tenantId });
+        await fulfillmentService.markAtHub({ orderId, shipmentId, tenantId });
         return this.detail({ tenantId, orderId });
       }
       case 'depart': {
         // AT_HUB -> IN_TRANSIT + Order -> OUT_FOR_DELIVERY (customer notified)
-        await fulfillmentService.departHub({ orderId, tenantId, packageVerified: packageVerified === true });
-        const result = await this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, {
-          actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: riderId, note: 'rider departed hub with verified package', req,
-        });
+        await fulfillmentService.departHub({ orderId, shipmentId, tenantId, packageVerified: packageVerified === true });
+        const result = shipmentId
+          ? await this.detail({ tenantId, orderId })
+          : await this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, {
+            actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: riderId, note: 'rider departed hub with verified package', req,
+          });
         await catalogEventService.publish({
           eventType: 'order_out_for_delivery', entityType: 'order', entityId: order._id,
           tenantId, payload: { orderId: order._id, riderId },
@@ -420,7 +482,7 @@ class OrderService {
         return result;
       }
       case 'arrive': {
-        await fulfillmentService.markArrived({ orderId, tenantId });
+        await fulfillmentService.markArrived({ orderId, shipmentId, tenantId });
         await catalogEventService.publish({
           eventType: 'rider_arrived', entityType: 'order', entityId: order._id,
           tenantId, payload: { orderId: order._id },
@@ -470,21 +532,39 @@ class OrderService {
           await this.syncPaymentSummary(order);
           await order.save();
         }
-        await fulfillmentService.completeDelivery({ orderId, tenantId, podType, podValue, actorId: riderId });
-        const result = await this.transition(order, ORDER_STATUS.DELIVERED, {
-          actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: riderId, note: `delivered (POD: ${podType})`, req,
-        });
-        // closing the loop for slot forecasting: real fulfillment timings
-        await this.recordFulfillmentTiming({ tenantId, orderId });
+        await fulfillmentService.completeDelivery({ orderId, shipmentId, tenantId, podType, podValue, actorId: riderId });
+        let result;
+        if (shipmentId) {
+          await shipmentService.setStatus({
+            tenantId, shipmentId, from: 'out_for_delivery', to: 'delivered',
+            patch: { deliveredAt: new Date() }, actorId: riderId,
+          });
+          result = await this.detail({ tenantId, orderId });
+        } else {
+          result = await this.transition(order, ORDER_STATUS.DELIVERED, {
+            actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: riderId, note: `delivered (POD: ${podType})`, req,
+          });
+        }
+        // Close forecasting only when the final parcel has arrived.
+        if (!shipmentId || result.order?.status === ORDER_STATUS.DELIVERED) {
+          await this.recordFulfillmentTiming({ tenantId, orderId });
+        }
         await catalogEventService.publish({
-          eventType: 'order_delivered', entityType: 'order', entityId: order._id,
-          tenantId, payload: { orderId: order._id, podType },
+          eventType: shipmentId ? 'shipment_delivered' : 'order_delivered',
+          entityType: shipmentId ? 'shipment' : 'order', entityId: shipmentId || order._id,
+          tenantId, payload: { orderId: order._id, shipmentId, podType },
         });
         return result;
       }
       case 'fail': {
         // saga decides: retry (reassign) or cancel after max retries
-        await fulfillmentService.failDelivery({ orderId, tenantId, reason });
+        await fulfillmentService.failDelivery({ orderId, shipmentId, tenantId, reason });
+        if (shipmentId) {
+          await shipmentService.setStatus({
+            tenantId, shipmentId, from: 'out_for_delivery', to: 'delivery_failed', actorId: riderId,
+          });
+          return this.detail({ tenantId, orderId });
+        }
         const retries = (order.deliveryRetryCount || 0) + 1;
         order.deliveryRetryCount = retries;
         await order.save();
@@ -500,7 +580,7 @@ class OrderService {
           note: `delivery failed (attempt ${retries}/${MAX_DELIVERY_RETRIES})`, req,
         });
         // reassign to the next rider for the retry
-        await fulfillmentService.assignRider({ orderId, tenantId, hubId: order.slotSnapshot?.hubId || null });
+        await fulfillmentService.assignRider({ orderId, shipmentId, tenantId, hubId: order.slotSnapshot?.hubId || null });
         return res;
       }
       default:
@@ -531,30 +611,109 @@ class OrderService {
       });
     } catch (err) {
       // timing capture must never break the delivery completion
-      // eslint-disable-next-line no-console
       console.warn('[order] timing log skipped:', err?.message);
     }
+  }
+
+  /** Shipment-scoped execution path used for split orders. Aggregate order status
+   * is recomputed from every shipment after each mutation; it is never advanced
+   * optimistically from the one shipment being handled. */
+  async startShipmentPicking({ tenantId, orderId, shipmentId, pickerId }) {
+    const shipment = await shipmentService.get({ tenantId, shipmentId });
+    if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
+    await fulfillmentService.startPick({ orderId, shipmentId, tenantId, pickerId });
+    await shipmentService.setStatus({
+      tenantId, shipmentId, from: ['planned', 'queued'], to: 'picking', actorId: pickerId,
+    });
+    return this.detail({ tenantId, orderId });
+  }
+
+  async packShipment({ tenantId, orderId, shipmentId, actorId = null }) {
+    const shipment = await shipmentService.get({ tenantId, shipmentId });
+    if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
+    await fulfillmentService.completePick({ orderId, shipmentId, tenantId });
+    await shipmentService.setStatus({ tenantId, shipmentId, from: 'picking', to: 'packed', actorId });
+    return this.detail({ tenantId, orderId });
+  }
+
+  async dispatchShipment({ tenantId, orderId, shipmentId, actorId = null }) {
+    const shipment = await shipmentService.get({ tenantId, shipmentId });
+    if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
+    await fulfillmentService.assignRider({ orderId, shipmentId, tenantId, hubId: shipment.hubId });
+    await shipmentService.setStatus({
+      tenantId, shipmentId, from: ['packed', 'delivery_failed'], to: 'out_for_delivery', actorId,
+    });
+    return this.detail({ tenantId, orderId });
+  }
+
+  async deliverShipment({ tenantId, orderId, shipmentId, podType, podValue = null, actorId = null, codCollected = false, amountCollected = null, req = null }) {
+    const shipment = await shipmentService.get({ tenantId, shipmentId });
+    if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
+    const order = await this.getOrder({ tenantId, orderId });
+    if (order.paymentSummary?.status === PAYMENT_STATUS.AWAITING_COLLECTION) {
+      if (codCollected !== true) {
+        throw conflict('Collect the full cash-on-delivery balance with the first delivered shipment', 'COD_COLLECTION_REQUIRED', {
+          amountDue: order.totalAmount, amountDuePaise: toPaise(order.totalAmount),
+        });
+      }
+      await paymentService.collectCashOnDelivery({
+        orderId, tenantId, actorId, actorRole: USER_ROLES.ADMIN, amountCollected, req,
+      });
+      await this.syncPaymentSummary(order);
+      await order.save();
+    }
+    const assignment = await fulfillmentService.getAssignment({ orderId, shipmentId, tenantId }).catch(() => null);
+    if (assignment) await fulfillmentService.forceArrived({ orderId, shipmentId, tenantId });
+    await fulfillmentService.completeDelivery({ orderId, shipmentId, tenantId, podType, podValue, actorId });
+    await shipmentService.setStatus({
+      tenantId, shipmentId, from: 'out_for_delivery', to: 'delivered',
+      patch: { deliveredAt: new Date() }, actorId,
+    });
+    return this.detail({ tenantId, orderId });
+  }
+
+  async failShipmentDelivery({ tenantId, orderId, shipmentId, reason = null, actorId = null }) {
+    const shipment = await shipmentService.get({ tenantId, shipmentId });
+    if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
+    await fulfillmentService.failDelivery({ orderId, shipmentId, tenantId, reason });
+    await shipmentService.setStatus({
+      tenantId, shipmentId, from: 'out_for_delivery', to: 'delivery_failed', actorId,
+    });
+    return this.detail({ tenantId, orderId });
+  }
+
+  async legacyShipmentId({ tenantId, orderId }) {
+    const shipments = await shipmentService.listForOrder({ tenantId, orderId });
+    if (shipments.length > 1) {
+      throw conflict('This order has multiple shipments; use a shipment-scoped endpoint', 'SHIPMENT_ID_REQUIRED', {
+        shipmentIds: shipments.map((shipment) => String(shipment._id)),
+      });
+    }
+    return shipments[0]?._id || null;
   }
 
   async startPicking({ tenantId, orderId, pickerId, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.PICKING, { context: 'startPicking' });
-    await fulfillmentService.startPick({ orderId, tenantId, pickerId });
+    const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
+    await fulfillmentService.startPick({ orderId, shipmentId, tenantId, pickerId });
     return this.transition(order, ORDER_STATUS.PICKING, { actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: pickerId, note: 'picking started', req });
   }
 
   async markPacked({ tenantId, orderId, actorId = null, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.PACKED, { context: 'markPacked' });
-    await fulfillmentService.completePick({ orderId, tenantId });
+    const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
+    await fulfillmentService.completePick({ orderId, shipmentId, tenantId });
     return this.transition(order, ORDER_STATUS.PACKED, { actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'picked & packed', req });
   }
 
   async dispatch({ tenantId, orderId, actorId = null, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.OUT_FOR_DELIVERY, { context: 'dispatch' });
+    const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
     const assignment = await fulfillmentService.assignRider({
-      orderId, tenantId, hubId: order.slotSnapshot?.hubId || null,
+      orderId, shipmentId, tenantId, hubId: order.slotSnapshot?.hubId || null,
     });
     const result = await this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, {
       actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'rider assigned (PENDING_ACCEPT), out for delivery', req,
@@ -630,6 +789,7 @@ class OrderService {
   async deliver({ tenantId, orderId, podType, podValue = null, actorId = null, codCollected = false, amountCollected = null, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.DELIVERED, { context: 'deliver' });
+    const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
     // Same cash gate as the rider path — ops must not be a way around it. Once
     // an order is DELIVERED there is no collection UI left, so an uncollected
     // cash order would become an uncollectable receivable.
@@ -653,14 +813,14 @@ class OrderService {
       await order.save();
     }
     // ops shortcut: ensure assignment is ARRIVED before POD capture
-    const assignment = await fulfillmentService.getAssignment({ orderId, tenantId }).catch(() => null);
+    const assignment = await fulfillmentService.getAssignment({ orderId, shipmentId, tenantId }).catch(() => null);
     if (assignment) {
       if (assignment.status === DELIVERY_ASSIGNMENT_STATUS.FAILED || assignment.status === DELIVERY_ASSIGNMENT_STATUS.CANCELLED) {
         throw conflict(`Assignment is ${assignment.status}`, 'INVALID_ASSIGNMENT_STATE');
       }
-      await fulfillmentService.forceArrived({ orderId, tenantId });
+      await fulfillmentService.forceArrived({ orderId, shipmentId, tenantId });
     }
-    await fulfillmentService.completeDelivery({ orderId, tenantId, podType, podValue, actorId });
+    await fulfillmentService.completeDelivery({ orderId, shipmentId, tenantId, podType, podValue, actorId });
     // Delivery is NOT payment. This used to stamp `success` unconditionally,
     // which for a cash order asserted the money had been collected when all
     // that had actually happened was that someone dropped off flowers. The
@@ -683,7 +843,8 @@ class OrderService {
   async deliveryFailed({ tenantId, orderId, reason = null, actorId = null, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.DELIVERY_FAILED, { context: 'deliveryFailed' });
-    await fulfillmentService.failDelivery({ orderId, tenantId, reason });
+    const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
+    await fulfillmentService.failDelivery({ orderId, shipmentId, tenantId, reason });
     const retries = (order.deliveryRetryCount || 0) + 1;
     order.deliveryRetryCount = retries;
     await order.save();
@@ -706,7 +867,8 @@ class OrderService {
   async retryDelivery({ tenantId, orderId, actorId = null, req = null }) {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.OUT_FOR_DELIVERY, { context: 'retryDelivery' });
-    await fulfillmentService.assignRider({ orderId, tenantId });
+    const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
+    await fulfillmentService.assignRider({ orderId, shipmentId, tenantId });
     return this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, { actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'delivery retry dispatched', req });
   }
 
@@ -718,12 +880,57 @@ class OrderService {
       throw conflict(`Order cannot be cancelled in state ${order.status}`, 'CANCELLATION_NOT_ALLOWED');
     }
 
-    // 1. restore inventory (reverse the hard commit)
+    // Shipment-backed prepaid orders cancel through each parcel's idempotent
+    // inventory/refund workflow. Never restore the full order again after one
+    // parcel has already been cancelled.
+    const shipments = await shipmentService.listForOrder({ tenantId, orderId });
+    const activeShipments = shipments.filter((shipment) => shipment.status !== 'cancelled');
+    if (shipments.length && [PAYMENT_STATUS.SUCCESS, PAYMENT_STATUS.PARTIALLY_REFUNDED].includes(order.paymentSummary?.status)) {
+      if (activeShipments.some((shipment) => !['planned', 'queued', 'picking', 'packed'].includes(shipment.status))) {
+        throw conflict('One or more deliveries can no longer be cancelled', 'SHIPMENT_CANCELLATION_NOT_ALLOWED');
+      }
+      for (const shipment of activeShipments) {
+        // Sequential on purpose: refunds and inventory reversals settle one durable shipment at a time.
+        // eslint-disable-next-line no-await-in-loop
+        await shipmentService.cancel({
+          tenantId, orderId, shipmentId: shipment.id || shipment._id, reason: reasonText || reason,
+          actorId, enforceOwnership: actorType === AUDIT_ACTOR_TYPE.CUSTOMER,
+        });
+      }
+      order.cancellation = {
+        reason, reasonText, cancelledBy: actorId, cancelledAt: new Date(),
+        refundStatus: 'success', refundTransactionId: null,
+      };
+      await order.save();
+      return this.detail({ tenantId, orderId });
+    }
+
+    // 1. Release a pre-payment hold, or restore physical stock only after the
+    // reservation was confirmed into a hard commit. This distinction prevents
+    // cancellation from manufacturing stock while payment is still pending.
     const items = await OrderItem.find({ orderId: order._id }).lean();
-    await inventoryService.restoreForOrder({
-      tenantId,
-      items: items.map((i) => ({ listingId: i.tenantProductId, qty: i.qty })),
-    });
+    const wasCommitted = order.fulfillmentPlan?.reservationStatus === 'confirmed'
+      || order.fulfillmentPlan?.status === 'committed';
+    if (wasCommitted) {
+      await inventoryService.restoreForOrder({
+        tenantId,
+        items: items.map((i) => ({
+          listingId: i.tenantProductId,
+          qty: i.qty,
+          warehouseId: i.fulfillmentAllocation?.warehouseId || null,
+        })),
+      });
+    } else {
+      await inventoryReservationService.releaseOrder({
+        tenantId, orderId: order._id, reason: reason || 'order_cancelled', actorId, req,
+      });
+    }
+    order.fulfillmentPlan.status = 'released';
+    order.fulfillmentPlan.reservationStatus = 'released';
+    await OrderItem.updateMany(
+      { orderId: order._id },
+      { $set: { 'fulfillmentAllocation.status': 'released' } },
+    );
 
     // 2. release the slot hold
     if (order.slotReservationId) {
@@ -802,6 +1009,30 @@ class OrderService {
       refundItemAmount: item,
       refundTaxAmount: tax,
       refundFeeAmount: fee,
+    };
+  }
+
+  async replayCheckout({ order, fingerprint, userId }) {
+    if (order.checkoutFingerprint !== fingerprint) {
+      throw conflict('Checkout idempotency key was already used with different checkout details', 'IDEMPOTENCY_KEY_REUSED');
+    }
+    if (order.status === ORDER_STATUS.CREATED) {
+      throw conflict('Checkout is already being prepared; retry with the same key', 'CHECKOUT_IN_PROGRESS', { orderId: order._id });
+    }
+    if (order.status === ORDER_STATUS.CANCELLED) {
+      throw conflict('This checkout attempt has already been cancelled; choose a new slot before retrying',
+        'CHECKOUT_ALREADY_SETTLED', { orderId: order._id, reason: order.cancellation?.reason || null });
+    }
+    const detail = await this.detail({ tenantId: order.tenantId, orderId: order._id, userId });
+    if (order.status !== ORDER_STATUS.PAYMENT_PENDING) return detail;
+    const latest = await Payment.findOne({ orderId: order._id }).sort({ createdAt: -1 }).lean();
+    return {
+      ...detail,
+      ...(await this.checkoutClientPayload({
+        order, userId,
+        chargeResult: { gatewayOrderId: latest?.gatewayOrderId, provider: latest?.provider },
+      })),
+      idempotentReplay: true,
     };
   }
 
@@ -901,6 +1132,13 @@ class OrderService {
     const { cart, items } = await cartService.fetchCart({ tenantId, userId });
     if (!items.length) throw badRequest('Cart is empty', 'CART_EMPTY');
     const { charges, slotDoc } = await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
+    const allocation = await warehouseAllocationService.plan({
+      tenantId,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
+      pincode: address.pincode,
+      customerCoordinates: address.coordinates || null,
+      preferredHubId: slotDoc?.hubId || null,
+    });
 
     return {
       itemSubtotal: charges.itemSubtotal,
@@ -914,26 +1152,44 @@ class OrderService {
       slotType: slotDoc?.windowType || 'normal',
       itemCount: items.reduce((a, i) => a + i.qty, 0),
       priceChanged: revalidated.changed,
+      fulfillment: {
+        hub: allocation.hub,
+        strategy: allocation.strategy,
+        allocatable: true,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+        nodeCount: allocation.nodeCount,
+      },
     };
   }
 
-  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null, precomputed = null }) {
+  async createOrderDoc({ tenantId, userId, cart, items, hold, address, paymentMethod, source, req = null, precomputed = null, checkoutKey, checkoutFingerprint }) {
     // `precomputed` lets checkout price the basket ONCE and then use the same
     // numbers for the cash pre-flight and for the order document. Pricing twice
     // would not merely be wasteful — the two passes could disagree (a coupon
     // expiring between them), and the cap would be judged on a total that is not
     // the one being charged.
-    const { charges, slotDoc, categoryByMaster, vendorByMaster } = precomputed
+    const { charges, slotDoc, vendorByMaster } = precomputed
       || await this.computeOrderChargesForCart({ tenantId, userId, cart, items, hold });
 
     // resolve category per line for tax lookup (computeOrderCharges already
     // used the category; here we just mirror the breakdown onto the items)
     const lineByListing = new Map(charges.lineItems.map((l) => [String(l.tenantProductId), l]));
+    const allocation = await warehouseAllocationService.plan({
+      tenantId,
+      items: items.map((item) => ({ listingId: item.tenantProductId, qty: item.qty })),
+      pincode: address.pincode,
+      customerCoordinates: address.coordinates || null,
+      preferredHubId: slotDoc?.hubId || null,
+    });
+    const allocationByListing = new Map(allocation.allocations.map((item) => [String(item.listingId), item]));
 
     const totalAmount = charges.grandTotal;
     const order = await Order.create({
       tenantId, userId,
       orderNumber: await nextOrderNumber({ tenantId }),
+      checkoutIdempotencyKey: checkoutKey,
+      checkoutFingerprint,
       status: ORDER_STATUS.CREATED,
       // end-to-end correlation: this order's payment, journals, domain
       // events and any gateway webhook all share this trace (Phase 10)
@@ -958,6 +1214,19 @@ class OrderService {
         hubId: slotDoc.hubId || null,
         windowType: slotDoc.windowType || 'normal',
       } : null,
+      fulfillmentPlan: {
+        policyId: allocation.policyId,
+        policyVersion: allocation.policyVersion,
+        strategy: allocation.strategy,
+        splitPolicy: allocation.splitPolicy,
+        status: 'planned',
+        primaryHubId: allocation.primaryHubId,
+        nodeCount: allocation.nodeCount,
+        promisedAt: allocation.promise.maxAt,
+        promiseMinAt: allocation.promise.minAt,
+        promiseMaxAt: allocation.promise.maxAt,
+        plannedAt: allocation.plannedAt,
+      },
       addressSnapshot: {
         addressId: address._id,
         name: address.name || null,
@@ -973,11 +1242,12 @@ class OrderService {
       paymentMethod,
     });
 
-    await OrderItem.insertMany(
+    const createdOrderItems = await OrderItem.insertMany(
       items.map((i) => {
         const line = lineByListing.get(String(i.tenantProductId)) || {
           taxAmount: 0, discountAllocated: 0, taxPolicyId: null, hsnCode: null,
         };
+        const allocated = allocationByListing.get(String(i.tenantProductId));
         return {
           orderId: order._id,
           tenantId,
@@ -985,7 +1255,10 @@ class OrderService {
           productMasterId: i.productMasterId,
           variantId: i.variantId || null,
           vendorId: i.productMasterId ? (vendorByMaster.get(String(i.productMasterId)) || null) : null,
-          skuSnapshot: { skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null, unit: i.unitSnapshot || null },
+          skuSnapshot: {
+            skuGlobal: null, title: i.titleSnapshot || 'Item', imageUrl: i.imageUrlSnapshot || null,
+            unit: i.unitSnapshot || null, unitQuantity: i.unitQuantitySnapshot || 1,
+          },
           priceAtOrder: { mrp: i.priceSnapshot?.mrp ?? null, sellingPrice: i.priceSnapshot?.sellingPrice ?? 0, currency: i.priceSnapshot?.currency || 'INR' },
           qty: i.qty,
           lineTotal: line.lineTotal ?? i.lineTotal ?? 0,
@@ -994,9 +1267,24 @@ class OrderService {
           taxPolicyId: line.taxPolicyId || null,
           hsnCode: line.hsnCode || null,
           isReturnable: i.isReturnable !== false,
+          fulfillmentAllocation: allocated ? {
+            warehouseId: allocated.warehouseId,
+            warehouseCode: allocated.warehouseCode,
+            quantity: allocated.quantity,
+            availableAtPlan: allocated.availableAtPlan,
+            safetyStockAtPlan: allocated.safetyStock,
+            policySafetyStockAtPlan: allocated.policySafetyStock,
+            distanceKm: allocated.distanceKm,
+            promiseMinAt: allocated.promiseMinAt,
+            promiseMaxAt: allocated.promiseMaxAt,
+            status: 'planned',
+          } : null,
+          searchQueryId: i.searchQueryId || null,
         };
       })
     );
+
+    await shipmentService.createForOrder({ order, orderItems: createdOrderItems, allocation });
 
     // ---- persist the immutable charge breakdown ----
     const breakdown = await pricingPolicyService.persistChargeBreakdown({
@@ -1022,11 +1310,16 @@ class OrderService {
   }
 
   async compensateFailedCharge(order, hold, reason, req) {
+    await inventoryReservationService.releaseOrder({
+      tenantId: order.tenantId, orderId: order._id, reason: 'payment_failed', actorId: order.userId, req,
+    }).catch(() => {});
+    order.fulfillmentPlan.reservationStatus = 'released';
+    order.fulfillmentPlan.status = 'released';
     await slotService.release({ reservationId: hold._id, tenantId: order.tenantId, reason: 'payment_failed' }).catch(() => {});
     await this.markCancelled(order, { reason, cancelledBy: order.userId, actorType: AUDIT_ACTOR_TYPE.SYSTEM, req });
   }
 
-  async markCancelled(order, { reason, reasonText = null, cancelledBy = null, actorType = AUDIT_ACTOR_TYPE.SYSTEM, refundTransactionId = null, req = null }) {
+  async markCancelled(order, { reason, reasonText = null, cancelledBy = null, actorType = AUDIT_ACTOR_TYPE.SYSTEM, refundTransactionId = null, req: _req = null }) {
     const fromStatus = order.status;
     order.status = ORDER_STATUS.CANCELLED;
     order.cancellation = {
@@ -1061,7 +1354,7 @@ class OrderService {
   }
 
   /** Validate + apply a status transition and record history. */
-  async transition(order, toStatus, { actorType = AUDIT_ACTOR_TYPE.SYSTEM, actorId = null, note = null, req = null, skipHistory = false } = {}) {
+  async transition(order, toStatus, { actorType = AUDIT_ACTOR_TYPE.SYSTEM, actorId = null, note = null, req: _req = null, skipHistory = false } = {}) {
     assertTransition(order.status, toStatus);
     const from = order.status;
     order.status = toStatus;
