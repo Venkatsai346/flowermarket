@@ -101,7 +101,7 @@ try {
   const legacyOrderId = new mongoose.Types.ObjectId();
   const [legacyShipment] = await Shipment.create([{
     tenantId, orderId: legacyOrderId, shipmentNumber: 'FM-LEGACY-S1', sequence: 1,
-    hubId: hubA._id, status: 'queued', itemsCount: 1, unitsCount: 1,
+    hubId: hubA._id, trackingCode: 'TRACK-LEGACY-S1', status: 'queued', itemsCount: 1, unitsCount: 1,
   }]);
   const repaired = await shipmentService.repairLegacyDeliveredMirror({
     order: { _id: legacyOrderId, tenantId, status: 'delivered', deliveredAt: new Date('2026-10-05T05:00:00Z') },
@@ -115,7 +115,7 @@ try {
   const foreignOrderId = new mongoose.Types.ObjectId();
   const [foreignShipment] = await Shipment.create([{
     tenantId: foreignTenant, orderId: foreignOrderId, shipmentNumber: 'FM-FOREIGN-S1', sequence: 1,
-    hubId: hubA._id, status: 'queued', itemsCount: 1, unitsCount: 1,
+    hubId: hubA._id, trackingCode: 'TRACK-FOREIGN-S1', status: 'queued', itemsCount: 1, unitsCount: 1,
   }]);
   await shipmentService.repairLegacyDeliveredMirror({
     order: { _id: foreignOrderId, tenantId, status: 'delivered' },
