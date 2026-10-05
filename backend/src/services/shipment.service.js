@@ -24,7 +24,7 @@ const orderStatusFor = (shipments) => {
   if (!active.length) return ORDER_STATUS.CANCELLED;
   if (active.every((shipment) => shipment.status === SHIPMENT_STATUS.DELIVERED)) return ORDER_STATUS.DELIVERED;
   if (active.some((shipment) => shipment.status === SHIPMENT_STATUS.DELIVERED)) return ORDER_STATUS.PARTIALLY_DELIVERED;
-  if (active.some((shipment) => shipment.status === SHIPMENT_STATUS.DELIVERY_FAILED)) return ORDER_STATUS.DELIVERY_FAILED;
+  if (active.some((shipment) => [SHIPMENT_STATUS.DELIVERY_FAILED, SHIPMENT_STATUS.RETURN_TO_ORIGIN, SHIPMENT_STATUS.RETURNED_TO_ORIGIN].includes(shipment.status))) return ORDER_STATUS.DELIVERY_FAILED;
   if (active.some((shipment) => shipment.status === SHIPMENT_STATUS.OUT_FOR_DELIVERY)) return ORDER_STATUS.OUT_FOR_DELIVERY;
   if (active.every((shipment) => shipment.status === SHIPMENT_STATUS.PACKED)) return ORDER_STATUS.PACKED;
   if (active.some((shipment) => shipment.status === SHIPMENT_STATUS.PICKING)) return ORDER_STATUS.PICKING;
@@ -33,8 +33,6 @@ const orderStatusFor = (shipments) => {
 
 class ShipmentService {
   async createForOrder({ order, orderItems, allocation }) {
-    const existing = await Shipment.find({ tenantId: order.tenantId, orderId: order._id }).sort({ sequence: 1 });
-    if (existing.length) return existing;
     const plans = allocation.shipments?.length ? allocation.shipments : [{
       sequence: 1, fulfillmentHubId: allocation.primaryHubId,
       warehouseCode: allocation.hub?.code, warehouseName: allocation.hub?.name,
@@ -42,20 +40,27 @@ class ShipmentService {
       promiseMinAt: allocation.promise?.minAt, promiseMaxAt: allocation.promise?.maxAt,
       listingIds: allocation.allocations.map((item) => item.listingId),
     }];
-    const weights = plans.map((plan) => orderItems
-      .filter((item) => String(item.fulfillmentAllocation?.warehouseId || '') === String(
-        allocation.allocations.find((entry) => entry.fulfillmentHubId === plan.fulfillmentHubId)?.warehouseId || '',
-      ) || plan.listingIds.includes(String(item.tenantProductId)))
+    const normalizedPlans = plans.map((plan) => ({
+      ...plan, listingIds: [...new Set((plan.listingIds || []).map(String))],
+    }));
+    const ownershipCount = new Map();
+    normalizedPlans.forEach((plan) => plan.listingIds.forEach((listingId) => {
+      ownershipCount.set(listingId, (ownershipCount.get(listingId) || 0) + 1);
+    }));
+    const invalidLine = orderItems.find((item) => ownershipCount.get(String(item.tenantProductId)) !== 1);
+    if (invalidLine) {
+      throw conflict('Every order line must belong to exactly one shipment plan', 'INVALID_SHIPMENT_PLAN');
+    }
+    const weights = normalizedPlans.map((plan) => orderItems
+      .filter((item) => plan.listingIds.includes(String(item.tenantProductId)))
       .reduce((sum, item) => sum + toPaise(item.lineTotal || 0), 0));
     const feeShares = allocatePaise(toPaise(order.deliveryFee || 0), weights);
     const shipments = [];
-    for (let index = 0; index < plans.length; index += 1) {
-      const plan = plans[index];
+    for (let index = 0; index < normalizedPlans.length; index += 1) {
+      const plan = normalizedPlans[index];
       const lines = orderItems.filter((item) => plan.listingIds.includes(String(item.tenantProductId)));
       const sequence = index + 1;
-      // Sequential on purpose: shipment creation assigns stable sequence numbers and line ownership.
-      // eslint-disable-next-line no-await-in-loop
-      const shipment = await Shipment.create({
+      const immutableShipment = {
         tenantId: order.tenantId, orderId: order._id,
         shipmentNumber: `${order.orderNumber}-S${sequence}`, sequence,
         hubId: plan.fulfillmentHubId, warehouseCode: plan.warehouseCode || null,
@@ -68,20 +73,49 @@ class ShipmentService {
         promiseMinAt: plan.promiseMinAt || null, promiseMaxAt: plan.promiseMaxAt || null,
         distanceKm: plan.distanceKm ?? null,
         trackingCode: sha256(`${order.tenantId}:${order._id}:${sequence}`).slice(0, 24).toUpperCase(),
-      });
+      };
+      // Sequential on purpose: shipment creation assigns stable sequence numbers and line ownership.
+      // eslint-disable-next-line no-await-in-loop
+      const shipment = await Shipment.findOneAndUpdate(
+        { tenantId: order.tenantId, orderId: order._id, sequence },
+        { $setOnInsert: immutableShipment },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+      if (String(shipment.hubId) !== String(plan.fulfillmentHubId)
+        || shipment.itemsCount !== lines.length
+        || toPaise(shipment.deliveryFee) !== (feeShares[index] || 0)) {
+        throw conflict('Existing shipment does not match the immutable allocation plan', 'SHIPMENT_PLAN_DRIFT');
+      }
       shipments.push(shipment);
       if (lines.length) {
-        // Sequential on purpose: shipment item rows must exist before lines expose their shipment id.
+        // Sequential on purpose: claim immutable line ownership before materializing its shipment-item row.
         // eslint-disable-next-line no-await-in-loop
-        await ShipmentItem.insertMany(lines.map((item) => ({
-          tenantId: order.tenantId, orderId: order._id, shipmentId: shipment._id,
-          orderItemId: item._id, tenantProductId: item.tenantProductId, qty: item.qty,
-          lineTotal: item.lineTotal, taxAmount: item.taxAmount || 0,
-          discountAmount: item.discountAllocated || 0,
+        const claimed = await OrderItem.updateMany(
+          {
+            _id: { $in: lines.map((item) => item._id) }, tenantId: order.tenantId, orderId: order._id,
+            $or: [{ shipmentId: null }, { shipmentId: shipment._id }],
+          },
+          { $set: { shipmentId: shipment._id } },
+        );
+        if (claimed.matchedCount !== lines.length) {
+          throw conflict('An order line is already owned by another shipment', 'SHIPMENT_LINE_ALREADY_CLAIMED');
+        }
+        // Sequential on purpose: durable item materialization follows successful ownership claims.
+        // eslint-disable-next-line no-await-in-loop
+        await ShipmentItem.bulkWrite(lines.map((item) => ({
+          updateOne: {
+            filter: { tenantId: order.tenantId, shipmentId: shipment._id, orderItemId: item._id },
+            update: {
+              $setOnInsert: {
+                tenantId: order.tenantId, orderId: order._id, shipmentId: shipment._id,
+                orderItemId: item._id, tenantProductId: item.tenantProductId, qty: item.qty,
+                lineTotal: item.lineTotal, taxAmount: item.taxAmount || 0,
+                discountAmount: item.discountAllocated || 0,
+              },
+            },
+            upsert: true,
+          },
         })));
-        // Sequential on purpose: line ownership follows creation of durable shipment items.
-        // eslint-disable-next-line no-await-in-loop
-        await OrderItem.updateMany({ _id: { $in: lines.map((item) => item._id) } }, { $set: { shipmentId: shipment._id } });
       }
     }
     return shipments;
@@ -98,22 +132,32 @@ class ShipmentService {
         { $setOnInsert: { hubId: shipment.hubId, itemsCount: shipment.unitsCount, status: 'queued' } },
         { upsert: true, new: true },
       );
-      shipment.status = SHIPMENT_STATUS.QUEUED;
-      // Sequential on purpose: persist each shipment only after its task exists.
+      // Sequential on purpose: queue visibility advances only a still-planned shipment; replays never regress execution.
       // eslint-disable-next-line no-await-in-loop
-      await shipment.save();
+      await Shipment.updateOne(
+        { _id: shipment._id, tenantId, orderId, status: SHIPMENT_STATUS.PLANNED },
+        { $set: { status: SHIPMENT_STATUS.QUEUED }, $inc: { version: 1 } },
+      );
     }
-    return shipments;
+    return Shipment.find({ tenantId, orderId }).sort({ sequence: 1 });
   }
 
   async reconcile({ tenantId, limit = 500, repair = false }) {
     const shipments = await Shipment.find({ tenantId }).sort({ updatedAt: -1 }).limit(limit).lean();
     const orderIds = [...new Set(shipments.map((shipment) => String(shipment.orderId)))];
     const shipmentIds = shipments.map((shipment) => shipment._id);
-    const [orders, items, tasks] = await Promise.all([
+    const [orders, items, tasks, overdueTotal, refundAttentionTotal] = await Promise.all([
       Order.find({ _id: { $in: orderIds }, tenantId }).select('status').lean(),
       ShipmentItem.find({ shipmentId: { $in: shipmentIds }, tenantId }).lean(),
       FulfillmentTask.find({ shipmentId: { $in: shipmentIds }, tenantId }).select('shipmentId').lean(),
+      Shipment.countDocuments({
+        tenantId, promiseMaxAt: { $lt: new Date() },
+        status: { $nin: [SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.CANCELLED] },
+      }),
+      Shipment.countDocuments({
+        tenantId, status: SHIPMENT_STATUS.CANCELLED,
+        'cancellation.refundStatus': { $in: ['pending', 'failed'] },
+      }),
     ]);
     const byOrder = new Map();
     shipments.forEach((shipment) => {
@@ -147,7 +191,7 @@ class ShipmentService {
       scanned: shipments.length, repairedOrderStatuses: repair ? statusDrift.length : 0,
       metrics: {
         orderStatusDrift: statusDrift.length, missingOrDuplicateTasks: missingTasks.length,
-        itemCountDrift: itemCountDrift.length, overdue: overdue.length, refundAttention: refundAttention.length,
+        itemCountDrift: itemCountDrift.length, overdue: overdueTotal, refundAttention: refundAttentionTotal,
       },
       samples: {
         orderStatusDrift: statusDrift.slice(0, 20).map((row) => String(row._id)),
@@ -159,8 +203,10 @@ class ShipmentService {
     };
   }
 
-  async get({ tenantId, shipmentId }) {
-    const shipment = await Shipment.findOne({ _id: shipmentId, tenantId });
+  async get({ tenantId, shipmentId, orderId = null }) {
+    const shipment = await Shipment.findOne({
+      _id: shipmentId, tenantId, ...(orderId ? { orderId } : {}),
+    });
     if (!shipment) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
     return shipment;
   }
@@ -225,10 +271,21 @@ class ShipmentService {
   }
 
   async markDeliveryFailed({ tenantId, shipmentId, reason = null, actorId = null }) {
-    return this.setStatus({
-      tenantId, shipmentId, from: SHIPMENT_STATUS.OUT_FOR_DELIVERY,
-      to: SHIPMENT_STATUS.DELIVERY_FAILED, patch: { cancellationReason: reason }, actorId,
-    });
+    const shipment = await Shipment.findOneAndUpdate(
+      { _id: shipmentId, tenantId, status: SHIPMENT_STATUS.OUT_FOR_DELIVERY },
+      {
+        $set: { status: SHIPMENT_STATUS.DELIVERY_FAILED, lastDeliveryFailureReason: reason || null },
+        $inc: { deliveryAttemptCount: 1, version: 1 },
+      },
+      { new: true },
+    );
+    if (!shipment) {
+      const replay = await Shipment.findOne({ _id: shipmentId, tenantId, status: SHIPMENT_STATUS.DELIVERY_FAILED });
+      if (replay) return replay;
+      throw conflict('Shipment state changed; refresh and retry', 'INVALID_SHIPMENT_TRANSITION');
+    }
+    await this.deriveOrderStatus({ tenantId, orderId: shipment.orderId, actorId });
+    return shipment;
   }
 
   /**
@@ -250,15 +307,22 @@ class ShipmentService {
     }
 
     if (current.status !== SHIPMENT_STATUS.CANCELLED) {
-      if (![SHIPMENT_STATUS.PLANNED, SHIPMENT_STATUS.QUEUED, SHIPMENT_STATUS.PICKING, SHIPMENT_STATUS.PACKED].includes(current.status)) {
+      if (![SHIPMENT_STATUS.PLANNED, SHIPMENT_STATUS.QUEUED, SHIPMENT_STATUS.PICKING, SHIPMENT_STATUS.PACKED, SHIPMENT_STATUS.RETURNED_TO_ORIGIN].includes(current.status)) {
         throw conflict(`Shipment cannot be cancelled in state ${current.status}`, 'SHIPMENT_CANCELLATION_NOT_ALLOWED');
+      }
+      const activeAssignment = await DeliveryAssignment.exists({
+        tenantId, orderId, shipmentId,
+        status: { $nin: ['failed', 'cancelled', 'delivered'] },
+      });
+      if (activeAssignment) {
+        throw conflict('An active rider assignment must be cancelled or completed first', 'ACTIVE_DELIVERY_ASSIGNMENT');
       }
       const session = await mongoose.startSession();
       try {
         await session.withTransaction(async () => {
           const shipment = await Shipment.findOne({
             _id: shipmentId, tenantId, orderId,
-            status: { $in: [SHIPMENT_STATUS.PLANNED, SHIPMENT_STATUS.QUEUED, SHIPMENT_STATUS.PICKING, SHIPMENT_STATUS.PACKED] },
+            status: { $in: [SHIPMENT_STATUS.PLANNED, SHIPMENT_STATUS.QUEUED, SHIPMENT_STATUS.PICKING, SHIPMENT_STATUS.PACKED, SHIPMENT_STATUS.RETURNED_TO_ORIGIN] },
           }).session(session);
           if (!shipment) return;
           const lines = await ShipmentItem.find({ tenantId, shipmentId }).session(session);
@@ -309,7 +373,7 @@ class ShipmentService {
       const listings = await TenantProduct.find({ _id: { $in: restoredLines.map((line) => line.tenantProductId) }, tenantId });
       await Promise.all(listings.map((listing) => inventoryService.refreshListingStock(listing)));
       await auditService.record({
-        action: 'shipment_cancelled', entityType: 'shipment', entityId: shipmentId,
+        action: 'status_change', entityType: 'shipment', entityId: shipmentId,
         tenantId, actorId, actorType: enforceOwnership ? 'customer' : 'admin',
         before: { status: current.status }, after: { status: SHIPMENT_STATUS.CANCELLED },
         meta: {
@@ -353,6 +417,20 @@ class ShipmentService {
     return this.listForOrder({ tenantId, orderId });
   }
 
+  async startReturnToOrigin({ tenantId, shipmentId, actorId = null }) {
+    return this.setStatus({
+      tenantId, shipmentId, from: SHIPMENT_STATUS.DELIVERY_FAILED,
+      to: SHIPMENT_STATUS.RETURN_TO_ORIGIN, actorId,
+    });
+  }
+
+  async completeReturnToOrigin({ tenantId, shipmentId, actorId = null }) {
+    return this.setStatus({
+      tenantId, shipmentId, from: SHIPMENT_STATUS.RETURN_TO_ORIGIN,
+      to: SHIPMENT_STATUS.RETURNED_TO_ORIGIN, actorId,
+    });
+  }
+
   async setStatus({ tenantId, shipmentId, from, to, patch = {}, actorId = null }) {
     const allowedFrom = Array.isArray(from) ? from : [from];
     const shipment = await Shipment.findOneAndUpdate(
@@ -360,7 +438,11 @@ class ShipmentService {
       { $set: { status: to, ...patch }, $inc: { version: 1 } },
       { new: true },
     );
-    if (!shipment) throw conflict('Shipment state changed; refresh and retry', 'INVALID_SHIPMENT_TRANSITION');
+    if (!shipment) {
+      const replay = await Shipment.findOne({ _id: shipmentId, tenantId, status: to });
+      if (replay) return replay;
+      throw conflict('Shipment state changed; refresh and retry', 'INVALID_SHIPMENT_TRANSITION');
+    }
     await this.deriveOrderStatus({ tenantId, orderId: shipment.orderId, actorId });
     return shipment;
   }

@@ -18,7 +18,10 @@ const SHIPMENT_META = {
   planned: { label: 'Planned', step: 0 }, queued: { label: 'Confirmed', step: 0 },
   picking: { label: 'Being picked', step: 1 }, packed: { label: 'Packed', step: 2 },
   out_for_delivery: { label: 'Out for delivery', step: 3 }, delivered: { label: 'Delivered', step: 4 },
-  delivery_failed: { label: 'Delivery needs attention', step: 3 }, cancelled: { label: 'Cancelled', step: -1 },
+  delivery_failed: { label: 'Delivery needs attention', step: 3 },
+  return_to_origin: { label: 'Returning to sender', step: 3 },
+  returned_to_origin: { label: 'Returned to sender', step: 3 },
+  cancelled: { label: 'Cancelled', step: -1 },
 };
 const SHIPMENT_STEPS = ['Confirmed', 'Picking', 'Packed', 'On the way', 'Delivered'];
 const dateTime = (value) => value
@@ -295,6 +298,11 @@ export default function OrderDetail() {
                       <Clock3 className="h-3.5 w-3.5 text-indigo-500" /> Expected by {promise}
                     </p>
                   )}
+                  {shipment.status === 'delivery_failed' && (
+                    <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                      We could not complete this attempt. Operations is arranging a retry or safe return to the fulfillment centre.
+                    </p>
+                  )}
                 </div>
 
                 {shipment.status !== 'cancelled' && (
@@ -325,6 +333,12 @@ export default function OrderDetail() {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-white px-4 py-3 text-xs text-slate-500">
                   <span>Tracking <strong className="font-mono text-slate-700">{shipment.trackingCode}</strong></span>
                   <span>Delivery fee <Money value={shipment.deliveryFee} className="font-semibold text-slate-700" /></span>
+                  {shipment.status === 'cancelled' && shipment.cancellation?.refundStatus && (
+                    <span className={cn('font-semibold', shipment.cancellation.refundStatus === 'failed' ? 'text-rose-600' : 'text-emerald-600')}>
+                      Refund {shipment.cancellation.refundStatus}
+                      {shipment.cancellation.refundAmount > 0 && <> · <Money value={shipment.cancellation.refundAmount} /></>}
+                    </span>
+                  )}
                   {multiDelivery && ['planned', 'queued', 'picking', 'packed'].includes(shipment.status) && !cashDue && (
                     <Button
                       variant="ghost" size="sm" icon={PackageX}

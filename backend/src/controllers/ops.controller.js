@@ -66,6 +66,30 @@ class OpsController {
     res.status(200).json(success(order, { message: 'Shipment delivery failure recorded' }));
   });
 
+  startShipmentReturn = asyncHandler(async (req, res) => {
+    const shipment = await shipmentService.get({ tenantId: req.tenantId, shipmentId: req.params.shipmentId, orderId: req.params.id });
+    await shipmentService.startReturnToOrigin({ tenantId: req.tenantId, shipmentId: shipment._id, actorId: req.auth.userId });
+    const order = await orderService.detail({ tenantId: req.tenantId, orderId: req.params.id });
+    res.status(200).json(success(order, { message: 'Return to origin started' }));
+  });
+
+  completeShipmentReturn = asyncHandler(async (req, res) => {
+    const shipment = await shipmentService.get({ tenantId: req.tenantId, shipmentId: req.params.shipmentId, orderId: req.params.id });
+    await shipmentService.completeReturnToOrigin({ tenantId: req.tenantId, shipmentId: shipment._id, actorId: req.auth.userId });
+    const order = await orderService.detail({ tenantId: req.tenantId, orderId: req.params.id });
+    res.status(200).json(success(order, { message: 'Shipment returned to origin; cancellation is now safe' }));
+  });
+
+  cancelShipment = asyncHandler(async (req, res) => {
+    await shipmentService.cancel({
+      tenantId: req.tenantId, orderId: req.params.id, shipmentId: req.params.shipmentId,
+      reason: req.body.reason || 'cancelled by operations', actorId: req.auth.userId,
+      enforceOwnership: false,
+    });
+    const order = await orderService.detail({ tenantId: req.tenantId, orderId: req.params.id });
+    res.status(200).json(success(order, { message: 'Shipment cancelled — partial refund initiated' }));
+  });
+
   // ---------------- picking (legacy single-shipment compatibility) ----------------
   startPicking = asyncHandler(async (req, res) => {
     const order = await orderService.startPicking({

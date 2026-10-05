@@ -74,6 +74,9 @@ router.post('/orders/:id/shipments/:shipmentId/dispatch', authorize(...RIDER_ROL
 router.post('/orders/:id/shipments/:shipmentId/deliver', authorize(...RIDER_ROLES), validate(deliverSchema), OpsController.deliverShipment);
 router.post('/orders/:id/shipments/:shipmentId/delivery-failed', authorize(...RIDER_ROLES), validate(deliveryFailedSchema), OpsController.failShipmentDelivery);
 router.post('/orders/:id/shipments/:shipmentId/retry-delivery', authorize(...RIDER_ROLES), validate(emptyMutationSchema), OpsController.dispatchShipment);
+router.post('/orders/:id/shipments/:shipmentId/return-to-origin', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(emptyMutationSchema), OpsController.startShipmentReturn);
+router.post('/orders/:id/shipments/:shipmentId/return-to-origin/complete', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(emptyMutationSchema), OpsController.completeShipmentReturn);
+router.post('/orders/:id/shipments/:shipmentId/cancel', authorize(USER_ROLES.ADMIN, USER_ROLES.SUPER_ADMIN), validate(deliveryFailedSchema), OpsController.cancelShipment);
 
 // ---- picking (legacy single-shipment compatibility) ----
 router.post('/orders/:id/pick', authorize(...PICK_ROLES), validate(emptyMutationSchema), OpsController.startPicking);

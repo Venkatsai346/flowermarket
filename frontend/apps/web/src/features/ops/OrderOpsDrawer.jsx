@@ -113,6 +113,21 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const shipmentRetry = (shipment) => runAction(
     () => api.fulfillment.retryShipment(o.id, shipment.id), `${shipment.shipmentNumber} delivery retry dispatched`,
   );
+  const shipmentStartReturn = (shipment) => runAction(
+    () => api.fulfillment.startShipmentReturn(o.id, shipment.id),
+    `${shipment.shipmentNumber} is returning to origin`,
+  );
+  const shipmentCompleteReturn = (shipment) => runAction(
+    () => api.fulfillment.completeShipmentReturn(o.id, shipment.id),
+    `${shipment.shipmentNumber} received back at origin`,
+  );
+  const shipmentCancel = (shipment) => {
+    if (!window.confirm(`Cancel ${shipment.shipmentNumber}, restore its stock, and issue its partial refund?`)) return;
+    runAction(
+      () => api.fulfillment.cancelShipmentOps(o.id, shipment.id, { reason: 'cancelled by operations' }),
+      `${shipment.shipmentNumber} cancelled — refund initiated`,
+    );
+  };
   /**
    * Is this a cash order with the money still outstanding? The backend refuses
    * to mark such an order delivered (COD_COLLECTION_REQUIRED), so the form has
@@ -197,14 +212,31 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
                         {['planned', 'queued'].includes(shipment.status) && <Button size="sm" variant="primary" icon={ArrowRight} loading={action.busy} onClick={() => shipmentPick(shipment)}>Start picking</Button>}
                         {shipment.status === 'picking' && <Button size="sm" variant="primary" icon={PackageCheck} loading={action.busy} onClick={() => shipmentPack(shipment)}>Mark packed</Button>}
                         {shipment.status === 'packed' && <Button size="sm" variant="success" icon={Truck} loading={action.busy} onClick={() => shipmentDispatch(shipment)}>Dispatch</Button>}
-                        {shipment.status === 'delivery_failed' && <Button size="sm" variant="secondary" icon={RefreshCw} loading={action.busy} onClick={() => shipmentRetry(shipment)}>Retry delivery</Button>}
+                        {shipment.status === 'delivery_failed' && (shipment.deliveryAttemptCount || 0) < 2 && (
+                          <Button size="sm" variant="secondary" icon={RefreshCw} loading={action.busy} onClick={() => shipmentRetry(shipment)}>Retry delivery</Button>
+                        )}
                         {shipment.status === 'out_for_delivery' && (
                           <>
                             <Button size="sm" variant="success" icon={CheckCircle2} onClick={() => { setActiveShipmentId(shipment.id); setDeliverFormOpen(true); setShowFail(false); }}>Capture POD</Button>
                             <Button size="sm" variant="danger" icon={AlertTriangle} onClick={() => { setActiveShipmentId(shipment.id); setShowFail(true); setDeliverFormOpen(false); }}>Record failure</Button>
                           </>
                         )}
-                        {['delivered', 'cancelled'].includes(shipment.status) && <span className="text-xs text-slate-400">No further fulfillment action</span>}
+                        {shipment.status === 'delivery_failed' && (
+                          <Button size="sm" variant="secondary" icon={Truck} loading={action.busy} onClick={() => shipmentStartReturn(shipment)}>Return to origin</Button>
+                        )}
+                        {shipment.status === 'return_to_origin' && (
+                          <Button size="sm" variant="secondary" icon={PackageCheck} loading={action.busy} onClick={() => shipmentCompleteReturn(shipment)}>Received at origin</Button>
+                        )}
+                        {['planned', 'queued', 'picking', 'packed', 'returned_to_origin'].includes(shipment.status) && o.paymentSummary?.status !== 'awaiting_collection' && (
+                          <Button size="sm" variant="danger" icon={AlertTriangle} loading={action.busy} onClick={() => shipmentCancel(shipment)}>Cancel shipment</Button>
+                        )}
+                        {['delivered', 'cancelled'].includes(shipment.status) && (
+                          <span className="text-xs text-slate-400">
+                            {shipment.status === 'cancelled' && shipment.cancellation?.refundStatus
+                              ? `Refund ${shipment.cancellation.refundStatus} · ${inr(shipment.cancellation.refundAmount || 0)}`
+                              : 'No further fulfillment action'}
+                          </span>
+                        )}
                       </div>
                     </div>
                   );

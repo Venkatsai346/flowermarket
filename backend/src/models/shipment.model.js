@@ -6,7 +6,8 @@ const { Schema, Types } = mongoose;
 export const SHIPMENT_STATUS = Object.freeze({
   PLANNED: 'planned', QUEUED: 'queued', PICKING: 'picking', PACKED: 'packed',
   OUT_FOR_DELIVERY: 'out_for_delivery', DELIVERED: 'delivered',
-  DELIVERY_FAILED: 'delivery_failed', CANCELLED: 'cancelled',
+  DELIVERY_FAILED: 'delivery_failed', RETURN_TO_ORIGIN: 'return_to_origin',
+  RETURNED_TO_ORIGIN: 'returned_to_origin', CANCELLED: 'cancelled',
 });
 
 const ShipmentSchema = new Schema({
@@ -28,6 +29,8 @@ const ShipmentSchema = new Schema({
   distanceKm: { type: Number, default: null, min: 0 },
   trackingCode: { type: String, required: true, maxlength: 96 },
   carrierName: { type: String, default: null, maxlength: 120 },
+  deliveryAttemptCount: { type: Number, default: 0, min: 0 },
+  lastDeliveryFailureReason: { type: String, default: null, maxlength: 300 },
   cancelledAt: { type: Date, default: null },
   cancellationReason: { type: String, default: null, maxlength: 300 },
   cancellation: {
@@ -45,6 +48,7 @@ ShipmentSchema.index({ tenantId: 1, orderId: 1, sequence: 1 }, { unique: true, n
 ShipmentSchema.index({ tenantId: 1, shipmentNumber: 1 }, { unique: true, name: 'shipment_number_uq' });
 ShipmentSchema.index({ tenantId: 1, trackingCode: 1 }, { unique: true, name: 'shipment_tracking_uq' });
 ShipmentSchema.index({ tenantId: 1, status: 1, promiseMaxAt: 1 });
+ShipmentSchema.index({ tenantId: 1, 'cancellation.refundStatus': 1, cancelledAt: 1 });
 ShipmentSchema.plugin(auditPlugin);
 ShipmentSchema.plugin(toJSONPlugin);
 

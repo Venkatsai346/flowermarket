@@ -39,6 +39,8 @@ class FulfillmentService {
 
   async startPick({ orderId, tenantId, shipmentId = null, pickerId }) {
     const task = await this.getTask({ orderId, tenantId, shipmentId });
+    if (task.status === FULFILLMENT_TASK_STATUS.PICKING
+      && (!task.pickerId || String(task.pickerId) === String(pickerId))) return task;
     if (task.status !== FULFILLMENT_TASK_STATUS.QUEUED) {
       throw conflict(`Task is ${task.status}`, 'INVALID_TASK_TRANSITION');
     }
@@ -52,6 +54,7 @@ class FulfillmentService {
 
   async completePick({ orderId, tenantId, shipmentId = null }) {
     const task = await this.getTask({ orderId, tenantId, shipmentId });
+    if (task.status === FULFILLMENT_TASK_STATUS.PACKED) return task;
     if (task.status !== FULFILLMENT_TASK_STATUS.PICKING) {
       throw conflict(`Task is ${task.status}`, 'INVALID_TASK_TRANSITION');
     }
@@ -114,6 +117,20 @@ class FulfillmentService {
     return assignment;
   }
 
+  async cancelAssignment({ orderId, tenantId, shipmentId = null, reason = null }) {
+    const assignment = await DeliveryAssignment.findOne({ orderId, tenantId, shipmentId: shipmentId || null });
+    if (!assignment) return null;
+    if ([S.DELIVERED, S.CANCELLED].includes(assignment.status)) return assignment;
+    const riderId = assignment.riderId;
+    assignment.status = S.CANCELLED;
+    assignment.cancelledAt = new Date();
+    assignment.failureReason = reason || 'assignment cancelled';
+    assignment.pendingAcceptExpiresAt = null;
+    await assignment.save();
+    await this.setRiderAvailability(riderId, RIDER_AVAILABILITY.AVAILABLE);
+    return assignment;
+  }
+
   async findCandidateRider({ tenantId, hubId = null, excludeIds = [] }) {
     const base = {
       tenantId,
@@ -135,6 +152,7 @@ class FulfillmentService {
   /** Rider accepts the assignment. */
   async acceptAssignment({ orderId, tenantId, shipmentId = null, riderId }) {
     const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
+    if (assignment.status === S.ACCEPTED && String(assignment.riderId) === String(riderId)) return assignment;
     if (assignment.status !== S.PENDING_ACCEPT) {
       throw conflict(`Assignment is ${assignment.status} — cannot accept now`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -232,6 +250,7 @@ class FulfillmentService {
 
   async markAtHub({ orderId, tenantId, shipmentId = null }) {
     const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
+    if (assignment.status === S.AT_HUB) return assignment;
     if (assignment.status !== S.ACCEPTED) {
       throw conflict(`Assignment is ${assignment.status} — must ACCEPTED first`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -244,6 +263,7 @@ class FulfillmentService {
   /** Depart the hub: package must be verified (barcode/order-ID scan match). */
   async departHub({ orderId, tenantId, shipmentId = null, packageVerified = false }) {
     const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
+    if (assignment.status === S.IN_TRANSIT && assignment.packageVerified) return assignment;
     if (assignment.status !== S.AT_HUB) {
       throw conflict(`Assignment is ${assignment.status} — must be AT_HUB`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -259,6 +279,7 @@ class FulfillmentService {
 
   async markArrived({ orderId, tenantId, shipmentId = null }) {
     const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
+    if (assignment.status === S.ARRIVED) return assignment;
     if (assignment.status !== S.IN_TRANSIT) {
       throw conflict(`Assignment is ${assignment.status} — must be IN_TRANSIT`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -271,6 +292,7 @@ class FulfillmentService {
   /** Capture POD + complete: ARRIVED -> DELIVERED. OTP stored hashed. */
   async completeDelivery({ orderId, tenantId, shipmentId = null, podType, podValue = null, actorId: _actorId = null }) {
     const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
+    if (assignment.status === S.DELIVERED) return assignment;
     if (assignment.status !== S.ARRIVED) {
       throw conflict(`Assignment is ${assignment.status} — must be ARRIVED`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -294,6 +316,7 @@ class FulfillmentService {
   /** Fail the delivery: IN_TRANSIT | ARRIVED -> FAILED (saga decides retry/cancel). */
   async failDelivery({ orderId, tenantId, shipmentId = null, reason = null }) {
     const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
+    if (assignment.status === S.FAILED) return assignment;
     if (![S.IN_TRANSIT, S.ARRIVED].includes(assignment.status)) {
       throw conflict(`Assignment is ${assignment.status} — cannot fail from here`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -318,8 +341,8 @@ class FulfillmentService {
    * requiring rider-app calls (used by the ops deliver endpoint). Honors
    * every precondition so the machine stays honest.
    */
-  async forceArrived({ orderId, tenantId }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async forceArrived({ orderId, tenantId, shipmentId = null }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     if ([S.DELIVERED, S.FAILED, S.CANCELLED].includes(assignment.status)) {
       throw conflict(`Assignment is ${assignment.status} — cannot force arrive`, 'INVALID_ASSIGNMENT_STATE');
     }
@@ -376,8 +399,8 @@ class FulfillmentService {
     return generateNumericCode(4);
   }
 
-  async verifyPodOtp({ orderId, tenantId, otp }) {
-    const assignment = await this.getAssignment({ orderId, tenantId });
+  async verifyPodOtp({ orderId, tenantId, shipmentId = null, otp }) {
+    const assignment = await this.getAssignment({ orderId, tenantId, shipmentId });
     return assignment.podReference === sha256(String(otp).trim());
   }
 }

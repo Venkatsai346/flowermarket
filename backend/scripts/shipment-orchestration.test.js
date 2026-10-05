@@ -14,6 +14,8 @@ assert.equal(orderStatusFor([shipment('delivered'), shipment('delivered')]), ORD
 assert.equal(orderStatusFor([shipment('cancelled'), shipment('delivered')]), ORDER_STATUS.DELIVERED);
 assert.equal(orderStatusFor([shipment('cancelled'), shipment('cancelled')]), ORDER_STATUS.CANCELLED);
 assert.equal(orderStatusFor([shipment('delivery_failed'), shipment('picking')]), ORDER_STATUS.DELIVERY_FAILED);
+assert.equal(orderStatusFor([shipment('return_to_origin'), shipment('packed')]), ORDER_STATUS.DELIVERY_FAILED);
+assert.equal(orderStatusFor([shipment('returned_to_origin'), shipment('packed')]), ORDER_STATUS.DELIVERY_FAILED);
 
 assert.deepEqual(combinations(['a', 'b', 'c'], 2), [['a', 'b'], ['a', 'c'], ['b', 'c']]);
 assert.deepEqual(combinations(['a', 'b'], 1), [['a'], ['b']]);

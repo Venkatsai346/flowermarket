@@ -76,7 +76,7 @@ const ReturnRequestSchema = new Schema(
 );
 
 ReturnRequestSchema.index({ tenantId: 1, userId: 1, createdAt: -1 });
-ReturnRequestSchema.index({ orderId: 1 });
+ReturnRequestSchema.index({ tenantId: 1, orderId: 1, shipmentId: 1, createdAt: -1 });
 ReturnRequestSchema.index({ status: 1, createdAt: 1 }); // ops queue
 
 ReturnRequestSchema.plugin(auditPlugin);

@@ -32,8 +32,8 @@ export const INSTANT_CLAIM_MONTHLY_LIMIT = 3;
  *   B) INSTANT_CLAIM: auto-eligible perishable claim -> instant refund (no pickup)
  */
 class ReturnsService {
-  async checkEligibility({ orderId, userId, items, claimType }) {
-    const order = await Order.findById(orderId);
+  async checkEligibility({ tenantId, orderId, userId, items, claimType }) {
+    const order = await Order.findOne({ _id: orderId, tenantId });
     if (!order) throw notFound('Order not found', 'ORDER_NOT_FOUND');
     if (String(order.userId) !== String(userId)) throw badRequest('Not your order', 'FORBIDDEN');
 
@@ -108,7 +108,7 @@ class ReturnsService {
     }
     if (!items?.length) throw badRequest('At least one item is required', 'ITEMS_REQUIRED');
 
-    const eligibility = await this.checkEligibility({ orderId, userId, items, claimType });
+    const eligibility = await this.checkEligibility({ tenantId, orderId, userId, items, claimType });
     if (!eligibility.isEligible) {
       return { eligible: false, eligibility };
     }
@@ -157,7 +157,7 @@ class ReturnsService {
           + (oi.qty ? (oi.taxAmount || 0) / oi.qty : 0)
         );
         return {
-          returnRequestId: rr._id, orderItemId: oi._id, orderId,
+          tenantId, returnRequestId: rr._id, orderItemId: oi._id, orderId,
           shipmentId: oi.shipmentId || shipment?._id || null,
           tenantProductId: oi.tenantProductId,
           qty: req.qty,

@@ -560,9 +560,7 @@ class OrderService {
         // saga decides: retry (reassign) or cancel after max retries
         await fulfillmentService.failDelivery({ orderId, shipmentId, tenantId, reason });
         if (shipmentId) {
-          await shipmentService.setStatus({
-            tenantId, shipmentId, from: 'out_for_delivery', to: 'delivery_failed', actorId: riderId,
-          });
+          await shipmentService.markDeliveryFailed({ tenantId, shipmentId, reason, actorId: riderId });
           return this.detail({ tenantId, orderId });
         }
         const retries = (order.deliveryRetryCount || 0) + 1;
@@ -639,10 +637,21 @@ class OrderService {
   async dispatchShipment({ tenantId, orderId, shipmentId, actorId = null }) {
     const shipment = await shipmentService.get({ tenantId, shipmentId });
     if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
+    if (shipment.status === 'out_for_delivery') return this.detail({ tenantId, orderId });
+    if (shipment.status === 'delivery_failed' && shipment.deliveryAttemptCount >= MAX_DELIVERY_RETRIES) {
+      throw conflict('Delivery retry limit reached; cancel or escalate this shipment', 'DELIVERY_RETRY_LIMIT_REACHED');
+    }
     await fulfillmentService.assignRider({ orderId, shipmentId, tenantId, hubId: shipment.hubId });
-    await shipmentService.setStatus({
-      tenantId, shipmentId, from: ['packed', 'delivery_failed'], to: 'out_for_delivery', actorId,
-    });
+    try {
+      await shipmentService.setStatus({
+        tenantId, shipmentId, from: ['packed', 'delivery_failed'], to: 'out_for_delivery', actorId,
+      });
+    } catch (error) {
+      await fulfillmentService.cancelAssignment({
+        orderId, shipmentId, tenantId, reason: 'shipment dispatch transition failed',
+      }).catch(() => {});
+      throw error;
+    }
     return this.detail({ tenantId, orderId });
   }
 
@@ -676,9 +685,7 @@ class OrderService {
     const shipment = await shipmentService.get({ tenantId, shipmentId });
     if (String(shipment.orderId) !== String(orderId)) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
     await fulfillmentService.failDelivery({ orderId, shipmentId, tenantId, reason });
-    await shipmentService.setStatus({
-      tenantId, shipmentId, from: 'out_for_delivery', to: 'delivery_failed', actorId,
-    });
+    await shipmentService.markDeliveryFailed({ tenantId, shipmentId, reason, actorId });
     return this.detail({ tenantId, orderId });
   }
 
@@ -886,7 +893,7 @@ class OrderService {
     const shipments = await shipmentService.listForOrder({ tenantId, orderId });
     const activeShipments = shipments.filter((shipment) => shipment.status !== 'cancelled');
     if (shipments.length && [PAYMENT_STATUS.SUCCESS, PAYMENT_STATUS.PARTIALLY_REFUNDED].includes(order.paymentSummary?.status)) {
-      if (activeShipments.some((shipment) => !['planned', 'queued', 'picking', 'packed'].includes(shipment.status))) {
+      if (activeShipments.some((shipment) => !['planned', 'queued', 'picking', 'packed', 'returned_to_origin'].includes(shipment.status))) {
         throw conflict('One or more deliveries can no longer be cancelled', 'SHIPMENT_CANCELLATION_NOT_ALLOWED');
       }
       for (const shipment of activeShipments) {
@@ -897,9 +904,14 @@ class OrderService {
           actorId, enforceOwnership: actorType === AUDIT_ACTOR_TYPE.CUSTOMER,
         });
       }
+      const settledShipments = await shipmentService.listForOrder({ tenantId, orderId });
+      const refundStates = settledShipments.map((shipment) => shipment.cancellation?.refundStatus).filter(Boolean);
+      const aggregateRefundStatus = refundStates.some((status) => status === 'failed')
+        ? 'failed'
+        : (refundStates.every((status) => ['success', 'not_applicable'].includes(status)) ? 'success' : 'pending');
       order.cancellation = {
         reason, reasonText, cancelledBy: actorId, cancelledAt: new Date(),
-        refundStatus: 'success', refundTransactionId: null,
+        refundStatus: aggregateRefundStatus, refundTransactionId: null,
       };
       await order.save();
       return this.detail({ tenantId, orderId });

@@ -15,7 +15,7 @@
 
 `planned → queued → picking → packed → out_for_delivery → delivered`
 
-`out_for_delivery → delivery_failed → out_for_delivery` supports retry. Pre-dispatch states can transition to `cancelled` through the customer shipment cancellation API. Picking, packing, rider assignment, POD, tracking, promises, and fees are shipment-scoped.
+`out_for_delivery → delivery_failed → out_for_delivery` supports a bounded retry. After the retry cap, operations use `delivery_failed → return_to_origin → returned_to_origin → cancelled`; stock is never restored while a parcel may still be physically with a rider. Pre-dispatch states can transition directly to `cancelled` through the customer shipment cancellation API. Picking, packing, rider assignment, POD, tracking, promises, and fees are shipment-scoped.
 
 ## APIs
 
@@ -27,6 +27,10 @@ Operations use:
 - `POST /fulfillment/orders/:orderId/shipments/:shipmentId/deliver`
 - `POST /fulfillment/orders/:orderId/shipments/:shipmentId/delivery-failed`
 - `POST /fulfillment/orders/:orderId/shipments/:shipmentId/retry-delivery`
+- `POST /fulfillment/orders/:orderId/shipments/:shipmentId/return-to-origin`
+- `POST /fulfillment/orders/:orderId/shipments/:shipmentId/return-to-origin/complete`
+- `POST /fulfillment/orders/:orderId/shipments/:shipmentId/cancel`
+- `POST /fulfillment/shipments/reconcile`
 
 Customers use `POST /orders/:orderId/shipments/:shipmentId/cancel`. It is intentionally unavailable for COD partials: the current COD ledger has one order-level receivable and must not pretend it can waive only one parcel. Prepaid cancellation atomically restores the exact committed node stock, marks the immutable line allocations cancelled, and starts an idempotent component refund keyed by shipment.
 

@@ -10,6 +10,7 @@ const { Schema, Types } = mongoose;
 
 const ReturnItemSchema = new Schema(
   {
+    tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
     returnRequestId: { type: Types.ObjectId, ref: 'ReturnRequest', required: true, index: true },
     orderItemId: { type: Types.ObjectId, ref: 'OrderItem', required: true, index: true },
     orderId: { type: Types.ObjectId, ref: 'Order', required: true, index: true },
@@ -28,7 +29,7 @@ const ReturnItemSchema = new Schema(
   { collection: 'returnitems' }
 );
 
-ReturnItemSchema.index({ returnRequestId: 1, orderItemId: 1 });
+ReturnItemSchema.index({ tenantId: 1, returnRequestId: 1, orderItemId: 1 }, { unique: true, name: 'return_item_request_line_uq' });
 
 ReturnItemSchema.plugin(auditPlugin);
 ReturnItemSchema.plugin(softDeletePlugin);
