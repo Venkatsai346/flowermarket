@@ -355,11 +355,12 @@ class OrderService {
 
   async detail({ tenantId, orderId, userId = null }) {
     const order = await this.getOrder({ tenantId, orderId, userId });
-    const [items, timeline, shipments] = await Promise.all([
-      OrderItem.find({ orderId: order._id }).lean(),
-      OrderStatusHistory.find({ orderId: order._id }).sort({ createdAt: 1 }).lean(),
+    const [items, timeline, loadedShipments] = await Promise.all([
+      OrderItem.find({ orderId: order._id, tenantId }).lean(),
+      OrderStatusHistory.find({ orderId: order._id, tenantId }).sort({ createdAt: 1 }).lean(),
       shipmentService.listForOrder({ tenantId, orderId: order._id }),
     ]);
+    const shipments = await shipmentService.repairLegacyDeliveredMirror({ order, shipments: loadedShipments });
     const enabled = config.money.dualWritePaise !== false;
     const plain = typeof order.toJSON === 'function' ? order.toJSON() : order;
     const itemPaise = serializeList(items).map((it) => attachPaise(it, ['lineTotal', 'taxAmount', 'discountAllocated'], { enabled }));
@@ -704,6 +705,12 @@ class OrderService {
     assertTransition(order.status, ORDER_STATUS.PICKING, { context: 'startPicking' });
     const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
     await fulfillmentService.startPick({ orderId, shipmentId, tenantId, pickerId });
+    if (shipmentId) {
+      await shipmentService.setStatus({
+        tenantId, shipmentId, from: ['planned', 'queued'], to: 'picking', actorId: pickerId,
+      });
+      return this.getOrder({ tenantId, orderId });
+    }
     return this.transition(order, ORDER_STATUS.PICKING, { actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId: pickerId, note: 'picking started', req });
   }
 
@@ -712,6 +719,10 @@ class OrderService {
     assertTransition(order.status, ORDER_STATUS.PACKED, { context: 'markPacked' });
     const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
     await fulfillmentService.completePick({ orderId, shipmentId, tenantId });
+    if (shipmentId) {
+      await shipmentService.setStatus({ tenantId, shipmentId, from: 'picking', to: 'packed', actorId });
+      return this.getOrder({ tenantId, orderId });
+    }
     return this.transition(order, ORDER_STATUS.PACKED, { actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'picked & packed', req });
   }
 
@@ -722,9 +733,24 @@ class OrderService {
     const assignment = await fulfillmentService.assignRider({
       orderId, shipmentId, tenantId, hubId: order.slotSnapshot?.hubId || null,
     });
-    const result = await this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, {
-      actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'rider assigned (PENDING_ACCEPT), out for delivery', req,
-    });
+    let result;
+    if (shipmentId) {
+      try {
+        await shipmentService.setStatus({
+          tenantId, shipmentId, from: ['packed', 'delivery_failed'], to: 'out_for_delivery', actorId,
+        });
+      } catch (error) {
+        await fulfillmentService.cancelAssignment({
+          orderId, shipmentId, tenantId, reason: 'shipment dispatch transition failed',
+        }).catch(() => {});
+        throw error;
+      }
+      result = await this.getOrder({ tenantId, orderId });
+    } else {
+      result = await this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, {
+        actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'rider assigned (PENDING_ACCEPT), out for delivery', req,
+      });
+    }
     // mongoose toJSON only serializes schema paths — merge the assignment into
     // a plain object so the API can hand the rider their assignment id
     const out = result.toObject();
@@ -835,9 +861,18 @@ class OrderService {
     // and only ever moves to `success` when the payment really is.
     await this.syncPaymentSummary(order);
     await order.save();
-    const result = await this.transition(order, ORDER_STATUS.DELIVERED, {
-      actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: `delivered (POD: ${podType})`, req,
-    });
+    let result;
+    if (shipmentId) {
+      await shipmentService.setStatus({
+        tenantId, shipmentId, from: 'out_for_delivery', to: 'delivered',
+        patch: { deliveredAt: new Date() }, actorId,
+      });
+      result = await this.getOrder({ tenantId, orderId });
+    } else {
+      result = await this.transition(order, ORDER_STATUS.DELIVERED, {
+        actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: `delivered (POD: ${podType})`, req,
+      });
+    }
     await this.recordFulfillmentTiming({ tenantId, orderId });
     await catalogEventService.publish({
       eventType: 'order_delivered', entityType: 'order', entityId: order._id,
@@ -852,6 +887,10 @@ class OrderService {
     assertTransition(order.status, ORDER_STATUS.DELIVERY_FAILED, { context: 'deliveryFailed' });
     const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
     await fulfillmentService.failDelivery({ orderId, shipmentId, tenantId, reason });
+    if (shipmentId) {
+      await shipmentService.markDeliveryFailed({ tenantId, shipmentId, reason, actorId });
+      return this.getOrder({ tenantId, orderId });
+    }
     const retries = (order.deliveryRetryCount || 0) + 1;
     order.deliveryRetryCount = retries;
     await order.save();
@@ -875,6 +914,7 @@ class OrderService {
     const order = await this.getOrder({ tenantId, orderId });
     assertTransition(order.status, ORDER_STATUS.OUT_FOR_DELIVERY, { context: 'retryDelivery' });
     const shipmentId = await this.legacyShipmentId({ tenantId, orderId });
+    if (shipmentId) return this.dispatchShipment({ tenantId, orderId, shipmentId, actorId });
     await fulfillmentService.assignRider({ orderId, shipmentId, tenantId });
     return this.transition(order, ORDER_STATUS.OUT_FOR_DELIVERY, { actorType: AUDIT_ACTOR_TYPE.ADMIN, actorId, note: 'delivery retry dispatched', req });
   }

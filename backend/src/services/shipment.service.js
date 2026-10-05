@@ -173,7 +173,18 @@ class ShipmentService {
       stats.itemsCount += 1; stats.unitsCount += item.qty;
       itemStats.set(key, stats);
     });
-    const statusDrift = orders.filter((order) => order.status !== orderStatusFor(byOrder.get(String(order._id)) || []));
+    const legacyDeliveredMirrorDrift = orders.filter((order) => {
+      const rows = byOrder.get(String(order._id)) || [];
+      return order.status === ORDER_STATUS.DELIVERED
+        && rows.length === 1
+        && ![SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.CANCELLED].includes(rows[0].status);
+    });
+    const legacyOrderIds = new Set(legacyDeliveredMirrorDrift.map((order) => String(order._id)));
+    // Never repair a terminal order backwards because an older compatibility
+    // endpoint forgot to mirror its one shipment. Repair that shipment forward
+    // first; only genuine aggregate drift mutates the order.
+    const statusDrift = orders.filter((order) => !legacyOrderIds.has(String(order._id))
+      && order.status !== orderStatusFor(byOrder.get(String(order._id)) || []));
     const missingTasks = shipments.filter((shipment) => ![SHIPMENT_STATUS.PLANNED, SHIPMENT_STATUS.CANCELLED].includes(shipment.status)
       && taskCount.get(String(shipment._id)) !== 1);
     const itemCountDrift = shipments.filter((shipment) => {
@@ -184,17 +195,26 @@ class ShipmentService {
       && ![SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.CANCELLED].includes(shipment.status));
     const refundAttention = shipments.filter((shipment) => shipment.status === SHIPMENT_STATUS.CANCELLED
       && ['pending', 'failed'].includes(shipment.cancellation?.refundStatus));
-    if (repair && statusDrift.length) {
-      await Promise.all(statusDrift.map((order) => this.deriveOrderStatus({ tenantId, orderId: order._id })));
+    if (repair) {
+      await Promise.all([
+        ...legacyDeliveredMirrorDrift.map((order) => this.repairLegacyDeliveredMirror({
+          order, shipments: byOrder.get(String(order._id)),
+        })),
+        ...statusDrift.map((order) => this.deriveOrderStatus({ tenantId, orderId: order._id })),
+      ]);
     }
     return {
-      scanned: shipments.length, repairedOrderStatuses: repair ? statusDrift.length : 0,
+      scanned: shipments.length,
+      repairedOrderStatuses: repair ? statusDrift.length : 0,
+      repairedShipmentStatuses: repair ? legacyDeliveredMirrorDrift.length : 0,
       metrics: {
-        orderStatusDrift: statusDrift.length, missingOrDuplicateTasks: missingTasks.length,
+        orderStatusDrift: statusDrift.length, shipmentStatusDrift: legacyDeliveredMirrorDrift.length,
+        missingOrDuplicateTasks: missingTasks.length,
         itemCountDrift: itemCountDrift.length, overdue: overdueTotal, refundAttention: refundAttentionTotal,
       },
       samples: {
         orderStatusDrift: statusDrift.slice(0, 20).map((row) => String(row._id)),
+        shipmentStatusDrift: legacyDeliveredMirrorDrift.slice(0, 20).map((row) => String(row._id)),
         missingOrDuplicateTasks: missingTasks.slice(0, 20).map((row) => String(row._id)),
         itemCountDrift: itemCountDrift.slice(0, 20).map((row) => String(row._id)),
         overdue: overdue.slice(0, 20).map((row) => String(row._id)),
@@ -209,6 +229,27 @@ class ShipmentService {
     });
     if (!shipment) throw notFound('Shipment not found', 'SHIPMENT_NOT_FOUND');
     return shipment;
+  }
+
+  async repairLegacyDeliveredMirror({ order, shipments = null }) {
+    if (!order || order.status !== ORDER_STATUS.DELIVERED) return shipments;
+    const rows = shipments || await Shipment.find({ tenantId: order.tenantId, orderId: order._id }).sort({ sequence: 1 }).lean();
+    if (rows.length !== 1 || [SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.CANCELLED].includes(rows[0].status)) return rows;
+    const deliveredAt = order.deliveredAt || order.updatedAt || new Date();
+    const beforeStatus = rows[0].status;
+    const repaired = await Shipment.findOneAndUpdate(
+      { _id: rows[0]._id, tenantId: order.tenantId, orderId: order._id, status: beforeStatus },
+      { $set: { status: SHIPMENT_STATUS.DELIVERED, deliveredAt }, $inc: { version: 1 } },
+      { new: true },
+    ).lean();
+    if (!repaired) return Shipment.find({ tenantId: order.tenantId, orderId: order._id }).sort({ sequence: 1 }).lean();
+    await auditService.record({
+      action: 'status_change', entityType: 'shipment', entityId: repaired._id,
+      tenantId: order.tenantId, actorType: 'system',
+      before: { status: beforeStatus }, after: { status: SHIPMENT_STATUS.DELIVERED },
+      meta: { reason: 'legacy_single_shipment_order_delivery_mirror', orderId: order._id },
+    }).catch(() => {});
+    return [{ ...rows[0], ...repaired }];
   }
 
   async listForOrder({ tenantId, orderId }) {
@@ -327,29 +368,83 @@ class ShipmentService {
           if (!shipment) return;
           const lines = await ShipmentItem.find({ tenantId, shipmentId }).session(session);
           for (const line of lines) {
-            // Sequential in one transaction: each reservation is locked before its inventory row is restored.
+            // Inventory ownership comes from the immutable order-line
+            // allocation, not from Shipment.hubId. A policy-authorized legacy
+            // default pool has warehouseId:null while still being served by a
+            // concrete hub; substituting the hub id would miss the reservation
+            // and restore the wrong physical pool.
+            // Sequential on purpose: each bounded line is validated and reversed atomically.
+            // eslint-disable-next-line no-await-in-loop
+            const orderLine = await OrderItem.findOne({
+              _id: line.orderItemId, tenantId, orderId, shipmentId,
+            }).select('fulfillmentAllocation.warehouseId').session(session).lean();
+            if (!orderLine) throw conflict('Shipment order-line ownership is missing', 'SHIPMENT_LINE_MISSING');
+            const warehouseId = orderLine.fulfillmentAllocation?.warehouseId || null;
+
+            // Read every reservation state, not only CONFIRMED. Historical
+            // orders predate durable reservations, while an interrupted saga
+            // may already have released an ACTIVE hold. Each state has a
+            // different conservation-safe inverse.
+            // Sequential on purpose: the reservation result controls this line's inverse mutation.
             // eslint-disable-next-line no-await-in-loop
             const reservation = await InventoryReservation.findOne({
-              tenantId, orderId, tenantProductId: line.tenantProductId, warehouseId: shipment.hubId,
-              status: INVENTORY_RESERVATION_STATUS.CONFIRMED,
+              tenantId, orderId, tenantProductId: line.tenantProductId, warehouseId,
             }).session(session);
-            if (!reservation) throw conflict('Confirmed inventory reservation is missing', 'RESERVATION_MISSING');
-            // Sequential in one transaction: restoration follows the matching confirmed reservation read.
-            // eslint-disable-next-line no-await-in-loop
-            const restored = await Inventory.updateOne(
-              { _id: reservation.inventoryId, tenantId },
-              { $inc: { qtyOnHand: line.qty }, $set: { lastUpdatedAt: new Date() } },
-              { session },
-            );
-            if (restored.modifiedCount !== 1) throw conflict('Inventory row is missing', 'INVENTORY_NOT_FOUND');
-            reservation.status = INVENTORY_RESERVATION_STATUS.RELEASED;
-            reservation.releasedAt = new Date();
-            reservation.releaseReason = 'shipment_cancelled';
-            reservation.version += 1;
-            reservation.transitions.push({ from: INVENTORY_RESERVATION_STATUS.CONFIRMED, to: INVENTORY_RESERVATION_STATUS.RELEASED, reason: 'shipment_cancelled', actorId });
-            // Sequential in one transaction: mark the reservation released with its inventory restoration.
-            // eslint-disable-next-line no-await-in-loop
-            await reservation.save({ session });
+
+            if (reservation && Number(reservation.qty) !== Number(line.qty)) {
+              throw conflict('Shipment quantity does not match its inventory reservation', 'INVENTORY_RESERVATION_DRIFT');
+            }
+
+            if (reservation?.status === INVENTORY_RESERVATION_STATUS.CONFIRMED) {
+              // Sequential on purpose: a confirmed hold restores on-hand stock before settlement.
+              // eslint-disable-next-line no-await-in-loop
+              const restored = await Inventory.updateOne(
+                { _id: reservation.inventoryId, tenantId },
+                { $inc: { qtyOnHand: line.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
+                { session },
+              );
+              if (restored.modifiedCount !== 1) throw conflict('Inventory row is missing', 'INVENTORY_NOT_FOUND');
+            } else if (reservation?.status === INVENTORY_RESERVATION_STATUS.ACTIVE) {
+              // Sequential on purpose: an active hold releases only its reserved counter;
+              // restoring on-hand stock here would manufacture inventory.
+              // eslint-disable-next-line no-await-in-loop
+              const released = await Inventory.updateOne(
+                { _id: reservation.inventoryId, tenantId, qtyReserved: { $gte: line.qty } },
+                { $inc: { qtyReserved: -line.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
+                { session },
+              );
+              if (released.modifiedCount !== 1) {
+                throw conflict('Reserved quantity cannot be released safely', 'INVENTORY_RESERVATION_DRIFT');
+              }
+            } else if (!reservation) {
+              // Compatibility path for orders created before reservation rows
+              // existed. The paid order and immutable shipment prove physical
+              // commitment; restore only its exact listing + fulfillment hub.
+              // eslint-disable-next-line no-await-in-loop
+              const restored = await Inventory.updateOne(
+                { tenantId, tenantProductId: line.tenantProductId, warehouseId },
+                { $inc: { qtyOnHand: line.qty, version: 1 }, $set: { lastUpdatedAt: new Date() } },
+                { session },
+              );
+              if (restored.modifiedCount !== 1) {
+                throw conflict('Exact fulfillment-node inventory row is missing', 'INVENTORY_NOT_FOUND');
+              }
+            } else if (![INVENTORY_RESERVATION_STATUS.RELEASED, INVENTORY_RESERVATION_STATUS.EXPIRED].includes(reservation.status)) {
+              throw conflict(`Inventory reservation is ${reservation.status}`, 'INVENTORY_RESERVATION_NOT_SETTLED');
+            }
+
+            if (reservation && [INVENTORY_RESERVATION_STATUS.CONFIRMED, INVENTORY_RESERVATION_STATUS.ACTIVE].includes(reservation.status)) {
+              const fromStatus = reservation.status;
+              reservation.status = INVENTORY_RESERVATION_STATUS.RELEASED;
+              reservation.releasedAt = new Date();
+              reservation.releaseReason = 'shipment_cancelled';
+              reservation.version += 1;
+              reservation.transitions.push({ from: fromStatus, to: INVENTORY_RESERVATION_STATUS.RELEASED, reason: 'shipment_cancelled', actorId });
+              // Sequential in one transaction: settle the reservation only
+              // after its corresponding inventory mutation succeeds.
+              // eslint-disable-next-line no-await-in-loop
+              await reservation.save({ session });
+            }
           }
           const now = new Date();
           await Promise.all([

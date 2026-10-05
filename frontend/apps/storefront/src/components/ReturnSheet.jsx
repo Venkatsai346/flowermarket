@@ -7,7 +7,7 @@ import ProductImage from './ProductImage.jsx';
 import { cn, errMsg } from '../lib/utils.js';
 import {
   INSTANT_CLAIM_WINDOW_HOURS, RETURN_WINDOW_DAYS, RETURN_CLAIM_META, RETURN_REASONS,
-  canPickupReturn, remainingQty,
+  canPickupReturn, isDeliveredForReturn, remainingQty,
 } from '../lib/afterSales.js';
 
 /**
@@ -33,9 +33,14 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
     const shipmentStatus = new Map(shipments.map((shipment) => [String(shipment.id || shipment._id), shipment.status]));
     return (items || [])
       .map((it) => ({ ...it, remaining: remainingQty(it) }))
-      .filter((it) => it.remaining > 0 && (!it.shipmentId || shipmentStatus.get(String(it.shipmentId)) === 'delivered'));
-  }, [items, shipments]);
+      .filter((it) => it.remaining > 0 && isDeliveredForReturn({
+        orderStatus: order?.status,
+        shipmentId: it.shipmentId,
+        shipmentStatus: it.shipmentId ? shipmentStatus.get(String(it.shipmentId)) : null,
+      }));
+  }, [items, shipments, order?.status]);
 
+  const hasUndeliveredRemaining = (items || []).some((item) => remainingQty(item) > 0) && lines.length === 0;
   const activeShipmentId = lines.find((line) => (qtyMap[line.id] || 0) > 0)?.shipmentId || null;
   const totalQty = lines.reduce((sum, it) => sum + (qtyMap[it.id] || 0), 0);
   const hasSelected = totalQty > 0;
@@ -135,7 +140,7 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
       onClose={onClose}
       title="Request a return"
       subtitle={order?.orderNumber ? `Order ${order.orderNumber}` : undefined}
-      footer={
+      footer={lines.length ? (
         <div className="space-y-3">
           {serverError && (
             <p className="rounded-xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{serverError}</p>
@@ -149,13 +154,15 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
             The store confirms eligibility and refund amount before refunding.
           </p>
         </div>
-      }
+      ) : null}
     >
       {!lines.length ? (
         <Empty
           icon={RotateCcw}
-          title="Nothing to return"
-          message="All items in this order have already been returned."
+          title={hasUndeliveredRemaining ? 'No delivered items yet' : 'Nothing to return'}
+          message={hasUndeliveredRemaining
+            ? 'Returns become available separately as each delivery arrives.'
+            : 'All items in this order have already been returned or cancelled.'}
           action={<Button variant="soft" onClick={onClose}>Close</Button>}
         />
       ) : (

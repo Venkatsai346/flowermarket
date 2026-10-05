@@ -40,15 +40,30 @@ class ReturnsService {
     // A return belongs to exactly one physical shipment. This lets a customer
     // return an already delivered parcel while another parcel from the same
     // order is still in transit, without treating undelivered goods as eligible.
-    const orderItems = await OrderItem.find({ orderId, _id: { $in: items.map((i) => i.orderItemId) } }).lean();
+    const orderItems = await OrderItem.find({
+      tenantId, orderId, _id: { $in: items.map((i) => i.orderItemId) },
+    }).lean();
     if (orderItems.length !== items.length) throw badRequest('One or more items are not part of this order', 'INVALID_ITEMS');
     const shipmentIds = [...new Set(orderItems.map((item) => item.shipmentId && String(item.shipmentId)).filter(Boolean))];
     if (shipmentIds.length > 1) throw badRequest('Create a separate return for each delivery', 'RETURN_MUST_MATCH_SHIPMENT');
-    const shipment = shipmentIds.length
+    let shipment = shipmentIds.length
       ? await Shipment.findOne({ _id: shipmentIds[0], tenantId: order.tenantId, orderId }).lean()
       : null;
     if (shipment && shipment.status !== 'delivered') {
-      return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'This delivery has not arrived yet' };
+      // Compatibility repair: before shipment-scoped execution was introduced,
+      // the legacy single-delivery endpoint advanced the order to DELIVERED but
+      // did not mirror that terminal fact onto its newly materialized shipment.
+      // This inference is safe only for exactly one shipment; split orders must
+      // always prove delivery parcel by parcel.
+      const shipmentCount = order.status === ORDER_STATUS.DELIVERED
+        ? await Shipment.countDocuments({ tenantId, orderId })
+        : 0;
+      if (shipmentCount === 1) {
+        const repaired = await shipmentService.repairLegacyDeliveredMirror({ order, shipments: [shipment] });
+        [shipment] = repaired;
+      } else {
+        return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'This delivery has not arrived yet' };
+      }
     }
     if (!shipment && order.status !== ORDER_STATUS.DELIVERED) {
       return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'Order is not delivered yet' };

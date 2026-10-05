@@ -10,7 +10,7 @@ import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
 import ReturnSheet from '../components/ReturnSheet.jsx';
 import ProductImage from '../components/ProductImage.jsx';
 import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
-import { CANCEL_REASONS, canCancel, canReturn, meta } from '../lib/afterSales.js';
+import { CANCEL_REASONS, canCancel, canReturn, isDeliveredForReturn, meta } from '../lib/afterSales.js';
 import { cn, errMsg } from '../lib/utils.js';
 import { openRazorpayCheckout } from '../lib/razorpay.js';
 
@@ -65,7 +65,13 @@ export default function OrderDetail() {
   const orderMeta = STATUS_META[order?.status] || { label: order?.status, step: 0, tone: 'bg-slate-100 text-slate-700' };
   const cancelled = order?.status === 'cancelled';
   const cancelAllowed = canCancel(order?.status);
-  const canRequestReturn = canReturn(order, items);
+  const shipmentStatusById = new Map(shipments.map((shipment) => [String(shipment.id || shipment._id), shipment.status]));
+  const deliveredItems = items.filter((item) => isDeliveredForReturn({
+    orderStatus: order?.status,
+    shipmentId: item.shipmentId,
+    shipmentStatus: item.shipmentId ? shipmentStatusById.get(String(item.shipmentId)) : null,
+  }));
+  const canRequestReturn = canReturn(order, deliveredItems);
 
   // Deep-link support: /orders/:id?return=1 / ?cancel=1 opens the right flow.
   useEffect(() => {

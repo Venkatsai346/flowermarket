@@ -119,6 +119,17 @@ export function canReturn(order, items = []) {
   return ['delivered', 'partially_delivered'].includes(order?.status) && items?.some((i) => remainingQty(i) > 0);
 }
 
+/**
+ * Shipment-aware return visibility with a legacy compatibility bridge.
+ * Historical single-delivery orders may have reached order DELIVERED before
+ * shipment status mirroring existed; the terminal order fact remains valid.
+ */
+export function isDeliveredForReturn({ orderStatus, shipmentId = null, shipmentStatus = null }) {
+  if (orderStatus === 'delivered') return true;
+  if (!shipmentId) return orderStatus === 'delivered';
+  return shipmentStatus === 'delivered';
+}
+
 /** Map any status to a fallback label/tone (never breaks the UI). */
 export function meta(value, map) {
   return map?.[value] || { label: titleCase(value), tone: 'bg-slate-100 text-slate-700' };

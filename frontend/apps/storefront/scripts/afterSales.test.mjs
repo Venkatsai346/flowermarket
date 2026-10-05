@@ -14,6 +14,7 @@ import {
   canCancel,
   canPickupReturn,
   canReturn,
+  isDeliveredForReturn,
   meta,
   remainingQty,
   signedMoney,
@@ -55,6 +56,13 @@ ok('an order can start a return only after delivery with a remaining line', () =
   assert.equal(canReturn({ status: 'partially_delivered' }, [{ qty: 1 }]), true);
   assert.equal(canReturn({ status: 'confirmed' }, [{ qty: 1 }]), false);
   assert.equal(canReturn({ status: 'delivered' }, [{ qty: 1, returnedQty: 1 }]), false);
+});
+
+ok('return lines honor delivered shipments and legacy delivered-order truth', () => {
+  assert.equal(isDeliveredForReturn({ orderStatus: 'delivered', shipmentId: 's1', shipmentStatus: 'queued' }), true);
+  assert.equal(isDeliveredForReturn({ orderStatus: 'partially_delivered', shipmentId: 's1', shipmentStatus: 'delivered' }), true);
+  assert.equal(isDeliveredForReturn({ orderStatus: 'partially_delivered', shipmentId: 's2', shipmentStatus: 'queued' }), false);
+  assert.equal(isDeliveredForReturn({ orderStatus: 'confirmed', shipmentId: 's1', shipmentStatus: 'queued' }), false);
 });
 
 ok('meta falls back to title-case rather than crashing on a new status', () => {

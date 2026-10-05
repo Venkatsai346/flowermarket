@@ -87,6 +87,43 @@ try {
   await shipmentService.queueForOrder({ tenantId, orderId });
   assert.equal((await Shipment.findById(picking._id)).status, 'picking', 'queue replay must never regress an executing shipment');
 
+  // Historical compatibility is deliberately narrow: a delivered aggregate
+  // may repair its one stale parcel, but must never mark every parcel of a
+  // genuinely split order delivered.
+  const splitRows = await Shipment.find({ tenantId, orderId }).lean();
+  await shipmentService.repairLegacyDeliveredMirror({
+    order: { _id: orderId, tenantId, status: 'delivered', deliveredAt: new Date() },
+    shipments: splitRows,
+  });
+  assert.equal(await Shipment.countDocuments({ tenantId, orderId, status: 'delivered' }), 0,
+    'split-order parcel isolation must be preserved');
+
+  const legacyOrderId = new mongoose.Types.ObjectId();
+  const [legacyShipment] = await Shipment.create([{
+    tenantId, orderId: legacyOrderId, shipmentNumber: 'FM-LEGACY-S1', sequence: 1,
+    hubId: hubA._id, status: 'queued', itemsCount: 1, unitsCount: 1,
+  }]);
+  const repaired = await shipmentService.repairLegacyDeliveredMirror({
+    order: { _id: legacyOrderId, tenantId, status: 'delivered', deliveredAt: new Date('2026-10-05T05:00:00Z') },
+    shipments: [legacyShipment.toObject()],
+  });
+  assert.equal(repaired[0].status, 'delivered');
+  assert.equal((await Shipment.findById(legacyShipment._id)).status, 'delivered',
+    'single historical parcel must mirror terminal aggregate truth');
+
+  const foreignTenant = new mongoose.Types.ObjectId();
+  const foreignOrderId = new mongoose.Types.ObjectId();
+  const [foreignShipment] = await Shipment.create([{
+    tenantId: foreignTenant, orderId: foreignOrderId, shipmentNumber: 'FM-FOREIGN-S1', sequence: 1,
+    hubId: hubA._id, status: 'queued', itemsCount: 1, unitsCount: 1,
+  }]);
+  await shipmentService.repairLegacyDeliveredMirror({
+    order: { _id: foreignOrderId, tenantId, status: 'delivered' },
+    shipments: [foreignShipment.toObject()],
+  });
+  assert.equal((await Shipment.findById(foreignShipment._id)).status, 'queued',
+    'a mismatched tenant must never repair another tenant shipment');
+
   await assert.rejects(
     () => shipmentService.createForOrder({
       order,
@@ -96,7 +133,7 @@ try {
     (error) => error.code === 'INVALID_SHIPMENT_PLAN',
   );
 
-  console.log('shipment materialization integration: replay, ownership, fees, and task cardinality passed');
+  console.log('shipment materialization integration: replay, ownership, fees, tasks, and legacy delivery repair passed');
 } finally {
   await mongoose.disconnect().catch(() => {});
   await stopHermeticMongo(mongod);
