@@ -11,6 +11,7 @@ import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { roundMoney } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
 import { returnWindow, RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS } from '../utils/returnWindow.js';
+import { permitsClaim, resolveReturnPolicy } from '../utils/returnPolicy.js';
 import {
   RETURN_CLAIM_TYPE,
   RETURN_REQUEST_STATUS,
@@ -25,6 +26,15 @@ import {
 export { RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS };
 /** Fraud guard: max auto-approved instant claims per customer per month. */
 export const INSTANT_CLAIM_MONTHLY_LIMIT = 3;
+
+const policyForOrderItem = (item) => resolveReturnPolicy({
+  returnPolicy: item.returnPolicySnapshot?.mode ? item.returnPolicySnapshot : {
+    mode: item.isReturnable === false ? 'quality_claim_only' : 'returnable',
+    returnWindowDays: item.isReturnable === false ? 0 : RETURN_WINDOW_DAYS,
+    instantClaimHours: INSTANT_CLAIM_WINDOW_HOURS,
+    requiresQc: item.isReturnable !== false,
+  },
+});
 
 /**
  * ReturnsService — the two flows from the doc:
@@ -70,23 +80,44 @@ class ReturnsService {
     }
 
     // Shipment delivery is authoritative for split orders; legacy orders retain
-    // the order-level delivery stamp fallback.
-    const window = returnWindow(shipment ? { ...order.toObject(), deliveredAt: shipment.deliveredAt } : order, { claimType });
-    if (window.windowExpired) {
+    // the order-level delivery stamp fallback. Eligibility windows are line-level
+    // commercial promises snapshotted at checkout, never today's catalog policy.
+    const deliveredAt = shipment?.deliveredAt || order.deliveredAt || order.updatedAt;
+    const now = new Date();
+    const policyChecks = orderItems.map((item) => {
+      const policy = policyForOrderItem(item);
+      const durationMs = claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM
+        ? policy.instantClaimHours * 3600000
+        : policy.returnWindowDays * 86400000;
+      const expiresAt = deliveredAt ? new Date(new Date(deliveredAt).getTime() + durationMs) : null;
+      return { item, policy, expiresAt, expired: !expiresAt || now > expiresAt };
+    });
+    const deniedPolicy = policyChecks.find(({ policy }) => !permitsClaim(policy, claimType));
+    if (deniedPolicy) {
+      const reason = deniedPolicy.policy.mode === 'final_sale'
+        ? 'This product was sold as final sale and is not eligible for returns or instant claims'
+        : 'This product supports quality claims only, not pickup returns';
+      return { isEligible: false, windowExpired: false, nonReturnableItems: true, claimLimitReached: false, reason };
+    }
+    const expiredPolicy = policyChecks.find(({ expired }) => expired);
+    const window = returnWindow(shipment ? { ...order.toObject(), deliveredAt } : order, { claimType });
+    if (expiredPolicy) {
+      const duration = claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM
+        ? `${expiredPolicy.policy.instantClaimHours}h`
+        : `${expiredPolicy.policy.returnWindowDays}d`;
       return {
         isEligible: false, windowExpired: true, nonReturnableItems: false,
-        claimLimitReached: false, window,
-        reason: `Return window expired (${claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? `${INSTANT_CLAIM_WINDOW_HOURS}h` : `${RETURN_WINDOW_DAYS}d`})`,
+        claimLimitReached: false,
+        window: { ...window, expiresAt: expiredPolicy.expiresAt },
+        reason: `The ${duration} eligibility window for this item has expired`,
       };
     }
 
-    // ---- item-level checks ----
+    // ---- item-level quantity checks ----
     const nonReturnable = orderItems.some((oi) => {
       const req = items.find((i) => String(i.orderItemId) === String(oi._id));
       const unavailableQty = (oi.returnedQty || 0) + (oi.cancelledQty || 0);
-      if (req.qty <= 0 || req.qty > oi.qty - unavailableQty) return true; // over-request
-      if (claimType === RETURN_CLAIM_TYPE.PICKUP_QC && !oi.isReturnable) return true;
-      return false;
+      return req.qty <= 0 || req.qty > oi.qty - unavailableQty;
     });
     if (nonReturnable) {
       return { isEligible: false, windowExpired: false, nonReturnableItems: true, claimLimitReached: false, window, reason: 'Items are not returnable or qty exceeds delivered qty' };
@@ -133,7 +164,7 @@ class ReturnsService {
     // ---- Phase 3.5: correct refund = item (price − discount + tax) + fee
     //      share per TenantRefundPolicy (blueprint §5). A lookup against the
     //      persisted OrderItem breakdown, never a recomputation. ----
-    const allOrderItems = await OrderItem.find({ orderId }).lean();
+    const allOrderItems = await OrderItem.find({ tenantId, orderId }).lean();
     const comps = await refundCalculator.compute({
       tenantId, orderId,
       returnedOrderItems: allOrderItems.map((oi) => {
@@ -198,10 +229,10 @@ class ReturnsService {
       rr.refundTransactionId = refund._id;
       await rr.save();
       await this.syncOrderStatus(order, rr.status);
-      await this.markItemsReturned({ returnRequestId: rr._id, orderItems });
+      await this.markItemsReturned({ tenantId, returnRequestId: rr._id, orderItems });
     }
 
-    return { eligible: true, returnRequest: rr, items: await ReturnItem.find({ returnRequestId: rr._id }).lean() };
+    return { eligible: true, returnRequest: rr, items: await ReturnItem.find({ tenantId, returnRequestId: rr._id }).lean() };
   }
 
   /** Pickup scheduled (Flow A step 2). */
@@ -239,7 +270,7 @@ class ReturnsService {
       await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.QC_PASSED);
       // initiate refund — recompute the component split (blueprint §5)
       const returnItems = await ReturnItem.find({ returnRequestId: rr._id }).lean();
-      const orderItemsAll = await OrderItem.find({ orderId: rr.orderId }).lean();
+      const orderItemsAll = await OrderItem.find({ tenantId: rr.tenantId, orderId: rr.orderId }).lean();
       const comps = await refundCalculator.compute({
         tenantId: rr.tenantId, orderId: rr.orderId,
         returnedOrderItems: orderItemsAll.map((oi) => {
@@ -266,8 +297,11 @@ class ReturnsService {
       rr.refundTransactionId = refund._id;
       await rr.save();
       await this.syncOrderStatus(order, rr.status);
-      const orderItems = await OrderItem.find({ orderId: rr.orderId, _id: { $in: (await ReturnItem.find({ returnRequestId: rr._id })).map((i) => i.orderItemId) } });
-      await this.markItemsReturned({ returnRequestId: rr._id, orderItems });
+      const returnLines = await ReturnItem.find({ tenantId: rr.tenantId, returnRequestId: rr._id }).select('orderItemId').lean();
+      const orderItems = await OrderItem.find({
+        tenantId: rr.tenantId, orderId: rr.orderId, _id: { $in: returnLines.map((item) => item.orderItemId) },
+      });
+      await this.markItemsReturned({ tenantId: rr.tenantId, returnRequestId: rr._id, orderItems });
       return rr;
     }
 
@@ -305,13 +339,13 @@ class ReturnsService {
 
   async detail({ returnRequestId, tenantId }) {
     const rr = await this.getOwned({ returnRequestId, tenantId });
-    const items = await ReturnItem.find({ returnRequestId: rr._id }).lean();
+    const items = await ReturnItem.find({ tenantId, returnRequestId: rr._id }).lean();
     return { returnRequest: rr, items: serializeList(items) };
   }
 
   /** Update returnedQty on order items (prevents over-returning the same line). */
-  async markItemsReturned({ returnRequestId, orderItems }) {
-    const returnItems = await ReturnItem.find({ returnRequestId });
+  async markItemsReturned({ tenantId, returnRequestId, orderItems }) {
+    const returnItems = await ReturnItem.find({ tenantId, returnRequestId });
     const rows = returnItems.map((ri) => ({
       ri, oi: orderItems.find((item) => String(item._id) === String(ri.orderItemId)),
     })).filter((row) => row.oi);

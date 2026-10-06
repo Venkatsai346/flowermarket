@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { orderStatusFor } from '../src/services/shipment.service.js';
 import { combinations } from '../src/services/warehouseAllocation.service.js';
+import { composeOrderLifecycle } from '../src/utils/orderLifecycle.js';
+import { permitsClaim, resolveReturnPolicy } from '../src/utils/returnPolicy.js';
 import { ORDER_STATUS } from '../src/constants/enums.js';
 
 const shipment = (status) => ({ status });
@@ -36,4 +38,19 @@ assert.match(shipmentSource, /qtyReserved: -line\.qty/,
 assert.match(shipmentSource, /else if \(!reservation\)/,
   'historical orders without durable reservations must use the exact-node compatibility path');
 
-console.log('shipment orchestration: lifecycle, compatibility, conservation, and bounded combinations passed');
+const perishable = resolveReturnPolicy({ type: 'milk', isPerishable: true });
+assert.equal(perishable.mode, 'quality_claim_only');
+assert.equal(permitsClaim(perishable, 'pickup_qc'), false);
+assert.equal(permitsClaim(perishable, 'instant_claim'), true);
+const finalSale = resolveReturnPolicy({ returnPolicy: { mode: 'final_sale' } });
+assert.equal(permitsClaim(finalSale, 'instant_claim'), false);
+
+const returned = composeOrderLifecycle(
+  { status: 'delivered', paymentSummary: { status: 'refunded', refundedAmount: 500 } },
+  [{ _id: 'r1', status: 'refunded', updatedAt: new Date() }],
+);
+assert.equal(returned.fulfillment.status, 'delivered', 'returns must not erase delivery history');
+assert.equal(returned.afterSales.status, 'refunded');
+assert.equal(returned.customerStatus, 'refunded', 'customer headline must reflect the current outcome');
+
+console.log('shipment orchestration: lifecycle, policy, compatibility, and conservation passed');

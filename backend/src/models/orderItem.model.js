@@ -47,6 +47,14 @@ const OrderItemSchema = new Schema(
     taxPolicyId: { type: Types.ObjectId, ref: 'TaxPolicy', default: null },
     hsnCode: { type: String, default: null, maxlength: 16 },
 
+    returnPolicySnapshot: {
+      mode: { type: String, enum: ['returnable', 'quality_claim_only', 'final_sale'], default: 'returnable' },
+      returnWindowDays: { type: Number, min: 0, max: 365, default: 7 },
+      instantClaimHours: { type: Number, min: 0, max: 720, default: 24 },
+      requiresQc: { type: Boolean, default: true },
+      customerNote: { type: String, default: null, maxlength: 300 },
+    },
+    // Legacy compatibility projection; new decisions use returnPolicySnapshot.
     isReturnable: { type: Boolean, default: true },
     fulfillmentAllocation: {
       warehouseId: { type: Types.ObjectId, ref: 'Hub', default: null },

@@ -10,6 +10,7 @@ import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import { roundMoney, moneySum, toPaise } from '../utils/money.js';
 import { primaryImageUrlFor, variantDisplayLabel } from '../utils/catalog/variantImages.js';
+import { PRODUCT_RETURN_MODE, resolveReturnPolicy } from '../utils/returnPolicy.js';
 import config from '../config/index.js';
 import {
   CART_STATUS,
@@ -238,6 +239,10 @@ class CartService {
       imageUrlSnapshot = primaryImageUrlFor(flat, listing.variantId || null);
     } catch { /* snapshots are best-effort; checkout revalidates everything */ }
 
+    const returnPolicySnapshot = resolveReturnPolicy(master);
+    const isReturnable = returnPolicySnapshot.mode === PRODUCT_RETURN_MODE.RETURNABLE
+      && returnPolicySnapshot.returnWindowDays > 0;
+
     if (existing) {
       existing.qty = nextQty;
       existing.lineTotal = lineTotal;
@@ -246,6 +251,8 @@ class CartService {
       existing.unitSnapshot = listing.priceBasis?.unitCode || master.defaultSellingUnit || null;
       existing.unitQuantitySnapshot = listing.priceBasis?.quantity || 1;
       existing.searchQueryId = verifiedSearchQueryId;
+      existing.returnPolicySnapshot = returnPolicySnapshot;
+      existing.isReturnable = isReturnable;
       if (fulfillmentSnapshot) existing.fulfillmentSnapshot = fulfillmentSnapshot;
       existing.updatedAt = new Date();
       await existing.save();
@@ -266,7 +273,8 @@ class CartService {
         lineTotal,
         searchQueryId: verifiedSearchQueryId,
         fulfillmentSnapshot,
-        isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),
+        returnPolicySnapshot,
+        isReturnable,
       });
     }
 

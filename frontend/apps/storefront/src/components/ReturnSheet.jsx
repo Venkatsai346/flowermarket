@@ -7,7 +7,7 @@ import ProductImage from './ProductImage.jsx';
 import { cn, errMsg } from '../lib/utils.js';
 import {
   INSTANT_CLAIM_WINDOW_HOURS, RETURN_WINDOW_DAYS, RETURN_CLAIM_META, RETURN_REASONS,
-  canPickupReturn, isDeliveredForReturn, remainingQty,
+  canInstantClaim, canPickupReturn, isDeliveredForReturn, remainingQty, returnPolicyForItem,
 } from '../lib/afterSales.js';
 
 /**
@@ -45,9 +45,14 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
   const totalQty = lines.reduce((sum, it) => sum + (qtyMap[it.id] || 0), 0);
   const hasSelected = totalQty > 0;
 
-  // Fresh items that cannot go through pickup return default to the instant claim.
-  const allInstantOnly = lines.length > 0 && lines.every((it) => !it.isReturnable);
-  const effectiveClaimType = allInstantOnly ? 'instant_claim' : claimType;
+  const hasPickupEligible = lines.some(canPickupReturn);
+  const hasInstantEligible = lines.some(canInstantClaim);
+  // Claim-only items default to their only valid path. Final-sale items remain
+  // visible with a precise explanation but can never be selected.
+  const effectiveClaimType = !hasPickupEligible && hasInstantEligible ? 'instant_claim' : claimType;
+  const displayedPolicy = returnPolicyForItem(lines.find((item) => (
+    effectiveClaimType === 'pickup_qc' ? canPickupReturn(item) : canInstantClaim(item)
+  )));
 
   const changeQty = (item, next) => {
     if (next < 0) return;
@@ -59,15 +64,13 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
   /** Switch flow, clearing any quantity that the new flow would reject. */
   const changeClaim = (type) => {
     setClaimType(type);
-    if (type === 'pickup_qc') {
-      setQtyMap((s) => {
-        const next = { ...s };
-        for (const it of lines) {
-          if (!canPickupReturn(it)) next[it.id] = 0;
-        }
-        return next;
-      });
-    }
+    setQtyMap((current) => {
+      const next = { ...current };
+      for (const item of lines) {
+        if (type === 'pickup_qc' ? !canPickupReturn(item) : !canInstantClaim(item)) next[item.id] = 0;
+      }
+      return next;
+    });
     setServerError(null);
   };
 
@@ -173,22 +176,23 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
             <div className="flex gap-2">
               {pickLine(
                 RETURN_CLAIM_META.pickup_qc.label,
-                allInstantOnly ? 'This order has no returnable pickup items.' : RETURN_CLAIM_META.pickup_qc.description,
-                !allInstantOnly && claimType === 'pickup_qc',
+                hasPickupEligible ? RETURN_CLAIM_META.pickup_qc.description : 'No delivered item in this order supports pickup return.',
+                hasPickupEligible && effectiveClaimType === 'pickup_qc',
                 () => changeClaim('pickup_qc'),
-                allInstantOnly
+                !hasPickupEligible
               )}
               {pickLine(
                 RETURN_CLAIM_META.instant_claim.label,
                 RETURN_CLAIM_META.instant_claim.description,
-                allInstantOnly || claimType === 'instant_claim',
-                () => changeClaim('instant_claim')
+                hasInstantEligible && effectiveClaimType === 'instant_claim',
+                () => changeClaim('instant_claim'),
+                !hasInstantEligible
               )}
             </div>
             <p className="mt-2 text-[11px] text-slate-400">
               {effectiveClaimType === 'instant_claim'
-                ? `Instant claims are for quality issues on fresh items, within ${INSTANT_CLAIM_WINDOW_HOURS} hours of delivery.`
-                : `Standard returns are available within ${RETURN_WINDOW_DAYS} days of delivery.`}
+                ? `Quality claims are available for ${displayedPolicy.instantClaimHours || INSTANT_CLAIM_WINDOW_HOURS} hours after delivery.`
+                : `Pickup returns are available for ${displayedPolicy.returnWindowDays || RETURN_WINDOW_DAYS} days after delivery.`}
             </p>
           </section>
 
@@ -198,7 +202,9 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
             <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200">
               {lines.map((it) => {
                 const sameDelivery = !activeShipmentId || !it.shipmentId || String(it.shipmentId) === String(activeShipmentId);
-                const allowed = sameDelivery && (effectiveClaimType === 'instant_claim' || canPickupReturn(it));
+                const policy = returnPolicyForItem(it);
+                const claimAllowed = effectiveClaimType === 'instant_claim' ? canInstantClaim(it) : canPickupReturn(it);
+                const allowed = sameDelivery && claimAllowed;
                 const qty = qtyMap[it.id] || 0;
                 return (
                   <li key={it.id} className={cn('flex items-center gap-3 p-3', !allowed && 'opacity-40')}>
@@ -210,15 +216,17 @@ export default function ReturnSheet({ order, items = [], shipments = [], open, o
                       <p className="text-xs text-slate-500">
                         {!sameDelivery
                           ? 'Create a separate return for this delivery'
-                          : !it.isReturnable && effectiveClaimType === 'pickup_qc'
-                            ? 'Not eligible for pickup return'
-                            : `${it.remaining} of ${it.qty} can be returned`}
+                          : policy.mode === 'final_sale'
+                            ? policy.customerNote || 'Final sale — returns and quality claims are not available'
+                            : !claimAllowed
+                              ? policy.customerNote || (effectiveClaimType === 'pickup_qc' ? 'Quality claim only — no pickup return' : 'Quality claim not available')
+                              : `${it.remaining} of ${it.qty} can be returned`}
                       </p>
                     </div>
                     {allowed ? (
                       <Stepper value={qty} min={0} max={it.remaining} onChange={(q) => changeQty(it, q)} />
                     ) : (
-                      <span className="text-xs font-medium text-slate-400">Pickup return</span>
+                      <span className="text-xs font-medium text-slate-400">{policy.mode === 'final_sale' ? 'Final sale' : 'Not eligible'}</span>
                     )}
                   </li>
                 );

@@ -85,6 +85,10 @@ export default function Product() {
   );
 
   const product = data?.product || {};
+  const returnPolicy = product.returnPolicy || {
+    mode: product.isPerishable && !['flower_bouquet', 'plant'].includes(product.type) ? 'quality_claim_only' : 'returnable',
+    returnWindowDays: 7, instantClaimHours: 24, requiresQc: true,
+  };
   const listing = data?.listing || {};
   const related = data?.related || [];
   const family = data?.variants || [];
@@ -486,6 +490,27 @@ export default function Product() {
                   COD
                 </span>
               )}
+            </div>
+
+            <div className={cn(
+              'mt-4 flex items-start gap-3 rounded-2xl border p-4',
+              returnPolicy.mode === 'final_sale' ? 'border-amber-200 bg-amber-50' : 'border-emerald-200 bg-emerald-50/60',
+            )}>
+              <span className={cn('grid h-9 w-9 shrink-0 place-items-center rounded-xl', returnPolicy.mode === 'final_sale' ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700')}><ShieldCheck className="h-4 w-4" /></span>
+              <div>
+                <p className="text-sm font-bold text-slate-900">
+                  {returnPolicy.mode === 'returnable' ? `${returnPolicy.returnWindowDays}-day pickup return`
+                    : returnPolicy.mode === 'quality_claim_only' ? `${returnPolicy.instantClaimHours}-hour quality guarantee`
+                      : 'Final sale'}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                  {returnPolicy.customerNote || (returnPolicy.mode === 'returnable'
+                    ? `Request a return after delivery${returnPolicy.requiresQc ? '; refund follows pickup and quality inspection' : ''}.`
+                    : returnPolicy.mode === 'quality_claim_only'
+                      ? 'Because this item is fresh or perishable, pickup return is unavailable; report a quality issue within the shown window.'
+                      : 'This item cannot be returned and does not support an instant quality claim.')}
+                </p>
+              </div>
             </div>
 
             <div className="sticky bottom-3 z-20 mt-6 rounded-3xl border border-slate-200/80 bg-white/95 p-3 shadow-lift backdrop-blur lg:static lg:bg-white lg:p-4 lg:shadow-soft">

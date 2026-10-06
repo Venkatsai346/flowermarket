@@ -21,9 +21,27 @@ export const STATUS_META = {
   return_approved: { label: 'Return approved', tone: 'bg-amber-100 text-amber-800', step: 5 },
   return_rejected: { label: 'Return rejected', tone: 'bg-rose-100 text-rose-800', step: 5 },
   return_picked_up: { label: 'Return collected', tone: 'bg-amber-100 text-amber-800', step: 5 },
-  refund_initiated: { label: 'Refund on the way', tone: 'bg-emerald-100 text-emerald-800', step: 5 },
-  refund_completed: { label: 'Refunded', tone: 'bg-emerald-100 text-emerald-800', step: 5 },
+  picked_up: { label: 'Return collected', tone: 'bg-violet-100 text-violet-800', step: 5 },
+  qc_passed: { label: 'Return approved', tone: 'bg-sky-100 text-sky-800', step: 5 },
+  qc_failed: { label: 'Return declined after inspection', tone: 'bg-rose-100 text-rose-800', step: 5 },
+  rejected: { label: 'Return declined', tone: 'bg-rose-100 text-rose-800', step: 5 },
+  refund_rejected: { label: 'Refund needs attention', tone: 'bg-rose-100 text-rose-800', step: 5 },
+  refund_initiated: { label: 'Refund on the way', tone: 'bg-cyan-100 text-cyan-800', step: 5 },
+  partially_refunded: { label: 'Partially returned & refunded', tone: 'bg-teal-100 text-teal-800', step: 5 },
+  refunded: { label: 'Returned & refunded', tone: 'bg-emerald-100 text-emerald-800', step: 5 },
+  refund_completed: { label: 'Returned & refunded', tone: 'bg-emerald-100 text-emerald-800', step: 5 },
 };
+
+/** Customer headline can be after-sales while fulfillment remains Delivered. */
+export function customerStatusMeta(order) {
+  const code = order?.lifecycle?.customerStatus || order?.status;
+  return { code, ...(STATUS_META[code] || { label: code || 'Processing', tone: 'bg-slate-100 text-slate-700', step: 0 }) };
+}
+
+export function fulfillmentStatusMeta(order) {
+  const code = order?.lifecycle?.fulfillment?.status || order?.status;
+  return { code, ...(STATUS_META[code] || { label: code || 'Processing', tone: 'bg-slate-100 text-slate-700', step: 0 }) };
+}
 
 /** The four milestones a customer actually tracks. */
 export const TRACK_STEPS = ['Placed', 'Confirmed', 'Being prepared', 'On the way', 'Delivered'];

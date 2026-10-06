@@ -257,6 +257,13 @@ const universalMasterFields = {
     ageRestricted: Joi.boolean(),
     requiresSerialTracking: Joi.boolean(),
   }),
+  returnPolicy: Joi.object({
+    mode: Joi.string().valid('returnable', 'quality_claim_only', 'final_sale').required(),
+    returnWindowDays: Joi.number().integer().min(0).max(365).required(),
+    instantClaimHours: Joi.number().integer().min(0).max(720).required(),
+    requiresQc: Joi.boolean().required(),
+    customerNote: Joi.string().max(300).allow(null, ''),
+  }),
 };
 
 export const masterCreateSchema = Joi.object({

@@ -109,9 +109,27 @@ export function remainingQty(item) {
   return Math.max(0, qty - returned - cancelled);
 }
 
+export function returnPolicyForItem(item) {
+  const snapshot = item?.returnPolicySnapshot;
+  if (snapshot?.mode) return snapshot;
+  return {
+    mode: item?.isReturnable === false ? 'quality_claim_only' : 'returnable',
+    returnWindowDays: item?.isReturnable === false ? 0 : RETURN_WINDOW_DAYS,
+    instantClaimHours: INSTANT_CLAIM_WINDOW_HOURS,
+    requiresQc: item?.isReturnable !== false,
+    customerNote: null,
+  };
+}
+
 /** Whether a line can be returned on a pickup/QC return. */
 export function canPickupReturn(item) {
-  return Boolean(item?.isReturnable) && remainingQty(item) > 0;
+  const policy = returnPolicyForItem(item);
+  return policy.mode === 'returnable' && Number(policy.returnWindowDays) > 0 && remainingQty(item) > 0;
+}
+
+export function canInstantClaim(item) {
+  const policy = returnPolicyForItem(item);
+  return policy.mode !== 'final_sale' && Number(policy.instantClaimHours) > 0 && remainingQty(item) > 0;
 }
 
 /** Whether an order can start a return at all. */

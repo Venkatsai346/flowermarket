@@ -33,6 +33,7 @@ export const MASTER_GLOBAL_FIELDS = Object.freeze(
     'optionRules',
     'unitPolicy',
     'fulfillmentProfile',
+    'returnPolicy',
     'isPerishable',
     'requiresColdChain',
     'defaultSellingUnit',

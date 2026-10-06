@@ -71,6 +71,11 @@ const blank = () => ({
   tags: '',
   isPerishable: false,
   requiresColdChain: false,
+  returnMode: 'returnable',
+  returnWindowDays: 7,
+  instantClaimHours: 24,
+  returnRequiresQc: true,
+  returnCustomerNote: '',
   defaultSellingUnit: 'piece',
   minOrderQty: 1,
   maxOrderQty: 100,
@@ -311,6 +316,8 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
       return fail('Attribute keys can only contain lowercase letters, numbers and underscores.', 'structure');
     }
     if (Number(form.minOrderQty) > Number(form.maxOrderQty)) return fail('Maximum order quantity must be greater than or equal to the minimum.', 'identity');
+    if (form.returnMode === 'returnable' && !(Number(form.returnWindowDays) > 0)) return fail('Returnable products need a return window of at least one day.', 'identity');
+    if (form.returnMode !== 'final_sale' && !(Number(form.instantClaimHours) > 0)) return fail('Claim-enabled products need an instant-claim window of at least one hour.', 'identity');
     const optionCodes = form.options.filter((item) => item.code).map((item) => item.code);
     if (new Set(optionCodes).size !== optionCodes.length) return fail('Every option dimension needs a unique stable code.', 'structure');
     const baseDefinition = form.units.find((unit) => unit.code === form.baseUnit);
@@ -393,6 +400,13 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
       tags: form.tags.split(',').map((t) => t.trim()).filter(Boolean),
       isPerishable: form.isPerishable,
       requiresColdChain: form.requiresColdChain,
+      returnPolicy: {
+        mode: form.returnMode,
+        returnWindowDays: form.returnMode === 'returnable' ? Number(form.returnWindowDays) : 0,
+        instantClaimHours: form.returnMode === 'final_sale' ? 0 : Number(form.instantClaimHours),
+        requiresQc: form.returnMode === 'returnable' && form.returnRequiresQc,
+        customerNote: form.returnCustomerNote || null,
+      },
       defaultSellingUnit: form.defaultSellingUnit,
       minOrderQty: Number(form.minOrderQty) || 1,
       maxOrderQty: Number(form.maxOrderQty) || 100,
@@ -607,6 +621,33 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
               <Checkbox label="Perishable" checked={form.isPerishable} onChange={(e) => set('isPerishable', e.target.checked)} />
               <Checkbox label="Requires cold chain" checked={form.requiresColdChain} onChange={(e) => set('requiresColdChain', e.target.checked)} />
             </div>
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4">
+              <div className="mb-4">
+                <p className="text-xs font-bold uppercase tracking-wide text-emerald-700">Returns & quality claims</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">Central Catalog Ops sets the commercial promise once. It is snapshotted at checkout, so later edits never change an existing customer’s rights.</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="Eligibility mode" required hint="Returnable = pickup/QC; quality claim = refund claim without pickup; final sale = neither.">
+                  <Select value={form.returnMode} onChange={(e) => set('returnMode', e.target.value)}>
+                    <option value="returnable">Returnable with pickup & QC</option>
+                    <option value="quality_claim_only">Quality claim only</option>
+                    <option value="final_sale">Final sale — no return/claim</option>
+                  </Select>
+                </Field>
+                <Field label="Pickup return window" hint="Calendar days after this parcel is delivered.">
+                  <Input type="number" min="1" max="365" disabled={form.returnMode !== 'returnable'} value={form.returnWindowDays} onChange={(e) => set('returnWindowDays', e.target.value)} />
+                </Field>
+                <Field label="Instant quality-claim window" hint="Hours after delivery; useful for fresh or perishable goods.">
+                  <Input type="number" min="1" max="720" disabled={form.returnMode === 'final_sale'} value={form.instantClaimHours} onChange={(e) => set('instantClaimHours', e.target.value)} />
+                </Field>
+              </div>
+              <div className="mt-3 grid items-end gap-3 sm:grid-cols-[1fr_auto]">
+                <Field label="Customer-facing policy note" hint="Shown before purchase and during a return; max 300 characters.">
+                  <Input maxLength={300} value={form.returnCustomerNote} onChange={(e) => set('returnCustomerNote', e.target.value)} placeholder="Unused items in original packaging are eligible…" />
+                </Field>
+                <div className="pb-2"><Checkbox label="Physical QC required" disabled={form.returnMode !== 'returnable'} checked={form.returnRequiresQc} onChange={(e) => set('returnRequiresQc', e.target.checked)} /></div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -680,6 +721,7 @@ export default function MasterFormModal({ open, onClose, initial, categories, br
                 <ReviewItem label="Global SKU" value={form.skuGlobal} ready={Boolean(form.skuGlobal)} />
                 <ReviewItem label="Kind / class" value={`${form.kind} · ${form.type}`} />
                 <ReviewItem label="Category" value={(categories || []).find((c) => rid(c) === form.categoryId)?.name} ready={Boolean(form.categoryId)} />
+                <ReviewItem label="Returns" value={form.returnMode === 'returnable' ? `${form.returnWindowDays}-day pickup return` : form.returnMode === 'quality_claim_only' ? `${form.instantClaimHours}-hour quality claim` : 'Final sale'} />
               </div>
               <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                 <p className="text-xs font-bold uppercase tracking-wide text-slate-400">Structure</p>
@@ -740,6 +782,11 @@ function fromDoc(m) {
     tags: (m.tags || []).join(', '),
     isPerishable: Boolean(m.isPerishable),
     requiresColdChain: Boolean(m.requiresColdChain),
+    returnMode: m.returnPolicy?.mode || (m.isPerishable && !['flower_bouquet', 'plant'].includes(m.type) ? 'quality_claim_only' : 'returnable'),
+    returnWindowDays: m.returnPolicy?.returnWindowDays ?? 7,
+    instantClaimHours: m.returnPolicy?.instantClaimHours ?? 24,
+    returnRequiresQc: m.returnPolicy?.requiresQc !== false,
+    returnCustomerNote: m.returnPolicy?.customerNote || '',
     defaultSellingUnit: m.defaultSellingUnit || 'piece',
     minOrderQty: m.minOrderQty ?? 1,
     maxOrderQty: m.maxOrderQty ?? 100,

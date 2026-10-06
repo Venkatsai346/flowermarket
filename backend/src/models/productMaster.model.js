@@ -84,6 +84,17 @@ const OptionRuleSchema = new Schema(
   { _id: false }
 );
 
+const ReturnPolicySchema = new Schema(
+  {
+    mode: { type: String, enum: ['returnable', 'quality_claim_only', 'final_sale'], default: 'returnable' },
+    returnWindowDays: { type: Number, min: 0, max: 365, default: 7 },
+    instantClaimHours: { type: Number, min: 0, max: 720, default: 24 },
+    requiresQc: { type: Boolean, default: true },
+    customerNote: { type: String, default: null, trim: true, maxlength: 300 },
+  },
+  { _id: false }
+);
+
 const FulfillmentProfileSchema = new Schema(
   {
     requiresShipping: { type: Boolean, default: true },
@@ -155,6 +166,9 @@ const ProductMasterSchema = new Schema(
 
     // ---- fulfilment characteristics (global) ----
     fulfillmentProfile: { type: FulfillmentProfileSchema, default: () => ({}) },
+    // Central Catalog Ops owns this policy. It is snapshotted onto cart/order
+    // lines so later catalog edits never rewrite a customer's purchase terms.
+    returnPolicy: { type: ReturnPolicySchema, default: null },
     isPerishable: { type: Boolean, default: false },
     requiresColdChain: { type: Boolean, default: false },
     defaultSellingUnit: {

@@ -9,8 +9,8 @@ import { useShop } from '../store.js';
 import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
 import ReturnSheet from '../components/ReturnSheet.jsx';
 import ProductImage from '../components/ProductImage.jsx';
-import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
-import { CANCEL_REASONS, canCancel, canReturn, isDeliveredForReturn, meta } from '../lib/afterSales.js';
+import { STATUS_META, TRACK_STEPS, customerStatusMeta, fulfillmentStatusMeta } from '../lib/status.js';
+import { CANCEL_REASONS, canCancel, canInstantClaim, canPickupReturn, canReturn, isDeliveredForReturn, meta } from '../lib/afterSales.js';
 import { cn, errMsg } from '../lib/utils.js';
 import { openRazorpayCheckout } from '../lib/razorpay.js';
 
@@ -62,7 +62,9 @@ export default function OrderDetail() {
   const items = data?.items || order?.items || [];
   const shipments = data?.shipments || order?.shipments || [];
   const multiDelivery = shipments.length > 1;
-  const orderMeta = STATUS_META[order?.status] || { label: order?.status, step: 0, tone: 'bg-slate-100 text-slate-700' };
+  const orderMeta = customerStatusMeta(order);
+  const fulfillmentMeta = fulfillmentStatusMeta(order);
+  const hasAfterSales = order?.lifecycle?.afterSales?.status && order.lifecycle.afterSales.status !== 'none';
   const cancelled = order?.status === 'cancelled';
   const cancelAllowed = canCancel(order?.status);
   const shipmentStatusById = new Map(shipments.map((shipment) => [String(shipment.id || shipment._id), shipment.status]));
@@ -71,7 +73,8 @@ export default function OrderDetail() {
     shipmentId: item.shipmentId,
     shipmentStatus: item.shipmentId ? shipmentStatusById.get(String(item.shipmentId)) : null,
   }));
-  const canRequestReturn = canReturn(order, deliveredItems);
+  const eligibleDeliveredItems = deliveredItems.filter((item) => canPickupReturn(item) || canInstantClaim(item));
+  const canRequestReturn = canReturn(order, eligibleDeliveredItems);
 
   // Deep-link support: /orders/:id?return=1 / ?cancel=1 opens the right flow.
   useEffect(() => {
@@ -258,6 +261,21 @@ export default function OrderDetail() {
         </div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ${orderMeta.tone}`}>{orderMeta.label}</span>
       </div>
+
+      {hasAfterSales && (
+        <section className="mb-5 overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-cyan-50 shadow-sm" aria-label="Order lifecycle">
+          <div className="border-b border-emerald-100 px-5 py-4">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Current outcome</p>
+            <p className="mt-1 text-lg font-bold text-slate-900">{orderMeta.label}</p>
+            <p className="mt-1 text-sm text-slate-600">Delivery and after-sales are tracked independently, so your delivery record remains intact after a return.</p>
+          </div>
+          <div className="grid grid-cols-3 divide-x divide-emerald-100 bg-white/70">
+            <div className="p-4"><Truck className="mb-2 h-4 w-4 text-indigo-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Delivery</p><p className="mt-1 text-xs font-semibold text-slate-800">{fulfillmentMeta.label}</p></div>
+            <div className="p-4"><RotateCcw className="mb-2 h-4 w-4 text-violet-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">After-sales</p><p className="mt-1 text-xs font-semibold text-slate-800">{orderMeta.label}</p></div>
+            <div className="p-4"><Banknote className="mb-2 h-4 w-4 text-emerald-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Payment</p><p className="mt-1 text-xs font-semibold capitalize text-slate-800">{order.lifecycle.payment.status.replaceAll('_', ' ')}</p></div>
+          </div>
+        </section>
+      )}
 
       {multiDelivery && (
         <div className="relative mb-5 overflow-hidden rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-violet-50 p-5 shadow-sm">
@@ -501,8 +519,8 @@ export default function OrderDetail() {
         <div className="card mb-5 p-5">
           <ol className="flex items-center">
             {TRACK_STEPS.map((label, i) => {
-              const done = orderMeta.step >= i;
-              const current = orderMeta.step === i;
+              const done = fulfillmentMeta.step >= i;
+              const current = fulfillmentMeta.step === i;
               return (
                 <li key={label} className="flex flex-1 items-center last:flex-none">
                   <div className="flex flex-col items-center gap-1.5">

@@ -38,7 +38,7 @@ const GLOBAL_FIELDS = [
   'skuGlobal', 'type', 'kind', 'title', 'slug', 'shortDescription', 'description',
   'categoryId', 'brandId', 'barcode', 'tags', 'manufacturer', 'modelNumber',
   'countryOfOrigin', 'identifiers', 'condition', 'warranty', 'seo', 'options', 'optionRules', 'unitPolicy',
-  'fulfillmentProfile', 'isPerishable', 'requiresColdChain',
+  'fulfillmentProfile', 'returnPolicy', 'isPerishable', 'requiresColdChain',
   'defaultSellingUnit', 'minOrderQty', 'maxOrderQty', 'complianceStatus',
 ];
 

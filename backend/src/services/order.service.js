@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
 import Payment from '../models/payment.model.js';
+import ReturnRequest from '../models/returnRequest.model.js';
 import OrderStatusHistory from '../models/orderStatusHistory.model.js';
 import CartItem from '../models/cartItem.model.js';
 import Address from '../models/address.model.js';
@@ -30,6 +31,7 @@ import { notFound, badRequest, conflict } from '../utils/ApiError.js';
 import User from '../models/user.model.js';
 import config from '../config/index.js';
 import { serializeList } from '../utils/serialize.js';
+import { composeOrderLifecycle } from '../utils/orderLifecycle.js';
 import {
   ORDER_STATUS,
   ORDER_CANCELLATION_REASON,
@@ -334,6 +336,7 @@ class OrderService {
           priceSnapshot: x.priceAtOrder, titleSnapshot: x.skuSnapshot?.title,
           unitSnapshot: x.skuSnapshot?.unit, unitQuantitySnapshot: x.skuSnapshot?.unitQuantity || 1,
           lineTotal: x.lineTotal, isReturnable: x.isReturnable,
+          returnPolicySnapshot: x.returnPolicySnapshot,
         };
       }));
       items.push(...listingMap.filter(Boolean));
@@ -355,19 +358,25 @@ class OrderService {
 
   async detail({ tenantId, orderId, userId = null }) {
     const order = await this.getOrder({ tenantId, orderId, userId });
-    const [items, timeline, loadedShipments] = await Promise.all([
+    const [items, timeline, loadedShipments, returnRequests] = await Promise.all([
       OrderItem.find({ orderId: order._id, tenantId }).lean(),
       OrderStatusHistory.find({ orderId: order._id, tenantId }).sort({ createdAt: 1 }).lean(),
       shipmentService.listForOrder({ tenantId, orderId: order._id }),
+      ReturnRequest.find({ tenantId, orderId: order._id })
+        .select('status claimType refundAmount reasonCode createdAt updatedAt pickedUpAt qcCompletedAt').sort({ createdAt: 1 }).lean(),
     ]);
     const shipments = await shipmentService.repairLegacyDeliveredMirror({ order, shipments: loadedShipments });
     const enabled = config.money.dualWritePaise !== false;
     const plain = typeof order.toJSON === 'function' ? order.toJSON() : order;
     const itemPaise = serializeList(items).map((it) => attachPaise(it, ['lineTotal', 'taxAmount', 'discountAllocated'], { enabled }));
     return {
-      order: attachPaise(plain, ORDER_MONEY_KEYS, { enabled }),
+      order: {
+        ...attachPaise(plain, ORDER_MONEY_KEYS, { enabled }),
+        lifecycle: composeOrderLifecycle(plain, returnRequests),
+      },
       items: itemPaise,
       shipments: serializeList(shipments),
+      returnRequests: serializeList(returnRequests),
       timeline: serializeList(timeline),
     };
   }
@@ -413,6 +422,22 @@ class OrderService {
     };
   }
 
+  async attachLifecycle(orders, tenantId) {
+    if (!orders.length) return [];
+    const ids = orders.map((order) => order._id || order.id);
+    const returns = await ReturnRequest.find({ tenantId, orderId: { $in: ids } })
+      .select('orderId status createdAt updatedAt').lean();
+    const byOrder = new Map();
+    returns.forEach((request) => {
+      const key = String(request.orderId);
+      byOrder.set(key, [...(byOrder.get(key) || []), request]);
+    });
+    return orders.map((order) => ({
+      ...order,
+      lifecycle: composeOrderLifecycle(order, byOrder.get(String(order._id || order.id)) || []),
+    }));
+  }
+
   async listMine({ tenantId, userId, query = {} }) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
@@ -422,7 +447,8 @@ class OrderService {
       Order.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       Order.countDocuments(q),
     ]);
-    return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+    const enriched = await this.attachLifecycle(docs, tenantId);
+    return { items: serializeList(enriched), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
   async listAll({ tenantId, query = {} }) {
@@ -435,7 +461,8 @@ class OrderService {
       Order.find(q).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       Order.countDocuments(q),
     ]);
-    return { items: serializeList(docs), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
+    const enriched = await this.attachLifecycle(docs, tenantId);
+    return { items: serializeList(enriched), meta: { page, limit, total, totalPages: Math.ceil(total / limit), hasMore: (page - 1) * limit + docs.length < total } };
   }
 
   async timeline({ tenantId, orderId, userId = null }) {
@@ -1318,6 +1345,11 @@ class OrderService {
           discountAllocated: line.discountAllocated ?? 0,
           taxPolicyId: line.taxPolicyId || null,
           hsnCode: line.hsnCode || null,
+          returnPolicySnapshot: i.returnPolicySnapshot || {
+            mode: i.isReturnable === false ? 'quality_claim_only' : 'returnable',
+            returnWindowDays: i.isReturnable === false ? 0 : 7,
+            instantClaimHours: 24, requiresQc: i.isReturnable !== false,
+          },
           isReturnable: i.isReturnable !== false,
           fulfillmentAllocation: allocated ? {
             warehouseId: allocated.warehouseId,

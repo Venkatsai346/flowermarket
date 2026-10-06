@@ -259,6 +259,9 @@ export default function MasterDetailModal({ masterId, onClose, onChanged, onEdit
           {m.marketplaceListed && <Badge tone="violet">marketplace listed</Badge>}
           {m.vendorId && <Badge tone="emerald">vendor-owned</Badge>}
           {m.isPerishable && <Badge tone="amber">perishable</Badge>}
+          <Badge tone={m.returnPolicy?.mode === 'final_sale' ? 'rose' : m.returnPolicy?.mode === 'quality_claim_only' ? 'amber' : 'emerald'}>
+            {m.returnPolicy?.mode === 'final_sale' ? 'final sale' : m.returnPolicy?.mode === 'quality_claim_only' ? 'quality claim only' : 'returnable'}
+          </Badge>
         </div>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Info label="Category" value={m.category?.name || '—'} />
@@ -273,6 +276,7 @@ export default function MasterDetailModal({ masterId, onClose, onChanged, onEdit
           <Info label="Origin" value={m.countryOfOrigin || '—'} />
           <Info label="Min / max qty" value={`${m.minOrderQty ?? 1} / ${m.maxOrderQty ?? 100}`} />
           <Info label="Cold chain" value={m.requiresColdChain ? 'Yes' : 'No'} />
+          <Info label="Return policy" value={m.returnPolicy?.mode === 'final_sale' ? 'Final sale' : m.returnPolicy?.mode === 'quality_claim_only' ? `${m.returnPolicy?.instantClaimHours ?? 24}h quality claim` : `${m.returnPolicy?.returnWindowDays ?? 7}-day pickup return`} />
           <Info label="Created" value={fmtDate(m.createdAt)} />
           <Info label="Updated" value={fmtDate(m.updatedAt)} />
         </div>
