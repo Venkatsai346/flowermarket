@@ -106,7 +106,9 @@ export function remainingQty(item) {
   const qty = Number(item?.qty) || 0;
   const returned = Number(item?.returnedQty) || 0;
   const cancelled = Number(item?.cancelledQty) || 0;
-  return Math.max(0, qty - returned - cancelled);
+  const requested = Number(item?.returnRequestedQty) || 0;
+  const rejected = Number(item?.returnRejectedQty) || 0;
+  return Math.max(0, qty - returned - cancelled - requested - rejected);
 }
 
 export function returnPolicyForItem(item) {

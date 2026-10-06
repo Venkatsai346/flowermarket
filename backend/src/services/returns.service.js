@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import mongoose from 'mongoose';
 import ReturnRequest from '../models/returnRequest.model.js';
 import ReturnItem from '../models/returnItem.model.js';
 import Order from '../models/order.model.js';
@@ -12,6 +14,7 @@ import { roundMoney } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
 import { returnWindow, RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS } from '../utils/returnWindow.js';
 import { permitsClaim, resolveReturnPolicy } from '../utils/returnPolicy.js';
+import { transactionsSupported } from '../utils/transactions.js';
 import {
   RETURN_CLAIM_TYPE,
   RETURN_REQUEST_STATUS,
@@ -116,7 +119,8 @@ class ReturnsService {
     // ---- item-level quantity checks ----
     const nonReturnable = orderItems.some((oi) => {
       const req = items.find((i) => String(i.orderItemId) === String(oi._id));
-      const unavailableQty = (oi.returnedQty || 0) + (oi.cancelledQty || 0);
+      const unavailableQty = (oi.returnedQty || 0) + (oi.cancelledQty || 0)
+        + (oi.returnRequestedQty || 0) + (oi.returnRejectedQty || 0);
       return req.qty <= 0 || req.qty > oi.qty - unavailableQty;
     });
     if (nonReturnable) {
@@ -143,18 +147,92 @@ class ReturnsService {
     return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, window, order, orderItems, shipment };
   }
 
+  async reserveQuantities({ tenantId, orderId, orderItems, requestedItems, session = null }) {
+    const reserved = [];
+    try {
+      for (const orderItem of orderItems) {
+        const requested = requestedItems.find((item) => String(item.orderItemId) === String(orderItem._id));
+        // Sequential on purpose: standalone Mongo uses ordered CAS writes plus
+        // compensation; production wraps the same bounded writes in a transaction.
+        // eslint-disable-next-line no-await-in-loop
+        const result = await OrderItem.updateOne(
+          {
+            _id: orderItem._id, tenantId, orderId,
+            $expr: {
+              $lte: [
+                {
+                  $add: [
+                    { $ifNull: ['$returnedQty', 0] }, { $ifNull: ['$cancelledQty', 0] },
+                    { $ifNull: ['$returnRequestedQty', 0] }, { $ifNull: ['$returnRejectedQty', 0] },
+                    requested.qty,
+                  ],
+                },
+                '$qty',
+              ],
+            },
+          },
+          { $inc: { returnRequestedQty: requested.qty } },
+          { session },
+        );
+        if (result.modifiedCount !== 1) {
+          throw conflict('Some quantity is already included in another return request', 'RETURN_QUANTITY_ALREADY_CLAIMED');
+        }
+        reserved.push({ orderItemId: orderItem._id, qty: requested.qty });
+      }
+      return reserved;
+    } catch (error) {
+      if (!session && reserved.length) await this.releaseReservations({ tenantId, orderId, reservations: reserved });
+      throw error;
+    }
+  }
+
+  async releaseReservations({ tenantId, orderId, reservations, session = null }) {
+    if (!reservations.length) return;
+    await OrderItem.bulkWrite(reservations.map((item) => ({
+      updateOne: {
+        filter: { _id: item.orderItemId, tenantId, orderId, returnRequestedQty: { $gte: item.qty } },
+        update: { $inc: { returnRequestedQty: -item.qty } },
+      },
+    })), { session });
+  }
+
   /**
    * Create a return request.
    * PICKUP_QC -> APPROVED (schedules pickup).
    * INSTANT_CLAIM -> auto-approve + initiate refund (wallet) immediately.
    */
-  async create({ tenantId, userId, orderId, items, reason, reasonCode = null, claimType, customerNote = null, actorId = null }) {
+  async create({ tenantId, userId, orderId, items, reason, reasonCode = null, claimType, customerNote = null, idempotencyKey = null, actorId = null }) {
     if (![RETURN_CLAIM_TYPE.PICKUP_QC, RETURN_CLAIM_TYPE.INSTANT_CLAIM].includes(claimType)) {
       throw badRequest('Invalid claim type', 'INVALID_CLAIM_TYPE');
     }
     if (!items?.length) throw badRequest('At least one item is required', 'ITEMS_REQUIRED');
+    const normalizedItems = [...items]
+      .map((item) => ({ orderItemId: String(item.orderItemId), qty: Number(item.qty) }))
+      .sort((a, b) => a.orderItemId.localeCompare(b.orderItemId));
+    if (normalizedItems.some((item) => !mongoose.isValidObjectId(item.orderItemId)
+      || !Number.isInteger(item.qty) || item.qty <= 0)) {
+      throw badRequest('Each return line requires a valid item and positive whole quantity', 'INVALID_RETURN_ITEMS');
+    }
+    if (new Set(normalizedItems.map((item) => item.orderItemId)).size !== normalizedItems.length) {
+      throw badRequest('Each order item may appear only once in a return request', 'DUPLICATE_RETURN_ITEM');
+    }
+    const fingerprint = createHash('sha256').update(JSON.stringify({
+      orderId: String(orderId), items: normalizedItems, reason, reasonCode, claimType, customerNote,
+    })).digest('hex');
+    if (idempotencyKey) {
+      const replay = await ReturnRequest.findOne({ tenantId, userId, idempotencyKey });
+      if (replay) {
+        if (replay.requestFingerprint !== fingerprint) {
+          throw conflict('Idempotency key was already used for a different return request', 'IDEMPOTENCY_KEY_REUSED');
+        }
+        return {
+          eligible: true, replayed: true, returnRequest: replay,
+          items: await ReturnItem.find({ tenantId, returnRequestId: replay._id }).lean(),
+        };
+      }
+    }
 
-    const eligibility = await this.checkEligibility({ tenantId, orderId, userId, items, claimType });
+    const eligibility = await this.checkEligibility({ tenantId, orderId, userId, items: normalizedItems, claimType });
     if (!eligibility.isEligible) {
       return { eligible: false, eligibility };
     }
@@ -168,7 +246,7 @@ class ReturnsService {
     const comps = await refundCalculator.compute({
       tenantId, orderId,
       returnedOrderItems: allOrderItems.map((oi) => {
-        const req = items.find((i) => String(i.orderItemId) === String(oi._id));
+        const req = normalizedItems.find((item) => String(item.orderItemId) === String(oi._id));
         return {
           qty: oi.qty,
           priceAtOrder: oi.priceAtOrder,
@@ -182,36 +260,83 @@ class ReturnsService {
     });
     const amount = comps.totalRefund;
 
-    const rr = await ReturnRequest.create({
+    const requestDocument = {
       tenantId, orderId, shipmentId: shipment?._id || null, userId,
-      claimType, reason, reasonCode, customerNote,
-      status: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? RETURN_REQUEST_STATUS.APPROVED : RETURN_REQUEST_STATUS.APPROVED,
+      claimType, reason, reasonCode, customerNote, idempotencyKey, requestFingerprint: fingerprint,
+      status: RETURN_REQUEST_STATUS.APPROVED,
       refundAmount: roundMoney(amount),
       eligibility: {
         isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false,
       },
       autoApproved: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM,
       review: { reviewedBy: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? null : actorId || null, reviewedAt: new Date() },
-    });
-
-    await ReturnItem.insertMany(
-      orderItems.map((oi) => {
-        const req = items.find((i) => String(i.orderItemId) === String(oi._id));
-        const netPerUnit = roundMoney(
-          (oi.priceAtOrder?.sellingPrice || 0)
-          - (oi.qty ? (oi.discountAllocated || 0) / oi.qty : 0)
-          + (oi.qty ? (oi.taxAmount || 0) / oi.qty : 0)
+    };
+    let rr;
+    let reservations = [];
+    const persistClaim = async (session = null) => {
+      try {
+        // The durable key is claimed before quantity. Concurrent retries then
+        // converge on one request; distinct requests still compete through the
+        // per-line quantity CAS below.
+        [rr] = await ReturnRequest.create([requestDocument], { session });
+        reservations = await this.reserveQuantities({
+          tenantId, orderId, orderItems, requestedItems: normalizedItems, session,
+        });
+        await ReturnItem.insertMany(
+          orderItems.map((oi) => {
+            const req = normalizedItems.find((item) => String(item.orderItemId) === String(oi._id));
+            const netPerUnit = roundMoney(
+              (oi.priceAtOrder?.sellingPrice || 0)
+              - (oi.qty ? (oi.discountAllocated || 0) / oi.qty : 0)
+              + (oi.qty ? (oi.taxAmount || 0) / oi.qty : 0)
+            );
+            return {
+              tenantId, returnRequestId: rr._id, orderItemId: oi._id, orderId,
+              shipmentId: oi.shipmentId || shipment?._id || null,
+              tenantProductId: oi.tenantProductId,
+              qty: req.qty,
+              refundAmount: roundMoney(netPerUnit * req.qty),
+              qcStatus: RETURN_QC_STATUS.PENDING,
+            };
+          }),
+          { session },
         );
-        return {
-          tenantId, returnRequestId: rr._id, orderItemId: oi._id, orderId,
-          shipmentId: oi.shipmentId || shipment?._id || null,
-          tenantProductId: oi.tenantProductId,
-          qty: req.qty,
-          refundAmount: roundMoney(netPerUnit * req.qty),
-          qcStatus: RETURN_QC_STATUS.PENDING,
-        };
-      })
-    );
+      } catch (error) {
+        if (!session) {
+          await Promise.allSettled([
+            this.releaseReservations({ tenantId, orderId, reservations }),
+            rr?._id ? ReturnItem.deleteMany({ tenantId, returnRequestId: rr._id }) : Promise.resolve(),
+            rr?._id ? ReturnRequest.deleteOne({ _id: rr._id, tenantId }) : Promise.resolve(),
+          ]);
+        }
+        throw error;
+      }
+    };
+
+    try {
+      if (await transactionsSupported()) {
+        const session = await mongoose.startSession();
+        try {
+          await session.withTransaction(() => persistClaim(session));
+        } finally {
+          await session.endSession();
+        }
+      } else {
+        await persistClaim();
+      }
+    } catch (error) {
+      if (error?.code === 11000 && idempotencyKey) {
+        const winner = await ReturnRequest.findOne({ tenantId, userId, idempotencyKey });
+        if (winner?.requestFingerprint === fingerprint) {
+          return {
+            eligible: true, replayed: true, returnRequest: winner,
+            items: await ReturnItem.find({ tenantId, returnRequestId: winner._id }).lean(),
+          };
+        }
+        if (winner) throw conflict('Idempotency key was already used for a different return request', 'IDEMPOTENCY_KEY_REUSED');
+      }
+      throw error;
+    }
 
     // ---- bump the order to the return sub-machine ----
     await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.APPROVED);
@@ -264,12 +389,12 @@ class ReturnsService {
       rr.review = { reviewedBy: actorId, reviewedAt: new Date(), note };
       await rr.save();
       await ReturnItem.updateMany(
-        { returnRequestId: rr._id },
+        { tenantId: rr.tenantId, returnRequestId: rr._id },
         { $set: { qcStatus: RETURN_QC_STATUS.PASSED, qcNote: note || null } }
       );
       await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.QC_PASSED);
       // initiate refund — recompute the component split (blueprint §5)
-      const returnItems = await ReturnItem.find({ returnRequestId: rr._id }).lean();
+      const returnItems = await ReturnItem.find({ tenantId: rr.tenantId, returnRequestId: rr._id }).lean();
       const orderItemsAll = await OrderItem.find({ tenantId: rr.tenantId, orderId: rr.orderId }).lean();
       const comps = await refundCalculator.compute({
         tenantId: rr.tenantId, orderId: rr.orderId,
@@ -310,9 +435,10 @@ class ReturnsService {
     rr.review = { reviewedBy: actorId, reviewedAt: new Date(), note: note || 'QC failed' };
     await rr.save();
     await ReturnItem.updateMany(
-      { returnRequestId: rr._id },
+      { tenantId: rr.tenantId, returnRequestId: rr._id },
       { $set: { qcStatus: RETURN_QC_STATUS.FAILED, qcNote: note || null } }
     );
+    await this.markItemsRejected({ tenantId: rr.tenantId, orderId: rr.orderId, returnRequestId: rr._id });
     await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.QC_FAILED);
     return rr;
   }
@@ -343,16 +469,43 @@ class ReturnsService {
     return { returnRequest: rr, items: serializeList(items) };
   }
 
-  /** Update returnedQty on order items (prevents over-returning the same line). */
+  async markItemsRejected({ tenantId, orderId, returnRequestId }) {
+    const lines = await ReturnItem.find({
+      tenantId, returnRequestId, quantityDisposition: 'reserved',
+    }).select('orderItemId qty').lean();
+    if (!lines.length) return;
+    await OrderItem.bulkWrite(lines.map((line) => ({
+      updateOne: {
+        filter: {
+          _id: line.orderItemId, tenantId, orderId,
+          returnRequestedQty: { $gte: line.qty },
+        },
+        update: { $inc: { returnRequestedQty: -line.qty, returnRejectedQty: line.qty } },
+      },
+    })));
+    await ReturnItem.updateMany(
+      { tenantId, returnRequestId, quantityDisposition: 'reserved' },
+      { $set: { quantityDisposition: 'rejected' } },
+    );
+  }
+
+  /** Transfer reserved quantity to returned quantity exactly once. */
   async markItemsReturned({ tenantId, returnRequestId, orderItems }) {
-    const returnItems = await ReturnItem.find({ tenantId, returnRequestId });
+    const returnItems = await ReturnItem.find({ tenantId, returnRequestId, quantityDisposition: 'reserved' });
     const rows = returnItems.map((ri) => ({
       ri, oi: orderItems.find((item) => String(item._id) === String(ri.orderItemId)),
     })).filter((row) => row.oi);
     const orderOps = rows.map(({ ri, oi }) => ({
       updateOne: {
-        filter: { _id: oi._id, returnedQty: { $lte: oi.qty - ri.qty } },
-        update: { $inc: { returnedQty: ri.qty }, $set: { updatedAt: new Date() } },
+        filter: {
+          _id: oi._id, tenantId,
+          returnRequestedQty: { $gte: ri.qty },
+          returnedQty: { $lte: oi.qty - ri.qty },
+        },
+        update: {
+          $inc: { returnRequestedQty: -ri.qty, returnedQty: ri.qty },
+          $set: { updatedAt: new Date() },
+        },
       },
     }));
     const shipmentOps = rows.filter(({ ri }) => ri.shipmentId).map(({ ri, oi }) => ({
@@ -365,6 +518,12 @@ class ReturnsService {
       orderOps.length ? OrderItem.bulkWrite(orderOps) : null,
       shipmentOps.length ? ShipmentItem.bulkWrite(shipmentOps) : null,
     ]);
+    if (returnItems.length) {
+      await ReturnItem.updateMany(
+        { tenantId, returnRequestId, quantityDisposition: 'reserved' },
+        { $set: { quantityDisposition: 'returned' } },
+      );
+    }
   }
 
   /** Order-level status mirror for the customer timeline (doc §6 sub-machine). */

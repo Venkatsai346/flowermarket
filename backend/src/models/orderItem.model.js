@@ -70,6 +70,12 @@ const OrderItemSchema = new Schema(
     },
     /** Search query that introduced this line; never contains user identity. */
     searchQueryId: { type: String, default: null, maxlength: 64 },
+    // Quantity accounting is a conservation equation:
+    // qty = available + cancelled + requested + rejected + returned.
+    // `returnRequestedQty` is reserved atomically when a claim is created, so
+    // concurrent tabs/processes can never claim the same delivered unit twice.
+    returnRequestedQty: { type: Number, default: 0, min: 0 },
+    returnRejectedQty: { type: Number, default: 0, min: 0 },
     returnedQty: { type: Number, default: 0, min: 0 },
     cancelledQty: { type: Number, default: 0, min: 0 },
   },

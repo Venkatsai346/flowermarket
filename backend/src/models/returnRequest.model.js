@@ -51,6 +51,10 @@ const ReturnRequestSchema = new Schema(
     reasonCode: { type: String, default: null, maxlength: 60 },
     reason: { type: String, required: true, maxlength: 500 },
     customerNote: { type: String, default: null, maxlength: 500 },
+    // Durable replay identity. Middleware coalescing improves latency, while
+    // this unique key remains correct across processes, restarts and regions.
+    idempotencyKey: { type: String, default: null, maxlength: 200 },
+    requestFingerprint: { type: String, default: null, maxlength: 64 },
 
     status: {
       type: String,
@@ -76,6 +80,10 @@ const ReturnRequestSchema = new Schema(
 );
 
 ReturnRequestSchema.index({ tenantId: 1, userId: 1, createdAt: -1 });
+ReturnRequestSchema.index(
+  { tenantId: 1, userId: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } }, name: 'return_request_idempotency_uq' },
+);
 ReturnRequestSchema.index({ tenantId: 1, orderId: 1, shipmentId: 1, createdAt: -1 });
 ReturnRequestSchema.index({ status: 1, createdAt: 1 }); // ops queue
 

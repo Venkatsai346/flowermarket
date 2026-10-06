@@ -47,7 +47,10 @@ Products created before explicit policies remain compatible:
 - A delivered parcel can be returned while another parcel is in transit.
 - One return request belongs to one shipment.
 - Every selected line must permit the selected claim type and still be inside its own snapshotted window.
-- Quantity checks subtract previous returns and cancellations.
+- Quantity checks subtract cancellations, active return reservations, declined claims and completed returns.
+- Creating a request atomically reserves its exact line quantities with a compare-and-set guard. Concurrent tabs, API retries and multiple application nodes cannot claim the same unit twice.
+- Multiple requests are allowed only for genuinely unclaimed items or unclaimed partial quantity. Once every eligible unit is in a request, the storefront removes **Request a return** and links to existing return activity instead.
+- Durable idempotency keys make a retried submission replay the original request rather than creating another one.
 - Final-sale lines remain visible with an explanation but cannot be selected.
 
 ## State ownership rules

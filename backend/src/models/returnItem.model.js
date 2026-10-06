@@ -19,6 +19,12 @@ const ReturnItemSchema = new Schema(
 
     qty: { type: Number, required: true, min: 1 },
     refundAmount: { type: Number, default: 0, min: 0 }, // share of this line
+    quantityDisposition: {
+      type: String,
+      enum: ['reserved', 'returned', 'rejected', 'voided_duplicate'],
+      default: 'reserved',
+      index: true,
+    },
     qcStatus: {
       type: String,
       enum: Object.values(RETURN_QC_STATUS),

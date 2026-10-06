@@ -264,10 +264,13 @@ export default function OrderDetail() {
 
       {hasAfterSales && (
         <section className="mb-5 overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-cyan-50 shadow-sm" aria-label="Order lifecycle">
-          <div className="border-b border-emerald-100 px-5 py-4">
-            <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Current outcome</p>
-            <p className="mt-1 text-lg font-bold text-slate-900">{orderMeta.label}</p>
-            <p className="mt-1 text-sm text-slate-600">Delivery and after-sales are tracked independently, so your delivery record remains intact after a return.</p>
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-emerald-100 px-5 py-4">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Current outcome</p>
+              <p className="mt-1 text-lg font-bold text-slate-900">{orderMeta.label}</p>
+              <p className="mt-1 text-sm text-slate-600">Delivery and after-sales are tracked independently, so your delivery record remains intact after a return.</p>
+            </div>
+            <Link to="/returns" className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-emerald-700 shadow-sm ring-1 ring-emerald-200 transition hover:bg-emerald-50">View return activity</Link>
           </div>
           <div className="grid grid-cols-3 divide-x divide-emerald-100 bg-white/70">
             <div className="p-4"><Truck className="mb-2 h-4 w-4 text-indigo-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Delivery</p><p className="mt-1 text-xs font-semibold text-slate-800">{fulfillmentMeta.label}</p></div>
@@ -349,6 +352,9 @@ export default function OrderDetail() {
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-slate-800">{item.skuSnapshot?.title}</p>
                         <p className="text-xs text-slate-500">Qty {item.qty}</p>
+                        {Boolean(item.returnRequestedQty) && <p className="text-[11px] font-semibold text-violet-600">{item.returnRequestedQty} in return request</p>}
+                        {Boolean(item.returnedQty) && <p className="text-[11px] font-semibold text-emerald-600">{item.returnedQty} returned</p>}
+                        {Boolean(item.returnRejectedQty) && <p className="text-[11px] font-semibold text-rose-600">{item.returnRejectedQty} return declined</p>}
                       </div>
                       <Money value={item.lineTotal} className="text-sm font-semibold" />
                     </div>
@@ -574,9 +580,9 @@ export default function OrderDetail() {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-slate-800">{it.skuSnapshot?.title}</p>
               <p className="text-xs text-slate-500">{it.qty} × <Money value={it.priceAtOrder?.sellingPrice} /></p>
-              {Boolean(it.returnedQty) && (
-                <p className="text-[11px] font-medium text-emerald-600">{it.returnedQty} returned</p>
-              )}
+              {Boolean(it.returnRequestedQty) && <p className="text-[11px] font-medium text-violet-600">{it.returnRequestedQty} in return request</p>}
+              {Boolean(it.returnedQty) && <p className="text-[11px] font-medium text-emerald-600">{it.returnedQty} returned</p>}
+              {Boolean(it.returnRejectedQty) && <p className="text-[11px] font-medium text-rose-600">{it.returnRejectedQty} return declined</p>}
             </div>
             <Money value={it.lineTotal} className="text-sm font-semibold" />
           </div>

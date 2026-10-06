@@ -43,6 +43,8 @@ ok("cancel is allowed exactly on the backend's cancellable states", () => {
 ok('remainingQty never leaks a negative number', () => {
   assert.equal(remainingQty({ qty: 5, returnedQty: 2 }), 3);
   assert.equal(remainingQty({ qty: 5, returnedQty: 9 }), 0);
+  assert.equal(remainingQty({ qty: 5, returnRequestedQty: 3, returnedQty: 1, cancelledQty: 1 }), 0);
+  assert.equal(remainingQty({ qty: 5, returnRejectedQty: 2 }), 3);
   assert.equal(remainingQty({ qty: 0 }), 0);
   assert.equal(remainingQty({}), 0);
 });
