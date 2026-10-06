@@ -18,6 +18,7 @@ router.get('/', validate(orderListQuerySchema, 'query'), OrderController.listMin
 router.get('/:id', OrderController.detail);
 router.get('/:id/timeline', OrderController.timeline);
 router.get('/:id/payment', OrderController.paymentStatus);
+router.post('/:id/shipments/:shipmentId/cancel', validate(cancelOrderSchema), OrderController.cancelShipment);
 router.post('/:id/cancel', validate(cancelOrderSchema), OrderController.cancel);
 
 export default router;

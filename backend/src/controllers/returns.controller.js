@@ -17,6 +17,7 @@ class ReturnsController {
       reasonCode: req.body.reasonCode || null,
       claimType: req.body.claimType,
       customerNote: req.body.customerNote || null,
+      idempotencyKey: req.get('idempotency-key') || req.get('x-idempotency-key') || null,
       actorId: req.auth.userId,
     });
     if (!result.eligible) {

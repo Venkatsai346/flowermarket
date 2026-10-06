@@ -60,6 +60,7 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const [podValue, setPodValue] = useState('');
   const [failReason, setFailReason] = useState('');
   const [showFail, setShowFail] = useState(false);
+  const [activeShipmentId, setActiveShipmentId] = useState(null);
   // Cash orders: the operator's explicit confirmation that the money was taken.
   // Starts false and can never be inferred — an unticked box silently read as
   // "collected" is how a marketplace books cash it never received.
@@ -73,6 +74,7 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const delivery = detail.delivery || null;
   const task = detail.fulfillmentTask || null;
   const timeline = detail.timeline || [];
+  const shipments = detail.shipments || [];
 
   const runAction = async (fn, message, after) => {
     try {
@@ -99,6 +101,33 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const pick = () => runAction(() => api.fulfillment.startPicking(o.id), 'Picking started');
   const pack = () => runAction(() => api.fulfillment.markPacked(o.id), 'Order packed');
   const retry = () => runAction(() => api.fulfillment.retryDelivery(o.id), 'Delivery retry dispatched');
+  const shipmentPick = (shipment) => runAction(
+    () => api.fulfillment.startShipmentPicking(o.id, shipment.id), `${shipment.shipmentNumber} picking started`,
+  );
+  const shipmentPack = (shipment) => runAction(
+    () => api.fulfillment.packShipment(o.id, shipment.id), `${shipment.shipmentNumber} packed`,
+  );
+  const shipmentDispatch = (shipment) => runAction(
+    () => api.fulfillment.dispatchShipment(o.id, shipment.id), `${shipment.shipmentNumber} dispatched`,
+  );
+  const shipmentRetry = (shipment) => runAction(
+    () => api.fulfillment.retryShipment(o.id, shipment.id), `${shipment.shipmentNumber} delivery retry dispatched`,
+  );
+  const shipmentStartReturn = (shipment) => runAction(
+    () => api.fulfillment.startShipmentReturn(o.id, shipment.id),
+    `${shipment.shipmentNumber} is returning to origin`,
+  );
+  const shipmentCompleteReturn = (shipment) => runAction(
+    () => api.fulfillment.completeShipmentReturn(o.id, shipment.id),
+    `${shipment.shipmentNumber} received back at origin`,
+  );
+  const shipmentCancel = (shipment) => {
+    if (!window.confirm(`Cancel ${shipment.shipmentNumber}, restore its stock, and issue its partial refund?`)) return;
+    runAction(
+      () => api.fulfillment.cancelShipmentOps(o.id, shipment.id, { reason: 'cancelled by operations' }),
+      `${shipment.shipmentNumber} cancelled — refund initiated`,
+    );
+  };
   /**
    * Is this a cash order with the money still outstanding? The backend refuses
    * to mark such an order delivered (COD_COLLECTION_REQUIRED), so the form has
@@ -109,19 +138,26 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
   const codAmountDue = Number(o.paymentSummary?.amount ?? o.totalAmount ?? 0) || 0;
 
   const deliver = () => runAction(
-    () => api.fulfillment.deliver(o.id, {
-      podType,
-      podValue: podValue || undefined,
-      // only sent for cash orders; harmless (and ignored) otherwise
-      ...(codOutstanding ? { codCollected: true } : {}),
-    }),
+    () => activeShipmentId
+      ? api.fulfillment.deliverShipment(o.id, activeShipmentId, {
+        podType, podValue: podValue || undefined,
+        ...(codOutstanding ? { codCollected: true } : {}),
+      })
+      : api.fulfillment.deliver(o.id, {
+        podType,
+        podValue: podValue || undefined,
+        // only sent for cash orders; harmless (and ignored) otherwise
+        ...(codOutstanding ? { codCollected: true } : {}),
+      }),
     codOutstanding ? 'Delivered — cash collected and POD captured' : 'Delivered — POD captured',
-    () => { setDeliverFormOpen(false); setPodValue(''); setCodCollected(false); },
+    () => { setDeliverFormOpen(false); setActiveShipmentId(null); setPodValue(''); setCodCollected(false); },
   );
   const fail = () => runAction(
-    () => api.fulfillment.deliveryFailed(o.id, { reason: failReason || undefined }),
+    () => activeShipmentId
+      ? api.fulfillment.failShipment(o.id, activeShipmentId, { reason: failReason || undefined })
+      : api.fulfillment.deliveryFailed(o.id, { reason: failReason || undefined }),
     'Delivery failure recorded',
-    () => { setShowFail(false); setFailReason(''); },
+    () => { setShowFail(false); setActiveShipmentId(null); setFailReason(''); },
   );
 
   return (
@@ -149,7 +185,67 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
             <DetailTile label="Total" value={inr(o.totalAmount)} sub={`${num(o.itemsCount)} items`} />
           </div>
 
-          {delivery && (
+          {shipments.length > 0 && (
+            <section>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="label">Shipments</p>
+                <span className="text-xs font-medium text-slate-500">{shipments.length} fulfillment {shipments.length === 1 ? 'node' : 'nodes'}</span>
+              </div>
+              <div className="space-y-3">
+                {shipments.map((shipment, index) => {
+                  const shipmentItems = new Set((shipment.items || []).map((entry) => String(entry.orderItemId)));
+                  const titles = items.filter((item) => shipmentItems.has(String(item.id))).map((item) => item.skuSnapshot?.title).filter(Boolean);
+                  return (
+                    <div key={shipment.id} className="overflow-hidden rounded-xl border border-indigo-100 bg-gradient-to-r from-indigo-50/70 to-white">
+                      <div className="flex flex-wrap items-start justify-between gap-3 p-4">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">Shipment {index + 1} · {shipment.hub?.name || shipment.warehouseCode || 'Hub'}</p>
+                          <p className="mt-1 font-mono text-sm font-semibold text-slate-900">{shipment.shipmentNumber}</p>
+                          <p className="mt-1 truncate text-xs text-slate-500">{titles.join(', ') || `${num(shipment.unitsCount)} units`}</p>
+                          <p className="mt-1 font-mono text-[10px] text-slate-400">Tracking {shipment.trackingCode}</p>
+                        </div>
+                        <Badge tone={shipment.status === 'delivered' ? 'success' : shipment.status === 'delivery_failed' ? 'danger' : 'info'} dot>
+                          {String(shipment.status || '').replaceAll('_', ' ')}
+                        </Badge>
+                      </div>
+                      <div className="flex flex-wrap gap-2 border-t border-indigo-100/70 bg-white/70 px-4 py-3">
+                        {['planned', 'queued'].includes(shipment.status) && <Button size="sm" variant="primary" icon={ArrowRight} loading={action.busy} onClick={() => shipmentPick(shipment)}>Start picking</Button>}
+                        {shipment.status === 'picking' && <Button size="sm" variant="primary" icon={PackageCheck} loading={action.busy} onClick={() => shipmentPack(shipment)}>Mark packed</Button>}
+                        {shipment.status === 'packed' && <Button size="sm" variant="success" icon={Truck} loading={action.busy} onClick={() => shipmentDispatch(shipment)}>Dispatch</Button>}
+                        {shipment.status === 'delivery_failed' && (shipment.deliveryAttemptCount || 0) < 2 && (
+                          <Button size="sm" variant="secondary" icon={RefreshCw} loading={action.busy} onClick={() => shipmentRetry(shipment)}>Retry delivery</Button>
+                        )}
+                        {shipment.status === 'out_for_delivery' && (
+                          <>
+                            <Button size="sm" variant="success" icon={CheckCircle2} onClick={() => { setActiveShipmentId(shipment.id); setDeliverFormOpen(true); setShowFail(false); }}>Capture POD</Button>
+                            <Button size="sm" variant="danger" icon={AlertTriangle} onClick={() => { setActiveShipmentId(shipment.id); setShowFail(true); setDeliverFormOpen(false); }}>Record failure</Button>
+                          </>
+                        )}
+                        {shipment.status === 'delivery_failed' && (
+                          <Button size="sm" variant="secondary" icon={Truck} loading={action.busy} onClick={() => shipmentStartReturn(shipment)}>Return to origin</Button>
+                        )}
+                        {shipment.status === 'return_to_origin' && (
+                          <Button size="sm" variant="secondary" icon={PackageCheck} loading={action.busy} onClick={() => shipmentCompleteReturn(shipment)}>Received at origin</Button>
+                        )}
+                        {['planned', 'queued', 'picking', 'packed', 'returned_to_origin'].includes(shipment.status) && o.paymentSummary?.status !== 'awaiting_collection' && (
+                          <Button size="sm" variant="danger" icon={AlertTriangle} loading={action.busy} onClick={() => shipmentCancel(shipment)}>Cancel shipment</Button>
+                        )}
+                        {['delivered', 'cancelled'].includes(shipment.status) && (
+                          <span className="text-xs text-slate-400">
+                            {shipment.status === 'cancelled' && shipment.cancellation?.refundStatus
+                              ? `Refund ${shipment.cancellation.refundStatus} · ${inr(shipment.cancellation.refundAmount || 0)}`
+                              : 'No further fulfillment action'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          {shipments.length === 0 && delivery && (
             <div className="rounded-xl border border-sky-100 bg-sky-50/60 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -176,7 +272,7 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
             </div>
           )}
 
-          {task && (
+          {shipments.length === 0 && task && (
             <div className="rounded-xl border border-violet-100 bg-violet-50/50 p-4">
               <div className="mb-1 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -256,28 +352,28 @@ export default function OrderOpsDrawer({ order, onClose, onChanged, onOpenPaymen
           <div className="rounded-xl border border-slate-100 p-4">
             <p className="label mb-3">Ops actions</p>
             <div className="flex flex-wrap gap-2">
-              {o.status === 'confirmed' && (
+              {shipments.length === 0 && o.status === 'confirmed' && (
                 <Button variant="primary" icon={ArrowRight} {...actionProps(pick, 'Start picking', 'Picking started')} />
               )}
-              {o.status === 'picking' && (
+              {shipments.length === 0 && o.status === 'picking' && (
                 <Button variant="primary" icon={PackageCheck} {...actionProps(pack, 'Mark packed', 'Order packed')} />
               )}
-              {o.status === 'packed' && (
+              {shipments.length === 0 && o.status === 'packed' && (
                 <Button variant="success" icon={Truck} {...actionProps(confirm, 'Dispatch / assign rider', 'Rider assigned')} />
               )}
-              {o.status === 'out_for_delivery' && !deliverFormOpen && (
+              {shipments.length === 0 && o.status === 'out_for_delivery' && !deliverFormOpen && (
                 <Button variant="success" icon={CheckCircle2} onClick={() => setDeliverFormOpen(true)}>Deliver (capture POD)</Button>
               )}
-              {o.status === 'out_for_delivery' && !showFail && (
+              {shipments.length === 0 && o.status === 'out_for_delivery' && !showFail && (
                 <Button variant="danger" icon={AlertTriangle} onClick={() => setShowFail(true)}>Record failure</Button>
               )}
-              {o.status === 'delivery_failed' && (
+              {shipments.length === 0 && o.status === 'delivery_failed' && (
                 <Button variant="secondary" icon={RefreshCw} {...actionProps(retry, 'Retry delivery', 'Delivery retry dispatched')} />
               )}
-              {o.status === 'out_for_delivery' && !deliverFormOpen && !showFail && (
+              {shipments.length === 0 && o.status === 'out_for_delivery' && !deliverFormOpen && !showFail && (
                 <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-400">Choose an action above</span>
               )}
-              {o.status !== 'confirmed' && o.status !== 'picking' && o.status !== 'packed' && o.status !== 'out_for_delivery' && o.status !== 'delivery_failed' && (
+              {shipments.length === 0 && o.status !== 'confirmed' && o.status !== 'picking' && o.status !== 'packed' && o.status !== 'out_for_delivery' && o.status !== 'delivery_failed' && (
                 <span className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-400">No ops action in this state</span>
               )}
             </div>

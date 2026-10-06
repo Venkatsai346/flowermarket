@@ -14,6 +14,7 @@ const FulfillmentTaskSchema = new Schema(
     orderId: { type: Types.ObjectId, ref: 'Order', required: true },
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
     hubId: { type: Types.ObjectId, ref: 'Hub', default: null, index: true },
+    shipmentId: { type: Types.ObjectId, ref: 'Shipment', default: null, index: true },
 
     status: {
       type: String,
@@ -33,7 +34,10 @@ const FulfillmentTaskSchema = new Schema(
   { collection: 'fulfillmenttasks' }
 );
 
-FulfillmentTaskSchema.index({ orderId: 1 }, { unique: true });
+FulfillmentTaskSchema.index(
+  { tenantId: 1, orderId: 1, shipmentId: 1 },
+  { unique: true, name: 'fulfillment_task_shipment_uq' },
+);
 FulfillmentTaskSchema.index({ tenantId: 1, status: 1 });
 
 FulfillmentTaskSchema.plugin(auditPlugin);

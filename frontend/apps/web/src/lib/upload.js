@@ -27,6 +27,15 @@ export function isSameOrigin(url) {
   return url.startsWith('/');
 }
 
+function wait(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Upload processing aborted')); return; }
+    const abort = () => { clearTimeout(timer); reject(new Error('Upload processing aborted')); };
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, ms);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
 function putWithProgress(url, { method = 'PUT', file, headers = {}, onProgress, signal }) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -82,7 +91,15 @@ export async function uploadFile({ file, purpose, onProgress, signal }) {
   await putWithProgress(uploadUrl, { method: method || 'PUT', file, headers: h, onProgress, signal });
 
   const confirm = await api.media.confirm(presign.data.asset.id);
-  return confirm.data;
+  let asset = confirm.data;
+  const deadline = Date.now() + 90_000;
+  while (asset?.status === 'processing' && Date.now() < deadline) {
+    await wait(750, signal);
+    asset = (await api.media.get(presign.data.asset.id)).data;
+  }
+  if (asset?.status === 'failed') throw new Error(asset.meta?.processingError || 'Media inspection failed');
+  if (asset?.status !== 'ready') throw new Error('Media processing is taking longer than expected. It remains safely queued; check the media library shortly.');
+  return asset;
 }
 
 /** Human error for upload failures (size / type / network). */

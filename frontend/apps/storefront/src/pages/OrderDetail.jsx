@@ -1,17 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, Link, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, Banknote, CheckCircle2, Circle, Download, MapPin, PackageX, Receipt, Repeat, RotateCcw, Truck,
+  ArrowLeft, Banknote, Boxes, CheckCircle2, Circle, Clock3, Download, MapPin, PackageX, Receipt, Repeat, RotateCcw, Truck,
 } from 'lucide-react';
 import { api } from '../api.js';
 import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
 import ReturnSheet from '../components/ReturnSheet.jsx';
-import { STATUS_META, TRACK_STEPS } from '../lib/status.js';
-import { CANCEL_REASONS, canCancel, canReturn, meta } from '../lib/afterSales.js';
+import ProductImage from '../components/ProductImage.jsx';
+import { STATUS_META, TRACK_STEPS, customerStatusMeta, fulfillmentStatusMeta } from '../lib/status.js';
+import { CANCEL_REASONS, canCancel, canInstantClaim, canPickupReturn, canReturn, isDeliveredForReturn, meta } from '../lib/afterSales.js';
 import { cn, errMsg } from '../lib/utils.js';
 import { openRazorpayCheckout } from '../lib/razorpay.js';
+
+const SHIPMENT_META = {
+  planned: { label: 'Planned', step: 0 }, queued: { label: 'Confirmed', step: 0 },
+  picking: { label: 'Being picked', step: 1 }, packed: { label: 'Packed', step: 2 },
+  out_for_delivery: { label: 'Out for delivery', step: 3 }, delivered: { label: 'Delivered', step: 4 },
+  delivery_failed: { label: 'Delivery needs attention', step: 3 },
+  return_to_origin: { label: 'Returning to sender', step: 3 },
+  returned_to_origin: { label: 'Returned to sender', step: 3 },
+  cancelled: { label: 'Cancelled', step: -1 },
+};
+const SHIPMENT_STEPS = ['Confirmed', 'Picking', 'Packed', 'On the way', 'Delivered'];
+const dateTime = (value) => value
+  ? new Date(value).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+  : null;
 
 export default function OrderDetail() {
   const { id } = useParams();
@@ -26,6 +41,7 @@ export default function OrderDetail() {
   const [cancelReason, setCancelReason] = useState(CANCEL_REASONS[0].code);
   const [cancelText, setCancelText] = useState('');
   const [cancelling, setCancelling] = useState(false);
+  const [cancellingShipment, setCancellingShipment] = useState(null);
 
   const [payStatus, setPayStatus] = useState(null);
   const [checkingPay, setCheckingPay] = useState(false);
@@ -44,10 +60,21 @@ export default function OrderDetail() {
 
   const order = data?.order || data;
   const items = data?.items || order?.items || [];
-  const orderMeta = STATUS_META[order?.status] || { label: order?.status, step: 0, tone: 'bg-slate-100 text-slate-700' };
+  const shipments = data?.shipments || order?.shipments || [];
+  const multiDelivery = shipments.length > 1;
+  const orderMeta = customerStatusMeta(order);
+  const fulfillmentMeta = fulfillmentStatusMeta(order);
+  const hasAfterSales = order?.lifecycle?.afterSales?.status && order.lifecycle.afterSales.status !== 'none';
   const cancelled = order?.status === 'cancelled';
   const cancelAllowed = canCancel(order?.status);
-  const canRequestReturn = canReturn(order, items);
+  const shipmentStatusById = new Map(shipments.map((shipment) => [String(shipment.id || shipment._id), shipment.status]));
+  const deliveredItems = items.filter((item) => isDeliveredForReturn({
+    orderStatus: order?.status,
+    shipmentId: item.shipmentId,
+    shipmentStatus: item.shipmentId ? shipmentStatusById.get(String(item.shipmentId)) : null,
+  }));
+  const eligibleDeliveredItems = deliveredItems.filter((item) => canPickupReturn(item) || canInstantClaim(item));
+  const canRequestReturn = canReturn(order, eligibleDeliveredItems);
 
   // Deep-link support: /orders/:id?return=1 / ?cancel=1 opens the right flow.
   useEffect(() => {
@@ -206,6 +233,21 @@ export default function OrderDetail() {
     }
   };
 
+  const cancelShipment = async (shipment) => {
+    const shipmentId = shipment.id || shipment._id;
+    if (!window.confirm(`Cancel ${shipment.shipmentNumber}? Only the items in this delivery will be refunded.`)) return;
+    setCancellingShipment(shipmentId);
+    try {
+      await api.shop.cancelShipment(order.id, shipmentId, { reason: 'customer_requested', reasonText: 'Customer cancelled this delivery' });
+      await refetch();
+      toast('Delivery cancelled — your partial refund has been initiated', 'success');
+    } catch (e) {
+      toast(errMsg(e), 'error');
+    } finally {
+      setCancellingShipment(null);
+    }
+  };
+
   return (
     <div className="wrap max-w-3xl py-8">
       <Link to="/orders" className="mb-4 inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700">
@@ -219,6 +261,130 @@ export default function OrderDetail() {
         </div>
         <span className={`rounded-full px-3 py-1 text-sm font-semibold ${orderMeta.tone}`}>{orderMeta.label}</span>
       </div>
+
+      {hasAfterSales && (
+        <section className="mb-5 overflow-hidden rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-cyan-50 shadow-sm" aria-label="Order lifecycle">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-emerald-100 px-5 py-4">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-emerald-700">Current outcome</p>
+              <p className="mt-1 text-lg font-bold text-slate-900">{orderMeta.label}</p>
+              <p className="mt-1 text-sm text-slate-600">Delivery and after-sales are tracked independently, so your delivery record remains intact after a return.</p>
+            </div>
+            <Link to="/returns" className="rounded-full bg-white px-3 py-1.5 text-xs font-bold text-emerald-700 shadow-sm ring-1 ring-emerald-200 transition hover:bg-emerald-50">View return activity</Link>
+          </div>
+          <div className="grid grid-cols-3 divide-x divide-emerald-100 bg-white/70">
+            <div className="p-4"><Truck className="mb-2 h-4 w-4 text-indigo-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Delivery</p><p className="mt-1 text-xs font-semibold text-slate-800">{fulfillmentMeta.label}</p></div>
+            <div className="p-4"><RotateCcw className="mb-2 h-4 w-4 text-violet-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">After-sales</p><p className="mt-1 text-xs font-semibold text-slate-800">{orderMeta.label}</p></div>
+            <div className="p-4"><Banknote className="mb-2 h-4 w-4 text-emerald-500" /><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Payment</p><p className="mt-1 text-xs font-semibold capitalize text-slate-800">{order.lifecycle.payment.status.replaceAll('_', ' ')}</p></div>
+          </div>
+        </section>
+      )}
+
+      {multiDelivery && (
+        <div className="relative mb-5 overflow-hidden rounded-2xl border border-indigo-200 bg-gradient-to-br from-indigo-50 via-white to-violet-50 p-5 shadow-sm">
+          <div className="absolute -right-8 -top-8 h-24 w-24 rounded-full bg-indigo-200/30" aria-hidden />
+          <div className="relative flex items-start gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white shadow-sm"><Boxes className="h-5 w-5" /></span>
+            <div>
+              <p className="font-bold text-slate-900">Your order arrives in {shipments.length} deliveries</p>
+              <p className="mt-1 text-sm leading-relaxed text-slate-600">
+                We are sending each item from the best available fulfillment centre. You can follow every package separately below; you will only pay the delivery total shown on your order.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {shipments.length > 0 && (
+        <section className="mb-5 space-y-3" aria-label="Deliveries">
+          {shipments.map((shipment, shipmentIndex) => {
+            const shipmentMeta = SHIPMENT_META[shipment.status] || { label: shipment.status, step: 0 };
+            const shipmentItemIds = new Set((shipment.items || []).map((entry) => String(entry.orderItemId)));
+            const shipmentItems = items.filter((item) => shipmentItemIds.has(String(item.id || item._id)));
+            const promise = dateTime(shipment.promiseMaxAt);
+            return (
+              <article key={shipment.id || shipment._id} className="card overflow-hidden border-slate-200 shadow-sm">
+                <div className="border-b border-slate-100 bg-slate-50/70 p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.14em] text-indigo-600">
+                        Delivery {shipmentIndex + 1} of {shipments.length}
+                      </p>
+                      <p className="mt-1 font-mono text-sm font-semibold text-slate-900">{shipment.shipmentNumber}</p>
+                      <p className="mt-1 text-xs text-slate-500">From {shipment.hub?.name || shipment.warehouseCode || 'fulfillment centre'}</p>
+                    </div>
+                    <span className={cn(
+                      'rounded-full px-3 py-1 text-xs font-bold',
+                      shipment.status === 'delivered' ? 'bg-emerald-100 text-emerald-700'
+                        : shipment.status === 'cancelled' || shipment.status === 'delivery_failed' ? 'bg-rose-100 text-rose-700'
+                          : 'bg-indigo-100 text-indigo-700',
+                    )}>{shipmentMeta.label}</span>
+                  </div>
+                  {promise && shipment.status !== 'delivered' && shipment.status !== 'cancelled' && (
+                    <p className="mt-3 flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                      <Clock3 className="h-3.5 w-3.5 text-indigo-500" /> Expected by {promise}
+                    </p>
+                  )}
+                  {shipment.status === 'delivery_failed' && (
+                    <p className="mt-2 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                      We could not complete this attempt. Operations is arranging a retry or safe return to the fulfillment centre.
+                    </p>
+                  )}
+                </div>
+
+                {shipment.status !== 'cancelled' && (
+                  <div className="px-4 pt-4">
+                    <div className="flex gap-1" aria-label={`Delivery progress: ${shipmentMeta.label}`}>
+                      {SHIPMENT_STEPS.map((step, stepIndex) => (
+                        <span key={step} className="flex-1">
+                          <span className={cn('block h-1.5 rounded-full', shipmentMeta.step >= stepIndex ? 'bg-indigo-500' : 'bg-slate-200')} />
+                          <span className="sr-only">{step}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="divide-y divide-slate-100 px-4 py-2">
+                  {shipmentItems.map((item) => (
+                    <div key={item.id || item._id} className="flex items-center gap-3 py-3">
+                      <ProductImage src={item.skuSnapshot?.imageUrl} alt={item.skuSnapshot?.title || 'Product'} fallbackCompact className="h-11 w-11 rounded-lg object-cover" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-slate-800">{item.skuSnapshot?.title}</p>
+                        <p className="text-xs text-slate-500">Qty {item.qty}</p>
+                        {Boolean(item.returnRequestedQty) && <p className="text-[11px] font-semibold text-violet-600">{item.returnRequestedQty} in return request</p>}
+                        {Boolean(item.returnedQty) && <p className="text-[11px] font-semibold text-emerald-600">{item.returnedQty} returned</p>}
+                        {Boolean(item.returnRejectedQty) && <p className="text-[11px] font-semibold text-rose-600">{item.returnRejectedQty} return declined</p>}
+                      </div>
+                      <Money value={item.lineTotal} className="text-sm font-semibold" />
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-white px-4 py-3 text-xs text-slate-500">
+                  <span>Tracking <strong className="font-mono text-slate-700">{shipment.trackingCode}</strong></span>
+                  <span>Delivery fee <Money value={shipment.deliveryFee} className="font-semibold text-slate-700" /></span>
+                  {shipment.status === 'cancelled' && shipment.cancellation?.refundStatus && (
+                    <span className={cn('font-semibold', shipment.cancellation.refundStatus === 'failed' ? 'text-rose-600' : 'text-emerald-600')}>
+                      Refund {shipment.cancellation.refundStatus}
+                      {shipment.cancellation.refundAmount > 0 && <> · <Money value={shipment.cancellation.refundAmount} /></>}
+                    </span>
+                  )}
+                  {multiDelivery && ['planned', 'queued', 'picking', 'packed'].includes(shipment.status) && !cashDue && (
+                    <Button
+                      variant="ghost" size="sm" icon={PackageX}
+                      loading={cancellingShipment === (shipment.id || shipment._id)}
+                      className="!text-rose-600 hover:!bg-rose-50"
+                      onClick={() => cancelShipment(shipment)}
+                    >
+                      Cancel this delivery
+                    </Button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      )}
 
       {/* cash on delivery: nothing to pay online, but the rider needs the cash */}
       {cashDue && (
@@ -257,6 +423,11 @@ export default function OrderDetail() {
                       ? 'Payment confirmed — finalising your order…'
                       : 'We are waiting for your bank or UPI app to confirm. This page updates automatically, so you can stay right here.'}
                 </p>
+                {order.fulfillmentPlan?.reservationExpiresAt && (
+                  <p className="mt-1 text-[11px] font-semibold text-amber-800">
+                    Your exact fulfillment-node stock is held until {new Date(order.fulfillmentPlan.reservationExpiresAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}.
+                  </p>
+                )}
               </div>
             </div>
             <div className="text-right">
@@ -354,8 +525,8 @@ export default function OrderDetail() {
         <div className="card mb-5 p-5">
           <ol className="flex items-center">
             {TRACK_STEPS.map((label, i) => {
-              const done = orderMeta.step >= i;
-              const current = orderMeta.step === i;
+              const done = fulfillmentMeta.step >= i;
+              const current = fulfillmentMeta.step === i;
               return (
                 <li key={label} className="flex flex-1 items-center last:flex-none">
                   <div className="flex flex-col items-center gap-1.5">
@@ -401,19 +572,17 @@ export default function OrderDetail() {
       </div>
 
       <div className="card mt-4 divide-y divide-slate-100">
-        {items.map((it) => (
+        {shipments.length === 0 && items.map((it) => (
           <div key={it.id} className="flex items-center gap-3 p-4">
             <div className="h-12 w-12 shrink-0 overflow-hidden rounded-xl bg-slate-50">
-              {it.skuSnapshot?.imageUrl
-                ? <img src={it.skuSnapshot.imageUrl} alt="" className="h-full w-full object-cover" />
-                : <span className="flex h-full w-full items-center justify-center text-xl" aria-hidden>🌸</span>}
+              <ProductImage src={it.skuSnapshot?.imageUrl} alt={it.skuSnapshot?.title || 'Product'} fallbackCompact className="h-full w-full object-cover" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-slate-800">{it.skuSnapshot?.title}</p>
               <p className="text-xs text-slate-500">{it.qty} × <Money value={it.priceAtOrder?.sellingPrice} /></p>
-              {Boolean(it.returnedQty) && (
-                <p className="text-[11px] font-medium text-emerald-600">{it.returnedQty} returned</p>
-              )}
+              {Boolean(it.returnRequestedQty) && <p className="text-[11px] font-medium text-violet-600">{it.returnRequestedQty} in return request</p>}
+              {Boolean(it.returnedQty) && <p className="text-[11px] font-medium text-emerald-600">{it.returnedQty} returned</p>}
+              {Boolean(it.returnRejectedQty) && <p className="text-[11px] font-medium text-rose-600">{it.returnRejectedQty} return declined</p>}
             </div>
             <Money value={it.lineTotal} className="text-sm font-semibold" />
           </div>
@@ -499,6 +668,7 @@ export default function OrderDetail() {
       <ReturnSheet
         order={order}
         items={items}
+        shipments={shipments}
         open={returnOpen}
         onClose={() => { setReturnOpen(false); clearActionParam(); }}
         onCreated={() => refetch()}

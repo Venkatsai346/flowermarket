@@ -105,17 +105,49 @@ export function canCancel(status) {
 export function remainingQty(item) {
   const qty = Number(item?.qty) || 0;
   const returned = Number(item?.returnedQty) || 0;
-  return Math.max(0, qty - returned);
+  const cancelled = Number(item?.cancelledQty) || 0;
+  const requested = Number(item?.returnRequestedQty) || 0;
+  const rejected = Number(item?.returnRejectedQty) || 0;
+  return Math.max(0, qty - returned - cancelled - requested - rejected);
+}
+
+export function returnPolicyForItem(item) {
+  const snapshot = item?.returnPolicySnapshot;
+  if (snapshot?.mode) return snapshot;
+  return {
+    mode: item?.isReturnable === false ? 'quality_claim_only' : 'returnable',
+    returnWindowDays: item?.isReturnable === false ? 0 : RETURN_WINDOW_DAYS,
+    instantClaimHours: INSTANT_CLAIM_WINDOW_HOURS,
+    requiresQc: item?.isReturnable !== false,
+    customerNote: null,
+  };
 }
 
 /** Whether a line can be returned on a pickup/QC return. */
 export function canPickupReturn(item) {
-  return Boolean(item?.isReturnable) && remainingQty(item) > 0;
+  const policy = returnPolicyForItem(item);
+  return policy.mode === 'returnable' && Number(policy.returnWindowDays) > 0 && remainingQty(item) > 0;
+}
+
+export function canInstantClaim(item) {
+  const policy = returnPolicyForItem(item);
+  return policy.mode !== 'final_sale' && Number(policy.instantClaimHours) > 0 && remainingQty(item) > 0;
 }
 
 /** Whether an order can start a return at all. */
 export function canReturn(order, items = []) {
-  return order?.status === 'delivered' && items?.some((i) => remainingQty(i) > 0);
+  return ['delivered', 'partially_delivered'].includes(order?.status) && items?.some((i) => remainingQty(i) > 0);
+}
+
+/**
+ * Shipment-aware return visibility with a legacy compatibility bridge.
+ * Historical single-delivery orders may have reached order DELIVERED before
+ * shipment status mirroring existed; the terminal order fact remains valid.
+ */
+export function isDeliveredForReturn({ orderStatus, shipmentId = null, shipmentStatus = null }) {
+  if (orderStatus === 'delivered') return true;
+  if (!shipmentId) return orderStatus === 'delivered';
+  return shipmentStatus === 'delivered';
 }
 
 /** Map any status to a fallback label/tone (never breaks the UI). */

@@ -21,10 +21,14 @@ const InventorySchema = new Schema(
   {
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
     tenantProductId: { type: Types.ObjectId, ref: 'TenantProduct', required: true, index: true },
-    warehouseId: { type: Types.ObjectId, ref: 'Location', default: null }, // null = default store
+    // A warehouse is a fulfillment Hub. `null` is retained only as a legacy
+    // migration pool and is never mixed with hub stock unless policy permits it.
+    warehouseId: { type: Types.ObjectId, ref: 'Hub', default: null },
 
     qtyOnHand: { type: Number, default: 0, min: 0 },
     qtyReserved: { type: Number, default: 0, min: 0 },
+    safetyStock: { type: Number, default: 0, min: 0 },
+    isSellable: { type: Boolean, default: true, index: true },
 
     status: {
       type: String,
@@ -43,6 +47,7 @@ InventorySchema.virtual('qtyAvailable').get(function () {
 
 InventorySchema.index({ tenantProductId: 1, warehouseId: 1 }, { unique: true });
 InventorySchema.index({ tenantId: 1, status: 1 });
+InventorySchema.index({ tenantId: 1, warehouseId: 1, tenantProductId: 1, isSellable: 1 });
 
 InventorySchema.plugin(auditPlugin);
 InventorySchema.plugin(softDeletePlugin);

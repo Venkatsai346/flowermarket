@@ -91,7 +91,7 @@ export const IMPLEMENTED = Object.freeze({
    * production would mean search returns 500s on the first query — the same
    * trap `ses` set for OTP.
    */
-  search: new Set(['mongo']),
+  search: new Set(['mongo', 'opensearch']),
 });
 
 /** Dev/test doubles: they work, but never against real customers. */
@@ -111,7 +111,7 @@ export const DECLARED_NOT_IMPLEMENTED = Object.freeze({
   otp: new Set(['ses']),
   notification: new Set(['apns']),
   storage: new Set([]),
-  search: new Set(['atlas', 'opensearch']),
+  search: new Set(['atlas']),
 });
 
 /** Channels each NOTIFICATION provider serves (a provider can do several). */

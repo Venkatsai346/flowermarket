@@ -10,6 +10,7 @@ import { badRequest, notFound, conflict } from '../utils/ApiError.js';
 import { serializeList } from '../utils/serialize.js';
 import { roundMoney, moneySum, toPaise } from '../utils/money.js';
 import { primaryImageUrlFor, variantDisplayLabel } from '../utils/catalog/variantImages.js';
+import { PRODUCT_RETURN_MODE, resolveReturnPolicy } from '../utils/returnPolicy.js';
 import config from '../config/index.js';
 import {
   CART_STATUS,
@@ -154,7 +155,7 @@ class CartService {
   }
 
   /** Add or increment an item; snapshots price/stock from the live listing. */
-  async addItem({ tenantId, userId, guestKey, tenantProductId, qty }) {
+  async addItem({ tenantId, userId, guestKey, tenantProductId, qty, searchQueryId = null, searchSessionKey = null, fulfillmentPincode = null }) {
     const q = Math.max(1, Math.floor(Number(qty) || 1));
     const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
 
@@ -173,13 +174,44 @@ class CartService {
     if (!master || master.status !== PRODUCT_MASTER_STATUS.ACTIVE) {
       throw badRequest('Product master is not active', 'MASTER_NOT_AVAILABLE');
     }
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    await catalogStructureService.assertPublishable(master);
 
-    const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
-    const available = stock.qtyAvailable ?? 0;
+    let fulfillmentSnapshot = null;
+    let available = 0;
+    const pin = /^\d{6}$/.test(String(fulfillmentPincode || '')) ? String(fulfillmentPincode) : null;
+    if (pin) {
+      const { default: warehouseAllocationService } = await import('./warehouseAllocation.service.js');
+      const availability = await warehouseAllocationService.availability({
+        tenantId, listingIds: [listing._id], pincode: pin,
+      });
+      const resolved = availability.byListing[String(listing._id)] || {};
+      available = resolved.best?.allocatableQty || 0;
+      fulfillmentSnapshot = {
+        pincode: pin,
+        warehouseId: resolved.best?.warehouseId || null,
+        warehouseName: resolved.best?.warehouseName || null,
+        allocatableQty: available,
+        networkAvailableQty: resolved.networkAvailableQty || 0,
+        checkedAt: new Date(),
+      };
+    } else {
+      const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
+      available = stock.qtyAvailable ?? listing.stockQty ?? 0;
+    }
     const nextQty = existing ? existing.qty + q : q;
 
     if (nextQty > available) {
       throw conflict(`Only ${available} available`, 'INSUFFICIENT_STOCK', { available });
+    }
+
+    let verifiedSearchQueryId = existing?.searchQueryId || null;
+    if (searchQueryId) {
+      const { default: searchAnalyticsService } = await import('./searchAnalytics.service.js');
+      const valid = await searchAnalyticsService.validateAttribution({
+        tenantId, sessionKey: searchSessionKey, queryId: searchQueryId, listingId: listing._id,
+      });
+      if (valid) verifiedSearchQueryId = searchQueryId;
     }
 
     const snapshot = {
@@ -207,11 +239,21 @@ class CartService {
       imageUrlSnapshot = primaryImageUrlFor(flat, listing.variantId || null);
     } catch { /* snapshots are best-effort; checkout revalidates everything */ }
 
+    const returnPolicySnapshot = resolveReturnPolicy(master);
+    const isReturnable = returnPolicySnapshot.mode === PRODUCT_RETURN_MODE.RETURNABLE
+      && returnPolicySnapshot.returnWindowDays > 0;
+
     if (existing) {
       existing.qty = nextQty;
       existing.lineTotal = lineTotal;
       existing.titleSnapshot = titleSnapshot;
       existing.imageUrlSnapshot = imageUrlSnapshot;
+      existing.unitSnapshot = listing.priceBasis?.unitCode || master.defaultSellingUnit || null;
+      existing.unitQuantitySnapshot = listing.priceBasis?.quantity || 1;
+      existing.searchQueryId = verifiedSearchQueryId;
+      existing.returnPolicySnapshot = returnPolicySnapshot;
+      existing.isReturnable = isReturnable;
+      if (fulfillmentSnapshot) existing.fulfillmentSnapshot = fulfillmentSnapshot;
       existing.updatedAt = new Date();
       await existing.save();
     } else {
@@ -226,9 +268,13 @@ class CartService {
         stockSnapshot: { availableQty: available, checkedAt: new Date() },
         titleSnapshot,
         imageUrlSnapshot,
-        unitSnapshot: master.defaultSellingUnit || null,
+        unitSnapshot: listing.priceBasis?.unitCode || master.defaultSellingUnit || null,
+        unitQuantitySnapshot: listing.priceBasis?.quantity || 1,
         lineTotal,
-        isReturnable: !(master.isPerishable === true && master.type !== 'flower_bouquet' && master.type !== 'plant'),
+        searchQueryId: verifiedSearchQueryId,
+        fulfillmentSnapshot,
+        returnPolicySnapshot,
+        isReturnable,
       });
     }
 
@@ -236,15 +282,30 @@ class CartService {
     return this.getCart({ tenantId, userId, guestKey });
   }
 
-  async updateQty({ tenantId, userId, guestKey, itemId, qty }) {
+  async updateQty({ tenantId, userId, guestKey, itemId, qty, fulfillmentPincode = null }) {
     const cart = await this.getOrCreateActive({ tenantId, userId, guestKey });
     const item = await CartItem.findOne({ _id: itemId, cartId: cart._id });
     if (!item) throw notFound('Cart item not found', 'CART_ITEM_NOT_FOUND');
     if (qty <= 0) return this.removeItem({ tenantId, userId, guestKey, itemId });
 
     const listing = await TenantProduct.findOne({ _id: item.tenantProductId, tenantId });
-    const stock = listing ? await inventoryService.getStock({ tenantId, listingId: listing._id }) : { qtyAvailable: 0 };
-    const available = stock.qtyAvailable ?? 0;
+    let available = 0;
+    const pin = /^\d{6}$/.test(String(fulfillmentPincode || item.fulfillmentSnapshot?.pincode || ''))
+      ? String(fulfillmentPincode || item.fulfillmentSnapshot?.pincode) : null;
+    if (listing && pin) {
+      const { default: warehouseAllocationService } = await import('./warehouseAllocation.service.js');
+      const result = await warehouseAllocationService.availability({ tenantId, listingIds: [listing._id], pincode: pin });
+      const resolved = result.byListing[String(listing._id)] || {};
+      available = resolved.best?.allocatableQty || 0;
+      item.fulfillmentSnapshot = {
+        pincode: pin, warehouseId: resolved.best?.warehouseId || null,
+        warehouseName: resolved.best?.warehouseName || null,
+        allocatableQty: available, networkAvailableQty: resolved.networkAvailableQty || 0, checkedAt: new Date(),
+      };
+    } else if (listing) {
+      const stock = await inventoryService.getStock({ tenantId, listingId: listing._id });
+      available = stock.qtyAvailable ?? listing.stockQty ?? 0;
+    }
     if (qty > available) throw conflict(`Only ${available} available`, 'INSUFFICIENT_STOCK', { available });
 
     item.qty = Math.floor(qty);
@@ -296,11 +357,22 @@ class CartService {
       (items || []).map((i) => (i?.tenantProductId ? String(i.tenantProductId) : null)).filter(Boolean),
     )];
 
+    const pins = [...new Set((items || []).map((item) => item.fulfillmentSnapshot?.pincode).filter((pin) => /^\d{6}$/.test(pin || '')))];
+    const commonPincode = pins.length === 1 ? pins[0] : null;
     const [listings, stockMap] = await Promise.all([
       listingIds.length
         ? TenantProduct.find({ _id: { $in: listingIds }, tenantId }).lean()
         : Promise.resolve([]),
-      inventoryService.bulkGetStock({ tenantId, listingIds }),
+      commonPincode
+        ? import('./warehouseAllocation.service.js').then(async ({ default: allocator }) => {
+          const result = await allocator.availability({ tenantId, listingIds, pincode: commonPincode });
+          return Object.fromEntries(Object.entries(result.byListing).map(([id, value]) => [id, {
+            qtyOnHand: value.networkAvailableQty || 0,
+            qtyReserved: 0,
+            qtyAvailable: value.best?.allocatableQty || 0,
+          }]));
+        })
+        : inventoryService.bulkGetStock({ tenantId, listingIds }),
     ]);
 
     const byListing = new Map(listings.map((l) => [String(l._id), l]));
@@ -412,6 +484,14 @@ class CartService {
     // than from a series of reads taken milliseconds apart (which could disagree
     // with each other mid-cart if a price changed while the loop was running).
     const { listingFor, availableFor } = await this.liveLinesFor({ tenantId, items });
+    const masterIds = [...new Set(items.map((item) => String(listingFor(item.tenantProductId)?.productMasterId || '')).filter(Boolean))];
+    const masters = masterIds.length ? await ProductMaster.find({ _id: { $in: masterIds }, status: PRODUCT_MASTER_STATUS.ACTIVE }).lean() : [];
+    const { default: catalogStructureService } = await import('./catalogStructure.service.js');
+    const complianceResults = await Promise.all(masters.map(async (master) => {
+      try { await catalogStructureService.assertPublishable(master); return [String(master._id), true]; }
+      catch { return [String(master._id), false]; }
+    }));
+    const publishable = new Map(complianceResults);
 
     const diffs = [];
     let changed = false;
@@ -419,9 +499,13 @@ class CartService {
 
     for (const item of items) {
       const listing = listingFor(item.tenantProductId);
-      if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE) {
+      const masterId = String(listing?.productMasterId || '');
+      if (!listing || listing.status !== TENANT_LISTING_STATUS.ACTIVE || publishable.get(masterId) !== true) {
         changed = true;
-        diffs.push({ itemId: item.id, listingId: item.tenantProductId, issue: 'unavailable' });
+        diffs.push({
+          itemId: item.id, listingId: item.tenantProductId,
+          issue: listing && publishable.get(masterId) === false ? 'compliance_unavailable' : 'unavailable',
+        });
         continue;
       }
       const livePrice = listing.price?.sellingPrice ?? 0;

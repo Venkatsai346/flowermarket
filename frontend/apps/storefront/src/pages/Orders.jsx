@@ -5,7 +5,7 @@ import { useApi } from '../lib/useApi.js';
 import { useShop } from '../store.js';
 import { useShopAuth } from '../api.js';
 import { Button, Empty, Money, Skeleton } from '../components/ui.jsx';
-import { STATUS_META } from '../lib/status.js';
+import { customerStatusMeta, fulfillmentStatusMeta } from '../lib/status.js';
 import { canCancel, canReturn } from '../lib/afterSales.js';
 
 /**
@@ -44,7 +44,9 @@ export default function Orders() {
       ) : (
         <ul className="space-y-3">
           {data.map((o) => {
-            const m = STATUS_META[o.status] || { label: o.status, tone: 'bg-slate-100 text-slate-700' };
+            const m = customerStatusMeta(o);
+            const fulfillment = fulfillmentStatusMeta(o);
+            const hasAfterSales = o.lifecycle?.afterSales?.status && o.lifecycle.afterSales.status !== 'none';
             const cancel = canCancel(o.status);
             const ret = canReturn(o, []);
             return (
@@ -59,6 +61,11 @@ export default function Orders() {
                       {o.itemsCount} item{o.itemsCount === 1 ? '' : 's'}
                       {o.slotSnapshot?.displayLabel ? ` · ${o.slotSnapshot.displayLabel}` : ''}
                     </p>
+                    {hasAfterSales && (
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        Delivery: {fulfillment.label} · Payment: {o.lifecycle.payment.status.replaceAll('_', ' ')}
+                      </p>
+                    )}
                   </div>
                   <Money value={o.totalAmount} className="font-bold text-slate-900" />
                   <ChevronRight className="h-4 w-4 shrink-0 text-slate-300" />

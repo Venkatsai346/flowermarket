@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Heart, Trash2, ShoppingBag } from 'lucide-react';
 import { useWishlist } from '../lib/useWishlist.js';
-import FloralImage from '../components/FloralImage.jsx';
+import ProductImage from '../components/ProductImage.jsx';
 import { Empty, Button } from '../components/ui.jsx';
 import { t } from '../i18n.js';
 import { useShop } from '../store.js';
@@ -52,10 +52,10 @@ export default function Wishlist() {
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         {items.map((item) => (
-          <div key={item.slug} className="group relative">
-            <Link to={`/p/${item.slug}`} className="block">
+          <div key={item.key || item.slug} className="group relative">
+            <Link to={{ pathname: `/p/${item.slug}`, search: item.variantId ? `?variantId=${item.variantId}` : '' }} className="block">
               <span className="block aspect-square overflow-hidden rounded-2xl bg-slate-100">
-                <FloralImage
+                <ProductImage
                   src={item.imageUrl}
                   alt={item.title}
                   className="h-full w-full object-cover transition-transform group-hover:scale-105"
@@ -64,6 +64,7 @@ export default function Wishlist() {
               <span className="mt-2 block line-clamp-2 text-sm font-medium text-slate-800">
                 {item.title}
               </span>
+              {item.variantLabel && <span className="mt-0.5 block truncate text-xs font-semibold text-slate-500">{item.variantLabel}</span>}
               {item.price != null && (
                 <span className="mt-0.5 block text-sm font-bold text-slate-900">
                   ₹{Number(item.price).toLocaleString('en-IN')}

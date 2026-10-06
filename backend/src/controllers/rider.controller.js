@@ -36,7 +36,7 @@ class RiderController {
   accept = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null,
       action: 'accept', riderId: req.auth.userId, body: {}, req,
     });
     res.status(200).json(success({ id: assignment.id, status: 'accepted' }, { message: 'Delivery accepted' }));
@@ -46,7 +46,7 @@ class RiderController {
   reject = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     const result = await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null,
       action: 'reject', riderId: req.auth.userId, body: { reason: req.body.reason || null }, req,
     });
     res.status(200).json(success({ id: assignment.id, status: 'reassigned', assignment: result.assignment }, { message: 'Delivery rejected — reassigned' }));
@@ -56,7 +56,7 @@ class RiderController {
   arriveHub = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId, action: 'arrive-hub', riderId: req.auth.userId, body: {}, req,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null, action: 'arrive-hub', riderId: req.auth.userId, body: {}, req,
     });
     res.status(200).json(success({ id: assignment.id, status: 'at_hub' }, { message: 'Arrived at hub — verify package before departing' }));
   });
@@ -65,7 +65,7 @@ class RiderController {
   depart = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     const order = await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null,
       action: 'depart', riderId: req.auth.userId,
       body: { packageVerified: req.body.package_verified === true }, req,
     });
@@ -76,7 +76,7 @@ class RiderController {
   arrive = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId, action: 'arrive', riderId: req.auth.userId, body: {}, req,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null, action: 'arrive', riderId: req.auth.userId, body: {}, req,
     });
     res.status(200).json(success({ id: assignment.id, status: 'arrived' }, { message: 'Arrived at customer — collect POD' }));
   });
@@ -85,7 +85,7 @@ class RiderController {
   complete = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     const order = await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null,
       action: 'complete', riderId: req.auth.userId,
       body: {
         podType: req.body.pod_type,
@@ -112,7 +112,7 @@ class RiderController {
   collectCash = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     const result = await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null,
       action: 'collect-cash', riderId: req.auth.userId,
       body: {
         amountCollected: req.body.amount_collected ?? null,
@@ -144,7 +144,7 @@ class RiderController {
   fail = asyncHandler(async (req, res) => {
     const assignment = await this.resolveAssignment({ assignmentId: req.params.id, tenantId: req.tenantId, riderId: req.auth.userId });
     const order = await orderService.riderFlow({
-      tenantId: req.tenantId, orderId: assignment.orderId,
+      tenantId: req.tenantId, orderId: assignment.orderId, shipmentId: assignment.shipmentId || null,
       action: 'fail', riderId: req.auth.userId,
       body: { reason: req.body.fail_reason || null }, req,
     });

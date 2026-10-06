@@ -22,6 +22,7 @@ const DeliveryAssignmentSchema = new Schema(
   {
     orderId: { type: Types.ObjectId, ref: 'Order', required: true },
     tenantId: { type: Types.ObjectId, ref: 'Tenant', required: true, index: true },
+    shipmentId: { type: Types.ObjectId, ref: 'Shipment', default: null, index: true },
     riderId: { type: Types.ObjectId, ref: 'User', default: null, index: true },
 
     status: {
@@ -56,7 +57,10 @@ const DeliveryAssignmentSchema = new Schema(
   { collection: 'deliveryassignments' }
 );
 
-DeliveryAssignmentSchema.index({ orderId: 1 }, { unique: true });
+DeliveryAssignmentSchema.index(
+  { tenantId: 1, orderId: 1, shipmentId: 1 },
+  { unique: true, name: 'delivery_assignment_shipment_uq' },
+);
 DeliveryAssignmentSchema.index({ riderId: 1, status: 1 });
 DeliveryAssignmentSchema.index({ tenantId: 1, status: 1, pendingAcceptExpiresAt: 1 });
 

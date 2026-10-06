@@ -12,6 +12,7 @@ import SearchHealthCard from './SearchHealthCard.jsx';
 import SearchAnalyticsPanel from './SearchAnalyticsPanel.jsx';
 import SynonymsPanel from './SynonymsPanel.jsx';
 import ReindexModal from './ReindexModal.jsx';
+import MerchandisingRulesPanel from './MerchandisingRulesPanel.jsx';
 
 export default function SearchAdminPage() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -75,6 +76,10 @@ export default function SearchAdminPage() {
               <RankingProfilesPanel profiles={profiles} defaults={data?.defaults || {}} onChanged={refresh} />
             </div>
             <SearchHealthCard health={health} onReindex={() => setReindex(true)} onRefresh={refresh} />
+          </div>
+
+          <div className="mt-5">
+            <MerchandisingRulesPanel />
           </div>
 
           <div className="mt-5">

@@ -1,13 +1,17 @@
 import categoryService from '../services/category.service.js';
 import brandService from '../services/brand.service.js';
 import productMasterService from '../services/productMaster.service.js';
+import catalogStructureService from '../services/catalogStructure.service.js';
+import catalogMediaService from '../services/catalogMedia.service.js';
 import changeRequestService from '../services/changeRequest.service.js';
 import auditService from '../services/audit.service.js';
 import catalogEventService from '../services/catalogEvent.service.js';
+import { catalogIdempotencyKey } from '../services/catalogCommand.service.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { success, created } from '../utils/ApiResponse.js';
 import { notFound } from '../utils/ApiError.js';
 import { invalidateCache } from '../middleware/responseCache.js';
+import { catalogMediaReadDuration, catalogMediaMutations } from '../observability/registry.js';
 
 /**
  * Taxonomy writes shift public reads (global lists, store-scoped indexes,
@@ -17,6 +21,10 @@ import { invalidateCache } from '../middleware/responseCache.js';
  */
 function bustCatalogCache() {
   invalidateCache('/catalog/');
+}
+
+function observeMediaRead(operation, outcome, started) {
+  catalogMediaReadDuration.observe({ operation, outcome }, Number(process.hrtime.bigint() - started) / 1e9);
 }
 
 /**
@@ -89,6 +97,7 @@ class CatalogAdminController {
   createMaster = asyncHandler(async (req, res) => {
     const master = await productMasterService.createMaster({
       payload: req.body, actorId: req.auth.userId, status: req.body.status || 'active', req,
+      idempotencyKey: catalogIdempotencyKey(req),
     });
     res.status(201).json(created(master, { message: 'Product master created' }));
   });
@@ -101,6 +110,11 @@ class CatalogAdminController {
   getMaster = asyncHandler(async (req, res) => {
     const master = await productMasterService.getMaster(req.params.id);
     res.status(200).json(success(master, { message: 'Master fetched' }));
+  });
+
+  getMasterVariants = asyncHandler(async (req, res) => {
+    const result = await productMasterService.listActiveVariants(req.params.id);
+    res.status(200).json(success(result, { message: 'Active master variants fetched' }));
   });
 
   updateMaster = asyncHandler(async (req, res) => {
@@ -123,6 +137,52 @@ class CatalogAdminController {
       id: req.params.id, actorId: req.auth.userId, note: req.body.note, req,
     });
     res.status(200).json(success(master, { message: 'Master deprecated' }));
+  });
+
+  // ---------------- media operations ----------------
+  mediaSummary = asyncHandler(async (_req, res) => {
+    const started = process.hrtime.bigint();
+    try {
+      const result = await catalogMediaService.summary();
+      observeMediaRead('summary', 'ok', started);
+      res.status(200).json(success(result, { message: 'Catalog media summary fetched' }));
+    } catch (error) {
+      observeMediaRead('summary', 'error', started);
+      throw error;
+    }
+  });
+
+  listMediaFamilies = asyncHandler(async (req, res) => {
+    const started = process.hrtime.bigint();
+    try {
+      const result = await catalogMediaService.listFamilies({ query: req.query });
+      observeMediaRead('families', 'ok', started);
+      res.status(200).json(success(result.items, { message: 'Media operations queue fetched', meta: result.meta }));
+    } catch (error) {
+      observeMediaRead('families', 'error', started);
+      throw error;
+    }
+  });
+
+  updateMediaAsset = asyncHandler(async (req, res) => {
+    const { expectedVersion, ...patch } = req.body;
+    const result = await catalogMediaService.updateAsset({
+      masterId: req.params.id, imageId: req.params.imageId, patch, expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'metadata' });
+    res.status(200).json(success(result, { message: 'Media asset metadata updated' }));
+  });
+
+  reorderMediaGallery = asyncHandler(async (req, res) => {
+    const result = await catalogMediaService.reorderGallery({
+      masterId: req.params.id, items: req.body.items, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'reorder' });
+    res.status(200).json(success(result, { message: 'Media gallery reordered' }));
   });
 
   // ---------------- variants / images / attributes ----------------
@@ -155,16 +215,20 @@ class CatalogAdminController {
     const { expectedVersion, ...payload } = req.body;
     const image = await productMasterService.addVariantImage({
       masterId: req.params.id, variantId: req.params.variantId, payload, expectedVersion,
-      actorId: req.auth.userId, req,
+      actorId: req.auth.userId, tenantId: req.tenantId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'add' });
     res.status(201).json(created(image, { message: 'Variant image added' }));
   });
 
   addImage = asyncHandler(async (req, res) => {
     const { expectedVersion, ...payload } = req.body;
     const image = await productMasterService.addImage({
-      id: req.params.id, payload, expectedVersion, actorId: req.auth.userId, req,
+      id: req.params.id, payload, expectedVersion, actorId: req.auth.userId, tenantId: req.tenantId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'add' });
     res.status(201).json(created(image, { message: 'Image added' }));
   });
 
@@ -173,6 +237,8 @@ class CatalogAdminController {
       masterId: req.params.id, imageId: req.params.imageId,
       expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'retire' });
     res.status(200).json(success(result, { message: 'Image removed' }));
   });
 
@@ -181,6 +247,8 @@ class CatalogAdminController {
       masterId: req.params.id, imageId: req.params.imageId,
       expectedVersion: req.body?.expectedVersion, actorId: req.auth.userId, req,
     });
+    bustCatalogCache();
+    catalogMediaMutations.inc({ operation: 'primary' });
     res.status(200).json(success(image, { message: 'Primary image set' }));
   });
 
@@ -190,6 +258,49 @@ class CatalogAdminController {
       id: req.params.id, attributes, expectedVersion, actorId: req.auth.userId, req,
     });
     res.status(200).json(success(master, { message: 'Attributes updated' }));
+  });
+
+  getStructures = asyncHandler(async (req, res) => {
+    const structures = await catalogStructureService.getStructures(req.params.id);
+    res.status(200).json(success(structures, { message: 'Advanced product structures fetched' }));
+  });
+
+  getIntegrityReport = asyncHandler(async (req, res) => {
+    const report = await catalogStructureService.integrityReport(req.params.id);
+    res.status(200).json(success(report, { message: 'Catalog integrity evaluated' }));
+  });
+
+  setVariantAttributes = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.setVariantAttributes({
+      masterId: req.params.id, variantId: req.params.variantId,
+      attributes: req.body.attributes, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Variant attributes updated' }));
+  });
+
+  setPackages = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.replacePackages({
+      masterId: req.params.id, packages: req.body.packages, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Pack hierarchy updated' }));
+  });
+
+  setBundleComponents = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.replaceBundleComponents({
+      masterId: req.params.id, components: req.body.components, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Bundle composition updated' }));
+  });
+
+  setCompliance = asyncHandler(async (req, res) => {
+    const result = await catalogStructureService.replaceCompliance({
+      masterId: req.params.id, records: req.body.records, expectedVersion: req.body.expectedVersion,
+      actorId: req.auth.userId, req,
+    });
+    res.status(200).json(success(result, { message: 'Compliance records updated' }));
   });
 
   // ---------------- review queue ----------------

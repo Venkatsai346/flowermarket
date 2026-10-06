@@ -12,12 +12,15 @@ import {
   RETURN_REASONS,
   RETURN_STATUS_META,
   canCancel,
+  canInstantClaim,
   canPickupReturn,
   canReturn,
+  isDeliveredForReturn,
   meta,
   remainingQty,
   signedMoney,
 } from '../src/lib/afterSales.js';
+import { customerStatusMeta, fulfillmentStatusMeta } from '../src/lib/status.js';
 
 let passed = 0;
 const ok = (name, fn) => {
@@ -40,6 +43,8 @@ ok("cancel is allowed exactly on the backend's cancellable states", () => {
 ok('remainingQty never leaks a negative number', () => {
   assert.equal(remainingQty({ qty: 5, returnedQty: 2 }), 3);
   assert.equal(remainingQty({ qty: 5, returnedQty: 9 }), 0);
+  assert.equal(remainingQty({ qty: 5, returnRequestedQty: 3, returnedQty: 1, cancelledQty: 1 }), 0);
+  assert.equal(remainingQty({ qty: 5, returnRejectedQty: 2 }), 3);
   assert.equal(remainingQty({ qty: 0 }), 0);
   assert.equal(remainingQty({}), 0);
 });
@@ -50,10 +55,35 @@ ok('a line is pickup-returnable only when flagged returnable and non-zero', () =
   assert.equal(canPickupReturn({ isReturnable: true, qty: 2, returnedQty: 2 }), false);
 });
 
+ok('snapshotted policy separates pickup returns, quality claims and final sale', () => {
+  const pickup = { qty: 1, returnPolicySnapshot: { mode: 'returnable', returnWindowDays: 10, instantClaimHours: 24 } };
+  const claimOnly = { qty: 1, returnPolicySnapshot: { mode: 'quality_claim_only', returnWindowDays: 0, instantClaimHours: 12 } };
+  const finalSale = { qty: 1, returnPolicySnapshot: { mode: 'final_sale', returnWindowDays: 0, instantClaimHours: 0 } };
+  assert.equal(canPickupReturn(pickup), true);
+  assert.equal(canPickupReturn(claimOnly), false);
+  assert.equal(canInstantClaim(claimOnly), true);
+  assert.equal(canPickupReturn(finalSale), false);
+  assert.equal(canInstantClaim(finalSale), false);
+});
+
 ok('an order can start a return only after delivery with a remaining line', () => {
   assert.equal(canReturn({ status: 'delivered' }, [{ qty: 1 }]), true);
+  assert.equal(canReturn({ status: 'partially_delivered' }, [{ qty: 1 }]), true);
   assert.equal(canReturn({ status: 'confirmed' }, [{ qty: 1 }]), false);
   assert.equal(canReturn({ status: 'delivered' }, [{ qty: 1, returnedQty: 1 }]), false);
+});
+
+ok('return lines honor delivered shipments and legacy delivered-order truth', () => {
+  assert.equal(isDeliveredForReturn({ orderStatus: 'delivered', shipmentId: 's1', shipmentStatus: 'queued' }), true);
+  assert.equal(isDeliveredForReturn({ orderStatus: 'partially_delivered', shipmentId: 's1', shipmentStatus: 'delivered' }), true);
+  assert.equal(isDeliveredForReturn({ orderStatus: 'partially_delivered', shipmentId: 's2', shipmentStatus: 'queued' }), false);
+  assert.equal(isDeliveredForReturn({ orderStatus: 'confirmed', shipmentId: 's1', shipmentStatus: 'queued' }), false);
+});
+
+ok('returned orders headline the refund without hiding their delivery fact', () => {
+  const order = { status: 'delivered', lifecycle: { customerStatus: 'refunded', fulfillment: { status: 'delivered' } } };
+  assert.equal(customerStatusMeta(order).label, 'Returned & refunded');
+  assert.equal(fulfillmentStatusMeta(order).label, 'Delivered');
 });
 
 ok('meta falls back to title-case rather than crashing on a new status', () => {

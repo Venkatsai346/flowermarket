@@ -1,13 +1,20 @@
+import { createHash } from 'node:crypto';
+import mongoose from 'mongoose';
 import ReturnRequest from '../models/returnRequest.model.js';
 import ReturnItem from '../models/returnItem.model.js';
 import Order from '../models/order.model.js';
 import OrderItem from '../models/orderItem.model.js';
+import Shipment from '../models/shipment.model.js';
+import ShipmentItem from '../models/shipmentItem.model.js';
+import shipmentService from './shipment.service.js';
 import refundService from './refund.service.js';
 import refundCalculator from './refundCalculator.service.js';
 import { badRequest, notFound, conflict } from '../utils/ApiError.js';
-import { roundMoney, moneySum } from '../utils/money.js';
+import { roundMoney } from '../utils/money.js';
 import { serializeList } from '../utils/serialize.js';
 import { returnWindow, RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS } from '../utils/returnWindow.js';
+import { permitsClaim, resolveReturnPolicy } from '../utils/returnPolicy.js';
+import { transactionsSupported } from '../utils/transactions.js';
 import {
   RETURN_CLAIM_TYPE,
   RETURN_REQUEST_STATUS,
@@ -23,44 +30,98 @@ export { RETURN_WINDOW_DAYS, INSTANT_CLAIM_WINDOW_HOURS };
 /** Fraud guard: max auto-approved instant claims per customer per month. */
 export const INSTANT_CLAIM_MONTHLY_LIMIT = 3;
 
+const policyForOrderItem = (item) => resolveReturnPolicy({
+  returnPolicy: item.returnPolicySnapshot?.mode ? item.returnPolicySnapshot : {
+    mode: item.isReturnable === false ? 'quality_claim_only' : 'returnable',
+    returnWindowDays: item.isReturnable === false ? 0 : RETURN_WINDOW_DAYS,
+    instantClaimHours: INSTANT_CLAIM_WINDOW_HOURS,
+    requiresQc: item.isReturnable !== false,
+  },
+});
+
 /**
  * ReturnsService — the two flows from the doc:
  *   A) PICKUP_QC: eligibility -> APPROVED -> pickup -> QC -> refund
  *   B) INSTANT_CLAIM: auto-eligible perishable claim -> instant refund (no pickup)
  */
 class ReturnsService {
-  async checkEligibility({ orderId, userId, items, claimType }) {
-    const order = await Order.findById(orderId);
+  async checkEligibility({ tenantId, orderId, userId, items, claimType }) {
+    const order = await Order.findOne({ _id: orderId, tenantId });
     if (!order) throw notFound('Order not found', 'ORDER_NOT_FOUND');
     if (String(order.userId) !== String(userId)) throw badRequest('Not your order', 'FORBIDDEN');
-    if (order.status !== ORDER_STATUS.DELIVERED) {
+
+    // A return belongs to exactly one physical shipment. This lets a customer
+    // return an already delivered parcel while another parcel from the same
+    // order is still in transit, without treating undelivered goods as eligible.
+    const orderItems = await OrderItem.find({
+      tenantId, orderId, _id: { $in: items.map((i) => i.orderItemId) },
+    }).lean();
+    if (orderItems.length !== items.length) throw badRequest('One or more items are not part of this order', 'INVALID_ITEMS');
+    const shipmentIds = [...new Set(orderItems.map((item) => item.shipmentId && String(item.shipmentId)).filter(Boolean))];
+    if (shipmentIds.length > 1) throw badRequest('Create a separate return for each delivery', 'RETURN_MUST_MATCH_SHIPMENT');
+    let shipment = shipmentIds.length
+      ? await Shipment.findOne({ _id: shipmentIds[0], tenantId: order.tenantId, orderId }).lean()
+      : null;
+    if (shipment && shipment.status !== 'delivered') {
+      // Compatibility repair: before shipment-scoped execution was introduced,
+      // the legacy single-delivery endpoint advanced the order to DELIVERED but
+      // did not mirror that terminal fact onto its newly materialized shipment.
+      // This inference is safe only for exactly one shipment; split orders must
+      // always prove delivery parcel by parcel.
+      const shipmentCount = order.status === ORDER_STATUS.DELIVERED
+        ? await Shipment.countDocuments({ tenantId, orderId })
+        : 0;
+      if (shipmentCount === 1) {
+        const repaired = await shipmentService.repairLegacyDeliveredMirror({ order, shipments: [shipment] });
+        [shipment] = repaired;
+      } else {
+        return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'This delivery has not arrived yet' };
+      }
+    }
+    if (!shipment && order.status !== ORDER_STATUS.DELIVERED) {
       return { isEligible: false, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, reason: 'Order is not delivered yet' };
     }
 
-    // The clock starts at ACTUAL DELIVERY, not at payment — and the stamp
-    // resolution lives in utils/returnWindow.js, the SAME helper the payout
-    // eligibility gate uses. Two subsystems reading the delivery moment from
-    // different fields is how the platform ends up paying a vendor while the
-    // customer still has a live return window.
-    const window = returnWindow(order, { claimType });
-    if (window.windowExpired) {
+    // Shipment delivery is authoritative for split orders; legacy orders retain
+    // the order-level delivery stamp fallback. Eligibility windows are line-level
+    // commercial promises snapshotted at checkout, never today's catalog policy.
+    const deliveredAt = shipment?.deliveredAt || order.deliveredAt || order.updatedAt;
+    const now = new Date();
+    const policyChecks = orderItems.map((item) => {
+      const policy = policyForOrderItem(item);
+      const durationMs = claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM
+        ? policy.instantClaimHours * 3600000
+        : policy.returnWindowDays * 86400000;
+      const expiresAt = deliveredAt ? new Date(new Date(deliveredAt).getTime() + durationMs) : null;
+      return { item, policy, expiresAt, expired: !expiresAt || now > expiresAt };
+    });
+    const deniedPolicy = policyChecks.find(({ policy }) => !permitsClaim(policy, claimType));
+    if (deniedPolicy) {
+      const reason = deniedPolicy.policy.mode === 'final_sale'
+        ? 'This product was sold as final sale and is not eligible for returns or instant claims'
+        : 'This product supports quality claims only, not pickup returns';
+      return { isEligible: false, windowExpired: false, nonReturnableItems: true, claimLimitReached: false, reason };
+    }
+    const expiredPolicy = policyChecks.find(({ expired }) => expired);
+    const window = returnWindow(shipment ? { ...order.toObject(), deliveredAt } : order, { claimType });
+    if (expiredPolicy) {
+      const duration = claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM
+        ? `${expiredPolicy.policy.instantClaimHours}h`
+        : `${expiredPolicy.policy.returnWindowDays}d`;
       return {
         isEligible: false, windowExpired: true, nonReturnableItems: false,
-        claimLimitReached: false, window,
-        reason: `Return window expired (${claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? `${INSTANT_CLAIM_WINDOW_HOURS}h` : `${RETURN_WINDOW_DAYS}d`})`,
+        claimLimitReached: false,
+        window: { ...window, expiresAt: expiredPolicy.expiresAt },
+        reason: `The ${duration} eligibility window for this item has expired`,
       };
     }
 
-    // ---- item-level checks ----
-    const orderItems = await OrderItem.find({ orderId, _id: { $in: items.map((i) => i.orderItemId) } }).lean();
-    if (orderItems.length !== items.length) throw badRequest('One or more items are not part of this order', 'INVALID_ITEMS');
-
+    // ---- item-level quantity checks ----
     const nonReturnable = orderItems.some((oi) => {
       const req = items.find((i) => String(i.orderItemId) === String(oi._id));
-      const alreadyReturned = oi.returnedQty || 0;
-      if (req.qty <= 0 || req.qty > oi.qty - alreadyReturned) return true; // over-request
-      if (claimType === RETURN_CLAIM_TYPE.PICKUP_QC && !oi.isReturnable) return true;
-      return false;
+      const unavailableQty = (oi.returnedQty || 0) + (oi.cancelledQty || 0)
+        + (oi.returnRequestedQty || 0) + (oi.returnRejectedQty || 0);
+      return req.qty <= 0 || req.qty > oi.qty - unavailableQty;
     });
     if (nonReturnable) {
       return { isEligible: false, windowExpired: false, nonReturnableItems: true, claimLimitReached: false, window, reason: 'Items are not returnable or qty exceeds delivered qty' };
@@ -83,7 +144,56 @@ class ReturnsService {
       }
     }
 
-    return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, window, order, orderItems };
+    return { isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false, window, order, orderItems, shipment };
+  }
+
+  async reserveQuantities({ tenantId, orderId, orderItems, requestedItems, session = null }) {
+    const reserved = [];
+    try {
+      for (const orderItem of orderItems) {
+        const requested = requestedItems.find((item) => String(item.orderItemId) === String(orderItem._id));
+        // Sequential on purpose: standalone Mongo uses ordered CAS writes plus
+        // compensation; production wraps the same bounded writes in a transaction.
+        // eslint-disable-next-line no-await-in-loop
+        const result = await OrderItem.updateOne(
+          {
+            _id: orderItem._id, tenantId, orderId,
+            $expr: {
+              $lte: [
+                {
+                  $add: [
+                    { $ifNull: ['$returnedQty', 0] }, { $ifNull: ['$cancelledQty', 0] },
+                    { $ifNull: ['$returnRequestedQty', 0] }, { $ifNull: ['$returnRejectedQty', 0] },
+                    requested.qty,
+                  ],
+                },
+                '$qty',
+              ],
+            },
+          },
+          { $inc: { returnRequestedQty: requested.qty } },
+          { session },
+        );
+        if (result.modifiedCount !== 1) {
+          throw conflict('Some quantity is already included in another return request', 'RETURN_QUANTITY_ALREADY_CLAIMED');
+        }
+        reserved.push({ orderItemId: orderItem._id, qty: requested.qty });
+      }
+      return reserved;
+    } catch (error) {
+      if (!session && reserved.length) await this.releaseReservations({ tenantId, orderId, reservations: reserved });
+      throw error;
+    }
+  }
+
+  async releaseReservations({ tenantId, orderId, reservations, session = null }) {
+    if (!reservations.length) return;
+    await OrderItem.bulkWrite(reservations.map((item) => ({
+      updateOne: {
+        filter: { _id: item.orderItemId, tenantId, orderId, returnRequestedQty: { $gte: item.qty } },
+        update: { $inc: { returnRequestedQty: -item.qty } },
+      },
+    })), { session });
   }
 
   /**
@@ -91,27 +201,52 @@ class ReturnsService {
    * PICKUP_QC -> APPROVED (schedules pickup).
    * INSTANT_CLAIM -> auto-approve + initiate refund (wallet) immediately.
    */
-  async create({ tenantId, userId, orderId, items, reason, reasonCode = null, claimType, customerNote = null, actorId = null }) {
+  async create({ tenantId, userId, orderId, items, reason, reasonCode = null, claimType, customerNote = null, idempotencyKey = null, actorId = null }) {
     if (![RETURN_CLAIM_TYPE.PICKUP_QC, RETURN_CLAIM_TYPE.INSTANT_CLAIM].includes(claimType)) {
       throw badRequest('Invalid claim type', 'INVALID_CLAIM_TYPE');
     }
     if (!items?.length) throw badRequest('At least one item is required', 'ITEMS_REQUIRED');
+    const normalizedItems = [...items]
+      .map((item) => ({ orderItemId: String(item.orderItemId), qty: Number(item.qty) }))
+      .sort((a, b) => a.orderItemId.localeCompare(b.orderItemId));
+    if (normalizedItems.some((item) => !mongoose.isValidObjectId(item.orderItemId)
+      || !Number.isInteger(item.qty) || item.qty <= 0)) {
+      throw badRequest('Each return line requires a valid item and positive whole quantity', 'INVALID_RETURN_ITEMS');
+    }
+    if (new Set(normalizedItems.map((item) => item.orderItemId)).size !== normalizedItems.length) {
+      throw badRequest('Each order item may appear only once in a return request', 'DUPLICATE_RETURN_ITEM');
+    }
+    const fingerprint = createHash('sha256').update(JSON.stringify({
+      orderId: String(orderId), items: normalizedItems, reason, reasonCode, claimType, customerNote,
+    })).digest('hex');
+    if (idempotencyKey) {
+      const replay = await ReturnRequest.findOne({ tenantId, userId, idempotencyKey });
+      if (replay) {
+        if (replay.requestFingerprint !== fingerprint) {
+          throw conflict('Idempotency key was already used for a different return request', 'IDEMPOTENCY_KEY_REUSED');
+        }
+        return {
+          eligible: true, replayed: true, returnRequest: replay,
+          items: await ReturnItem.find({ tenantId, returnRequestId: replay._id }).lean(),
+        };
+      }
+    }
 
-    const eligibility = await this.checkEligibility({ orderId, userId, items, claimType });
+    const eligibility = await this.checkEligibility({ tenantId, orderId, userId, items: normalizedItems, claimType });
     if (!eligibility.isEligible) {
       return { eligible: false, eligibility };
     }
 
-    const { order, orderItems } = eligibility;
+    const { order, orderItems, shipment } = eligibility;
 
     // ---- Phase 3.5: correct refund = item (price − discount + tax) + fee
     //      share per TenantRefundPolicy (blueprint §5). A lookup against the
     //      persisted OrderItem breakdown, never a recomputation. ----
-    const allOrderItems = await OrderItem.find({ orderId }).lean();
+    const allOrderItems = await OrderItem.find({ tenantId, orderId }).lean();
     const comps = await refundCalculator.compute({
       tenantId, orderId,
       returnedOrderItems: allOrderItems.map((oi) => {
-        const req = items.find((i) => String(i.orderItemId) === String(oi._id));
+        const req = normalizedItems.find((item) => String(item.orderItemId) === String(oi._id));
         return {
           qty: oi.qty,
           priceAtOrder: oi.priceAtOrder,
@@ -125,35 +260,83 @@ class ReturnsService {
     });
     const amount = comps.totalRefund;
 
-    const rr = await ReturnRequest.create({
-      tenantId, orderId, userId,
-      claimType, reason, reasonCode,
-      status: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? RETURN_REQUEST_STATUS.APPROVED : RETURN_REQUEST_STATUS.APPROVED,
+    const requestDocument = {
+      tenantId, orderId, shipmentId: shipment?._id || null, userId,
+      claimType, reason, reasonCode, customerNote, idempotencyKey, requestFingerprint: fingerprint,
+      status: RETURN_REQUEST_STATUS.APPROVED,
       refundAmount: roundMoney(amount),
       eligibility: {
         isEligible: true, windowExpired: false, nonReturnableItems: false, claimLimitReached: false,
       },
       autoApproved: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM,
       review: { reviewedBy: claimType === RETURN_CLAIM_TYPE.INSTANT_CLAIM ? null : actorId || null, reviewedAt: new Date() },
-    });
-
-    await ReturnItem.insertMany(
-      orderItems.map((oi) => {
-        const req = items.find((i) => String(i.orderItemId) === String(oi._id));
-        const netPerUnit = roundMoney(
-          (oi.priceAtOrder?.sellingPrice || 0)
-          - (oi.qty ? (oi.discountAllocated || 0) / oi.qty : 0)
-          + (oi.qty ? (oi.taxAmount || 0) / oi.qty : 0)
+    };
+    let rr;
+    let reservations = [];
+    const persistClaim = async (session = null) => {
+      try {
+        // The durable key is claimed before quantity. Concurrent retries then
+        // converge on one request; distinct requests still compete through the
+        // per-line quantity CAS below.
+        [rr] = await ReturnRequest.create([requestDocument], { session });
+        reservations = await this.reserveQuantities({
+          tenantId, orderId, orderItems, requestedItems: normalizedItems, session,
+        });
+        await ReturnItem.insertMany(
+          orderItems.map((oi) => {
+            const req = normalizedItems.find((item) => String(item.orderItemId) === String(oi._id));
+            const netPerUnit = roundMoney(
+              (oi.priceAtOrder?.sellingPrice || 0)
+              - (oi.qty ? (oi.discountAllocated || 0) / oi.qty : 0)
+              + (oi.qty ? (oi.taxAmount || 0) / oi.qty : 0)
+            );
+            return {
+              tenantId, returnRequestId: rr._id, orderItemId: oi._id, orderId,
+              shipmentId: oi.shipmentId || shipment?._id || null,
+              tenantProductId: oi.tenantProductId,
+              qty: req.qty,
+              refundAmount: roundMoney(netPerUnit * req.qty),
+              qcStatus: RETURN_QC_STATUS.PENDING,
+            };
+          }),
+          { session },
         );
-        return {
-          returnRequestId: rr._id, orderItemId: oi._id, orderId,
-          tenantProductId: oi.tenantProductId,
-          qty: req.qty,
-          refundAmount: roundMoney(netPerUnit * req.qty),
-          qcStatus: RETURN_QC_STATUS.PENDING,
-        };
-      })
-    );
+      } catch (error) {
+        if (!session) {
+          await Promise.allSettled([
+            this.releaseReservations({ tenantId, orderId, reservations }),
+            rr?._id ? ReturnItem.deleteMany({ tenantId, returnRequestId: rr._id }) : Promise.resolve(),
+            rr?._id ? ReturnRequest.deleteOne({ _id: rr._id, tenantId }) : Promise.resolve(),
+          ]);
+        }
+        throw error;
+      }
+    };
+
+    try {
+      if (await transactionsSupported()) {
+        const session = await mongoose.startSession();
+        try {
+          await session.withTransaction(() => persistClaim(session));
+        } finally {
+          await session.endSession();
+        }
+      } else {
+        await persistClaim();
+      }
+    } catch (error) {
+      if (error?.code === 11000 && idempotencyKey) {
+        const winner = await ReturnRequest.findOne({ tenantId, userId, idempotencyKey });
+        if (winner?.requestFingerprint === fingerprint) {
+          return {
+            eligible: true, replayed: true, returnRequest: winner,
+            items: await ReturnItem.find({ tenantId, returnRequestId: winner._id }).lean(),
+          };
+        }
+        if (winner) throw conflict('Idempotency key was already used for a different return request', 'IDEMPOTENCY_KEY_REUSED');
+      }
+      throw error;
+    }
 
     // ---- bump the order to the return sub-machine ----
     await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.APPROVED);
@@ -171,14 +354,14 @@ class ReturnsService {
       rr.refundTransactionId = refund._id;
       await rr.save();
       await this.syncOrderStatus(order, rr.status);
-      await this.markItemsReturned({ returnRequestId: rr._id, orderItems });
+      await this.markItemsReturned({ tenantId, returnRequestId: rr._id, orderItems });
     }
 
-    return { eligible: true, returnRequest: rr, items: await ReturnItem.find({ returnRequestId: rr._id }).lean() };
+    return { eligible: true, returnRequest: rr, items: await ReturnItem.find({ tenantId, returnRequestId: rr._id }).lean() };
   }
 
   /** Pickup scheduled (Flow A step 2). */
-  async markPickedUp({ returnRequestId, tenantId, actorId = null }) {
+  async markPickedUp({ returnRequestId, tenantId, actorId: _actorId = null }) {
     const rr = await this.getOwned({ returnRequestId, tenantId });
     if (![RETURN_REQUEST_STATUS.APPROVED].includes(rr.status)) {
       throw conflict(`Return is in state ${rr.status} — cannot mark picked up`, 'INVALID_RETURN_TRANSITION');
@@ -206,13 +389,13 @@ class ReturnsService {
       rr.review = { reviewedBy: actorId, reviewedAt: new Date(), note };
       await rr.save();
       await ReturnItem.updateMany(
-        { returnRequestId: rr._id },
+        { tenantId: rr.tenantId, returnRequestId: rr._id },
         { $set: { qcStatus: RETURN_QC_STATUS.PASSED, qcNote: note || null } }
       );
       await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.QC_PASSED);
       // initiate refund — recompute the component split (blueprint §5)
-      const returnItems = await ReturnItem.find({ returnRequestId: rr._id }).lean();
-      const orderItemsAll = await OrderItem.find({ orderId: rr.orderId }).lean();
+      const returnItems = await ReturnItem.find({ tenantId: rr.tenantId, returnRequestId: rr._id }).lean();
+      const orderItemsAll = await OrderItem.find({ tenantId: rr.tenantId, orderId: rr.orderId }).lean();
       const comps = await refundCalculator.compute({
         tenantId: rr.tenantId, orderId: rr.orderId,
         returnedOrderItems: orderItemsAll.map((oi) => {
@@ -239,8 +422,11 @@ class ReturnsService {
       rr.refundTransactionId = refund._id;
       await rr.save();
       await this.syncOrderStatus(order, rr.status);
-      const orderItems = await OrderItem.find({ orderId: rr.orderId, _id: { $in: (await ReturnItem.find({ returnRequestId: rr._id })).map((i) => i.orderItemId) } });
-      await this.markItemsReturned({ returnRequestId: rr._id, orderItems });
+      const returnLines = await ReturnItem.find({ tenantId: rr.tenantId, returnRequestId: rr._id }).select('orderItemId').lean();
+      const orderItems = await OrderItem.find({
+        tenantId: rr.tenantId, orderId: rr.orderId, _id: { $in: returnLines.map((item) => item.orderItemId) },
+      });
+      await this.markItemsReturned({ tenantId: rr.tenantId, returnRequestId: rr._id, orderItems });
       return rr;
     }
 
@@ -249,9 +435,10 @@ class ReturnsService {
     rr.review = { reviewedBy: actorId, reviewedAt: new Date(), note: note || 'QC failed' };
     await rr.save();
     await ReturnItem.updateMany(
-      { returnRequestId: rr._id },
+      { tenantId: rr.tenantId, returnRequestId: rr._id },
       { $set: { qcStatus: RETURN_QC_STATUS.FAILED, qcNote: note || null } }
     );
+    await this.markItemsRejected({ tenantId: rr.tenantId, orderId: rr.orderId, returnRequestId: rr._id });
     await this.syncOrderStatus(order, RETURN_REQUEST_STATUS.QC_FAILED);
     return rr;
   }
@@ -278,27 +465,77 @@ class ReturnsService {
 
   async detail({ returnRequestId, tenantId }) {
     const rr = await this.getOwned({ returnRequestId, tenantId });
-    const items = await ReturnItem.find({ returnRequestId: rr._id }).lean();
+    const items = await ReturnItem.find({ tenantId, returnRequestId: rr._id }).lean();
     return { returnRequest: rr, items: serializeList(items) };
   }
 
-  /** Update returnedQty on order items (prevents over-returning the same line). */
-  async markItemsReturned({ returnRequestId, orderItems }) {
-    const returnItems = await ReturnItem.find({ returnRequestId });
-    for (const ri of returnItems) {
-      const oi = orderItems.find((x) => String(x._id) === String(ri.orderItemId));
-      if (oi) {
-        await OrderItem.updateOne(
-          { _id: oi._id },
-          { $inc: { returnedQty: ri.qty }, $set: { updatedAt: new Date() } }
-        );
-      }
+  async markItemsRejected({ tenantId, orderId, returnRequestId }) {
+    const lines = await ReturnItem.find({
+      tenantId, returnRequestId, quantityDisposition: 'reserved',
+    }).select('orderItemId qty').lean();
+    if (!lines.length) return;
+    await OrderItem.bulkWrite(lines.map((line) => ({
+      updateOne: {
+        filter: {
+          _id: line.orderItemId, tenantId, orderId,
+          returnRequestedQty: { $gte: line.qty },
+        },
+        update: { $inc: { returnRequestedQty: -line.qty, returnRejectedQty: line.qty } },
+      },
+    })));
+    await ReturnItem.updateMany(
+      { tenantId, returnRequestId, quantityDisposition: 'reserved' },
+      { $set: { quantityDisposition: 'rejected' } },
+    );
+  }
+
+  /** Transfer reserved quantity to returned quantity exactly once. */
+  async markItemsReturned({ tenantId, returnRequestId, orderItems }) {
+    const returnItems = await ReturnItem.find({ tenantId, returnRequestId, quantityDisposition: 'reserved' });
+    const rows = returnItems.map((ri) => ({
+      ri, oi: orderItems.find((item) => String(item._id) === String(ri.orderItemId)),
+    })).filter((row) => row.oi);
+    const orderOps = rows.map(({ ri, oi }) => ({
+      updateOne: {
+        filter: {
+          _id: oi._id, tenantId,
+          returnRequestedQty: { $gte: ri.qty },
+          returnedQty: { $lte: oi.qty - ri.qty },
+        },
+        update: {
+          $inc: { returnRequestedQty: -ri.qty, returnedQty: ri.qty },
+          $set: { updatedAt: new Date() },
+        },
+      },
+    }));
+    const shipmentOps = rows.filter(({ ri }) => ri.shipmentId).map(({ ri, oi }) => ({
+      updateOne: {
+        filter: { shipmentId: ri.shipmentId, orderItemId: oi._id, returnedQty: { $lte: oi.qty - ri.qty } },
+        update: { $inc: { returnedQty: ri.qty } },
+      },
+    }));
+    await Promise.all([
+      orderOps.length ? OrderItem.bulkWrite(orderOps) : null,
+      shipmentOps.length ? ShipmentItem.bulkWrite(shipmentOps) : null,
+    ]);
+    if (returnItems.length) {
+      await ReturnItem.updateMany(
+        { tenantId, returnRequestId, quantityDisposition: 'reserved' },
+        { $set: { quantityDisposition: 'returned' } },
+      );
     }
   }
 
   /** Order-level status mirror for the customer timeline (doc §6 sub-machine). */
   async syncOrderStatus(order, returnStatus) {
     if (!order) return;
+    // Shipment-backed orders retain their fulfillment aggregate while returns
+    // progress independently per delivered parcel. A return on delivery 1 must
+    // not make delivery 2 disappear from tracking as `return_approved`.
+    if (await Shipment.exists({ tenantId: order.tenantId, orderId: order._id })) {
+      await shipmentService.deriveOrderStatus({ tenantId: order.tenantId, orderId: order._id });
+      return;
+    }
     const orderStateMap = {
       [RETURN_REQUEST_STATUS.APPROVED]: ORDER_STATUS.RETURN_APPROVED,
       [RETURN_REQUEST_STATUS.PICKED_UP]: ORDER_STATUS.RETURN_PICKED_UP,
